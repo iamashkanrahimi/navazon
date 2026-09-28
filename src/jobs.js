@@ -145,7 +145,10 @@ export const sourceQueue = new SerialQueue(async job => {
         for (const track of options) {
           try {
             await deepCatalog.upsertTrack(track,{ discoveredFrom: 'user:search' });
-            await deepCatalog.seedTrackTasks(track,{ priority: 112 });
+            await deepCatalog.seedTrackTasks(track,{
+              priority: 112,
+              includeMedia: false,
+            });
           } catch (err) {
             console.warn('[deep seed search]', track.artist, track.title, err.message);
           }
