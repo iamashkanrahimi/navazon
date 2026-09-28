@@ -379,6 +379,36 @@ export class DeepCatalog {
     }));
   }
 
+  async searchAlbums(query, limit = 4) {
+    const tokens = deepNormalize(query)
+      .split(' ')
+      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    if (!tokens.length) return [];
+
+    const clauses = tokens.map((_, index) =>
+      `LOWER(artist || ' ' || title) LIKE ${index + 1}`
+    );
+    const params = tokens.map(token => `%${token}%`);
+    params.push(Math.max(1, Number(limit || 4)));
+
+    const result = await db.query(`
+      SELECT album_key, artist, title, track_count, metadata, updated_at
+      FROM deep_albums
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY updated_at DESC
+      LIMIT ${params.length}
+    `, params);
+
+    return result.rows.map(row => ({
+      albumKey: row.album_key,
+      artist: row.artist,
+      title: row.title,
+      trackCount: row.track_count || undefined,
+      rawText: row.metadata?.rawText || undefined,
+      source: 'catalog',
+    }));
+  }
+
   async getAlbumTracksByKey(albumKey) {
     if (!albumKey) return [];
     const result = await db.query(`
