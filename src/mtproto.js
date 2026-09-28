@@ -21,6 +21,7 @@ export async function latestMessageId(client, peer) {
 export async function collectNewMessages(client, peer, afterId, {
   timeoutMs,
   stopWhen,
+  stopWhenBatch,
   quietMs = 900,
   pollMs = 450,
 } = {}) {
@@ -42,6 +43,9 @@ export async function collectNewMessages(client, peer, afterId, {
     if (stopWhen) {
       const hit = ordered.find(stopWhen);
       if (hit) return { messages: ordered, hit };
+    }
+    if (stopWhenBatch && stopWhenBatch(ordered)) {
+      return { messages: ordered, hit: null };
     }
 
     if (ordered.length && Date.now() - lastNewAt >= quietMs) {
