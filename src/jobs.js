@@ -156,20 +156,10 @@ export const sourceQueue = new SerialQueue(async job => {
   try {
     if (job.type === 'search') {
       try {
-        const options = await searchPrimary(job.query);
+        const cachedOptions = await catalog.getSearch(job.query, config.catalogSearchTtlMs);
+        const options = cachedOptions || await searchPrimary(job.query);
         if (!options.length) throw new Error('No results');
-        await catalog.recordSearch(job.query,options);
-        for (const track of options) {
-          try {
-            await deepCatalog.upsertTrack(track,{ discoveredFrom: 'user:search' });
-            await deepCatalog.seedTrackTasks(track,{
-              priority: 112,
-              includeMedia: false,
-            });
-          } catch (err) {
-            console.warn('[deep seed search]', track.artist, track.title, err.message);
-          }
-        }
+
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
@@ -181,6 +171,19 @@ export const sourceQueue = new SerialQueue(async job => {
         };
         await sessions.set(sessionId,fresh);
         await showResults(sessionId,fresh);
+
+        if (!cachedOptions) {
+          try { await catalog.recordSearch(job.query,options); } catch (err) {
+            console.warn('[search catalog]', err.message);
+          }
+          await Promise.all(options.map(async track => {
+            try {
+              await deepCatalog.upsertTrack(track,{ discoveredFrom: 'user:search' });
+            } catch (err) {
+              console.warn('[deep search upsert]', track.artist, track.title, err.message);
+            }
+          }));
+        }
       } catch (err) {
         console.error('[search]',err.message);
         await bot.editMessageText(job.chatId,job.statusMessageId,'نتیجه‌ای پیدا نشد.');
