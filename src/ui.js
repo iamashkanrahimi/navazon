@@ -165,6 +165,9 @@ export function trackAlbumKeyboard(sessionId, album, tracks) {
     text: trackButtonLabel(track,index),
     callback_data: `alt:${sessionId}:${index}`,
   }]));
+  if ((tracks || []).length) {
+    rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
+  }
   rows.push([{ text: '🔙 آهنگ', callback_data: `tret:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
@@ -174,6 +177,9 @@ export function albumTracksKeyboard(sessionId, tracks, backPage = 0) {
     text: trackButtonLabel(track,index),
     callback_data: `alt:${sessionId}:${index}`,
   }]));
+  if ((tracks || []).length) {
+    rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
+  }
   rows.push([{ text: '‹ آلبوم‌ها', callback_data: `alb:${sessionId}:${backPage}` }]);
   return { inline_keyboard: rows };
 }

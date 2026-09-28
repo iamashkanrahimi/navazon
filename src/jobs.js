@@ -14,8 +14,10 @@ import {
   sourceCandidateToTrack,
 } from './media.js';
 import {
-  openMeloBotArtist, openMeloBotArtistFresh, prepareMeloBotBulkTopTracks,
-  downloadMeloBotTopTracks, matchBulkAudioToTracks, listMeloBotAlbums,
+  openMeloBotArtist, openMeloBotArtistFresh,
+  prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
+  downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
+  matchBulkAudioToTracks, listMeloBotAlbums,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
@@ -31,6 +33,100 @@ import {
 } from './trackActions.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
+
+function bulkTrackKey(track = {}) {
+  return track.rawText || `${normalize(track.artist)}|${normalize(track.title)}`;
+}
+
+async function deliverNativeBulkHq(session, tracks, bulkResult, {
+  label = 'bulk',
+} = {}) {
+  const sourceTracks = (tracks || []).slice();
+  if (!sourceTracks.length) return { sent: 0, missing: 0, matched: 0 };
+
+  const matches = matchBulkAudioToTracks(sourceTracks, bulkResult?.audioItems || []);
+  const mediaByTrack = new Map();
+
+  // Bridge every file produced by MeloBot once, then reuse its Bot API file_id.
+  for (const { track: sourceTrack, audioItem } of matches) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    try {
+      const media = await bridgeSourceMessage(config.melobotUsername, audioItem.message, track);
+      mediaByTrack.set(bulkTrackKey(track), media);
+      try { await deepCatalog.setMedia(track, 'hq', media, { source: 'melobot' }); } catch {}
+    } catch (err) {
+      console.warn(`[${label} bridge]`, track.artist, track.title, err.message);
+    }
+  }
+
+  let sent = 0;
+  let missing = 0;
+  for (const sourceTrack of sourceTracks) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    try {
+      assertDeliveryAllowed(track, session.userRegion || 'unknown');
+      let media = mediaByTrack.get(bulkTrackKey(track));
+      if (media) {
+        await sendMedia(session.chatId, track, media);
+        sent += 1;
+        continue;
+      }
+
+      // A previously cached file can fill an unmatched slot without another source request.
+      const cached = await cache.get(track);
+      if (cached) {
+        await deliverCached(session.chatId, track, cached);
+        sent += 1;
+      } else {
+        missing += 1;
+      }
+    } catch (err) {
+      console.warn(`[${label} deliver]`, track.artist, track.title, err.message);
+      missing += 1;
+    }
+  }
+
+  return { sent, missing, matched: matches.length };
+}
+
+async function deliverBulkFromCacheIfComplete(session, tracks) {
+  const sourceTracks = (tracks || []).slice();
+  if (!sourceTracks.length) return { complete: false, sent: 0 };
+  const cached = await Promise.all(sourceTracks.map(track => cache.get(track)));
+  if (!cached.every(Boolean)) return { complete: false, sent: 0 };
+
+  let sent = 0;
+  for (let index = 0; index < sourceTracks.length; index += 1) {
+    const track = applyPolicyDefaults({ ...sourceTracks[index], source: 'melobot' });
+    assertDeliveryAllowed(track, session.userRegion || 'unknown');
+    await deliverCached(session.chatId, track, cached[index]);
+    sent += 1;
+  }
+  return { complete: true, sent };
+}
+
+
+
+async function deliverAvailableBulkCache(session, tracks) {
+  let sent = 0;
+  let missing = 0;
+  for (const sourceTrack of tracks || []) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    try {
+      assertDeliveryAllowed(track, session.userRegion || 'unknown');
+      const cached = await cache.get(track);
+      if (!cached) {
+        missing += 1;
+        continue;
+      }
+      await deliverCached(session.chatId, track, cached);
+      sent += 1;
+    } catch {
+      missing += 1;
+    }
+  }
+  return { sent, missing };
+}
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
   await bot.editMessageText(session.chatId,messageId,`نتیجه‌ها برای «${session.query}»\nیک نسخه رو انتخاب کن:`,{
@@ -219,21 +315,72 @@ export const sourceQueue = new SerialQueue(async job => {
     }
 
     if (job.type === 'download_recent') {
-      const tracks = session.artistContext?.recentTracks?.slice(0, TOP_TRACKS_LIMIT) || [];
+      const requestedTracks = session.artistContext?.recentTracks?.slice(0, TOP_TRACKS_LIMIT) || [];
       let sent = 0;
-      for (const track of tracks) {
-        try {
-          await sendTrackQuality(
-            session.chatId,
-            { ...track, source: track.source || 'melobot' },
-            'hq',
-            session.userRegion || 'unknown'
+      let missing = 0;
+
+      try {
+        const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
+        if (cached.complete) {
+          sent = cached.sent;
+        } else {
+          const seed = session.artistSeed || session.options.find(x =>
+            x.source === 'melobot' &&
+            normalize(x.artist) === normalize(session.artistContext.artist)
           );
-          sent += 1;
-        } catch (err) {
-          console.warn('[download recent]', track.artist, track.title, err.message);
+          if (!seed) throw new Error('Artist seed missing for newest bulk HQ.');
+
+          let liveArtist;
+          let bulk;
+          let lastError;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              liveArtist = await prepareMeloBotBulkRecentTracks(
+                tg,
+                session.artistContext.artist,
+                seed
+              );
+              bulk = await downloadMeloBotRecentTracks(tg, liveArtist);
+              lastError = null;
+              break;
+            } catch (err) {
+              lastError = err;
+              console.warn('[native bulk recent retry]', attempt + 1, err.message);
+            }
+          }
+          if (lastError || !liveArtist || !bulk) throw lastError || new Error('Newest native bulk failed.');
+
+          session.artistContext = {
+            ...session.artistContext,
+            ...liveArtist,
+            tracks: session.artistContext.topTracks || session.artistContext.tracks || [],
+          };
+          await catalog.recordArtist(liveArtist.artist,{
+            topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
+            recentTracks: liveArtist.recentTracks || [],
+            albumButton: liveArtist.albumButton || null,
+          });
+
+          const liveTracks = (liveArtist.recentTracks || requestedTracks).slice(0, TOP_TRACKS_LIMIT);
+          const delivered = await deliverNativeBulkHq(session, liveTracks, bulk, {
+            label: 'native bulk recent',
+          });
+          sent = delivered.sent;
+          missing = delivered.missing;
+        }
+      } catch (err) {
+        console.warn('[native bulk recent failed]', err.message);
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        sent = fallback.sent;
+        missing = fallback.missing;
+        if (missing) {
+          await bot.sendMessage(
+            session.chatId,
+            'دانلود یکجای جدیدترین‌ها از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+          );
         }
       }
+
       session.busy = false;
       await bot.editMessageText(
         session.chatId,
@@ -242,12 +389,12 @@ export const sourceQueue = new SerialQueue(async job => {
         {
           reply_markup: artistSongsKeyboard(
             job.sessionId,
-            session.artistContext.recentTracks,
+            session.artistContext.recentTracks || requestedTracks,
             { mode: 'recent' }
           ),
         }
       );
-      if (!sent) console.warn('[download recent] no tracks delivered');
+      console.log(`[native bulk recent] sent=${sent}, missing=${missing}`);
       return;
     }
 
@@ -275,79 +422,188 @@ export const sourceQueue = new SerialQueue(async job => {
     }
 
     if (job.type === 'download_top') {
-      const tracks = session.artistContext?.tracks?.slice(0,TOP_TRACKS_LIMIT) || [];
+      const requestedTracks = (
+        session.artistContext?.topTracks ||
+        session.artistContext?.tracks ||
+        []
+      ).slice(0, TOP_TRACKS_LIMIT);
       let sent = 0;
+      let missing = 0;
+
       try {
-        const cachedEntries = await Promise.all(tracks.map(track => cache.get(track)));
-        const allCached = cachedEntries.length > 0 && cachedEntries.every(Boolean);
-        if (allCached) {
-          for (let i=0;i<tracks.length;i+=1) {
-            const track = applyPolicyDefaults({ ...tracks[i], source: 'melobot' });
-            assertDeliveryAllowed(track,session.userRegion || 'unknown');
-            await deliverCached(session.chatId,track,cachedEntries[i]);
-            sent += 1;
-          }
+        const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
+        if (cached.complete) {
+          sent = cached.sent;
         } else {
           const seed = session.artistSeed || session.options.find(x =>
-            x.source === 'melobot' && normalize(x.artist) === normalize(session.artistContext.artist)
+            x.source === 'melobot' &&
+            normalize(x.artist) === normalize(session.artistContext.artist)
           );
-          if (!seed) throw new Error('Artist seed missing for bulk HQ.');
-          const liveArtist = await prepareMeloBotBulkTopTracks(tg,session.artistContext.artist,seed);
+          if (!seed) throw new Error('Artist seed missing for top bulk HQ.');
+
+          let liveArtist;
+          let bulk;
+          let lastError;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              liveArtist = await prepareMeloBotBulkTopTracks(
+                tg,
+                session.artistContext.artist,
+                seed
+              );
+              bulk = await downloadMeloBotTopTracks(tg, liveArtist);
+              lastError = null;
+              break;
+            } catch (err) {
+              lastError = err;
+              console.warn('[native bulk top retry]', attempt + 1, err.message);
+            }
+          }
+          if (lastError || !liveArtist || !bulk) throw lastError || new Error('Top native bulk failed.');
+
           session.artistContext = { ...session.artistContext, ...liveArtist };
           await catalog.recordArtist(liveArtist.artist,{
             topTracks: liveArtist.topTracks || liveArtist.tracks || [],
             recentTracks: liveArtist.recentTracks || [],
             albumButton: liveArtist.albumButton || null,
           });
-          const bulk = await downloadMeloBotTopTracks(tg,liveArtist);
-          const matches = matchBulkAudioToTracks(tracks,bulk.audioItems);
-          const mediaByTrack = new Map();
-          for (const { track: sourceTrack, audioItem } of matches) {
-            const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
-            try {
-              assertDeliveryAllowed(track,session.userRegion || 'unknown');
-              const media = await bridgeSourceMessage(config.melobotUsername,audioItem.message,track);
-              mediaByTrack.set(track.rawText || `${normalize(track.artist)}|${normalize(track.title)}`,media);
-            } catch (err) { console.warn('[bulk bridge]',track.artist,track.title,err.message); }
-          }
-          for (const sourceTrack of tracks) {
-            const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
-            try {
-              assertDeliveryAllowed(track,session.userRegion || 'unknown');
-              const key = track.rawText || `${normalize(track.artist)}|${normalize(track.title)}`;
-              const media = mediaByTrack.get(key);
-              if (media) await sendMedia(session.chatId,track,media);
-              else {
-                const cached = await cache.get(track);
-                if (cached) await deliverCached(session.chatId,track,cached);
-                else {
-                  const outcome = await downloadTrackWithSources(track,session.query);
-                  if (outcome.cached) await deliverCached(session.chatId,outcome.track,outcome.cached);
-                  else await sendMedia(session.chatId,outcome.track,outcome.media);
-                }
-              }
-              sent += 1;
-            } catch (err) { console.warn('[download top]',track.artist,track.title,err.message); }
-          }
+
+          const liveTracks = (liveArtist.topTracks || liveArtist.tracks || requestedTracks)
+            .slice(0, TOP_TRACKS_LIMIT);
+          const delivered = await deliverNativeBulkHq(session, liveTracks, bulk, {
+            label: 'native bulk top',
+          });
+          sent = delivered.sent;
+          missing = delivered.missing;
         }
       } catch (err) {
-        console.warn('[bulk HQ fallback]',err.message);
-        for (const sourceTrack of tracks) {
-          const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
-          try {
-            assertDeliveryAllowed(track,session.userRegion || 'unknown');
-            const outcome = await downloadTrackWithSources(track,session.query);
-            if (outcome.cached) await deliverCached(session.chatId,outcome.track,outcome.cached);
-            else await sendMedia(session.chatId,outcome.track,outcome.media);
-            sent += 1;
-          } catch (inner) { console.warn('[download top fallback]',track.artist,track.title,inner.message); }
+        console.warn('[native bulk top failed]', err.message);
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        sent = fallback.sent;
+        missing = fallback.missing;
+        if (missing) {
+          await bot.sendMessage(
+            session.chatId,
+            'دانلود یکجای پربازدیدترین‌ها از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+          );
         }
       }
+
       session.busy = false;
-      await bot.editMessageText(session.chatId,job.messageId,`${session.artistContext.artist}\n🎵 پربازدیدترین آهنگ‌ها`,{
-        reply_markup: artistSongsKeyboard(job.sessionId,session.artistContext.tracks),
-      });
-      if (!sent) console.warn('[download top] no tracks were delivered');
+      const tracks = session.artistContext?.topTracks || session.artistContext?.tracks || requestedTracks;
+      await bot.editMessageText(
+        session.chatId,
+        job.messageId,
+        `${session.artistContext.artist}\n🎵 پربازدیدترین آهنگ‌ها`,
+        {
+          reply_markup: artistSongsKeyboard(job.sessionId, tracks, { mode: 'top' }),
+        }
+      );
+      console.log(`[native bulk top] sent=${sent}, missing=${missing}`);
+      return;
+    }
+
+    if (job.type === 'download_album') {
+      const requestedTracks = session.currentAlbum?.tracks || [];
+      let sent = 0;
+      let missing = 0;
+
+      try {
+        const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
+        if (cached.complete) {
+          sent = cached.sent;
+        } else {
+          const artist = session.currentAlbum?.artist
+            || session.artistContext?.artist
+            || session.albumOriginTrack?.artist
+            || session.currentTrack?.artist;
+          const albumTitle = session.currentAlbum?.title;
+          const seed = session.artistSeed
+            || session.albumOriginTrack
+            || session.currentTrack
+            || session.options?.find(x =>
+              x.source === 'melobot' &&
+              (!artist || normalize(x.artist) === normalize(artist))
+            );
+
+          if (!artist || !albumTitle || !seed) {
+            throw new Error('Album artist/seed missing for native bulk HQ.');
+          }
+
+          let albumContext;
+          let bulk;
+          let lastError;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              albumContext = await prepareMeloBotBulkAlbum(tg, artist, albumTitle, seed);
+              bulk = await downloadMeloBotAlbumTracks(tg, albumContext);
+              lastError = null;
+              break;
+            } catch (err) {
+              lastError = err;
+              console.warn('[native bulk album retry]', attempt + 1, err.message);
+            }
+          }
+          if (lastError || !albumContext || !bulk) throw lastError || new Error('Album native bulk failed.');
+
+          session.currentAlbum = {
+            ...session.currentAlbum,
+            ...albumContext.album,
+            artist: albumContext.artist,
+            tracks: albumContext.tracks,
+          };
+
+          try {
+            await catalog.recordAlbumTracks(
+              albumContext.artist,
+              albumContext.album,
+              albumContext.tracks
+            );
+            await deepCatalog.setAlbumTracks(
+              albumContext.artist,
+              albumContext.album,
+              albumContext.tracks
+            );
+          } catch (err) {
+            console.warn('[native bulk album catalog]', err.message);
+          }
+
+          const delivered = await deliverNativeBulkHq(
+            session,
+            albumContext.tracks,
+            bulk,
+            { label: 'native bulk album' }
+          );
+          sent = delivered.sent;
+          missing = delivered.missing;
+        }
+      } catch (err) {
+        console.warn('[native bulk album failed]', err.message);
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        sent = fallback.sent;
+        missing = fallback.missing;
+        if (missing) {
+          await bot.sendMessage(
+            session.chatId,
+            'دانلود یکجای آلبوم از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+          );
+        }
+      }
+
+      session.busy = false;
+      const album = session.currentAlbum;
+      const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
+      const keyboard = session.currentAlbumView === 'track'
+        ? trackAlbumKeyboard(job.sessionId, album, album?.tracks || [])
+        : albumTracksKeyboard(job.sessionId, album?.tracks || [], session.albumsPage || 0);
+
+      await bot.editMessageText(
+        session.chatId,
+        job.messageId,
+        title,
+        { reply_markup: keyboard }
+      );
+      console.log(`[native bulk album] sent=${sent}, missing=${missing}`);
       return;
     }
 
