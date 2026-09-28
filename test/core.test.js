@@ -109,3 +109,10 @@ test('album tracklists paginate without hiding later songs', () => {
   const second = albumTracksKeyboard('sess', tracks, 0, 1);
   assert.equal(second.inline_keyboard[0][0].callback_data, 'alt:sess:10');
 });
+
+
+test('MeloBot parser also accepts dash-separated search labels', () => {
+  const track = parseTrackButton('🎵 Shadmehr - Taghdir');
+  assert.equal(track.artist, 'Shadmehr');
+  assert.equal(track.title, 'Taghdir');
+});
