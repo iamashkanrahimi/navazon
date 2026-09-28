@@ -932,6 +932,7 @@ function audioMeta(message) {
 export function matchBulkAudioToTracks(tracks, audioItems) {
   const unused = audioItems.map((item, index) => ({ ...item, index }));
   const matches = [];
+  const allowPositionalFallback = tracks.length === audioItems.length;
 
   for (const track of tracks) {
     let best = null;
@@ -954,8 +955,15 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
       }
     }
 
-    if (!best || bestScore <= 0) best = unused.find(item => !item.used) || null;
-    if (!best) break;
+    // Avoid corrupting cache when a partial bulk response is missing a song.
+    // Positional matching is used only when the source returned the full count.
+    if (!best || bestScore < 5) {
+      best = allowPositionalFallback
+        ? (unused.find(item => !item.used) || null)
+        : null;
+    }
+    if (!best) continue;
+
     best.used = true;
     matches.push({ track, audioItem: best });
   }
