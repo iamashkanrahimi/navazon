@@ -9,7 +9,7 @@ import {
   albumsKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
 import {
-  assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage,
+  assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
   deliverCached, downloadTrackWithSources, searchPrimary, sendMedia,
   sourceCandidateToTrack,
 } from './media.js';
@@ -44,18 +44,36 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
   const sourceTracks = (tracks || []).slice();
   if (!sourceTracks.length) return { sent: 0, missing: 0, matched: 0 };
 
-  const matches = matchBulkAudioToTracks(sourceTracks, bulkResult?.audioItems || []);
+  const sourceMatches = matchBulkAudioToTracks(sourceTracks, bulkResult?.audioItems || []);
   const mediaByTrack = new Map();
 
-  // Bridge every file produced by MeloBot once, then reuse its Bot API file_id.
-  for (const { track: sourceTrack, audioItem } of matches) {
-    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+  if (sourceMatches.length) {
     try {
-      const media = await bridgeSourceMessage(config.melobotUsername, audioItem.message, track);
-      mediaByTrack.set(bulkTrackKey(track), media);
-      try { await deepCatalog.setMedia(track, 'hq', media, { source: 'melobot' }); } catch {}
+      const bridged = await bridgeSourceMessages(
+        config.melobotUsername,
+        sourceMatches.map(item => item.audioItem.message)
+      );
+
+      const bridgedMatches = matchBulkAudioToTracks(
+        sourceMatches.map(item => item.track),
+        bridged.items || []
+      );
+
+      for (const { track: sourceTrack, audioItem: media } of bridgedMatches) {
+        const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+        const key = bulkTrackKey(track);
+        mediaByTrack.set(key, media);
+        try {
+          await Promise.all([
+            cache.set(track, media, { sourceFetch: true }),
+            deepCatalog.setMedia(track, 'hq', media, { source: 'melobot', satisfiedBy: label }),
+          ]);
+        } catch (err) {
+          console.warn(`[${label} cache]`, track.artist, track.title, err.message);
+        }
+      }
     } catch (err) {
-      console.warn(`[${label} bridge]`, track.artist, track.title, err.message);
+      console.warn(`[${label} batch bridge]`, err.message);
     }
   }
 
@@ -65,14 +83,13 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     try {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
-      let media = mediaByTrack.get(bulkTrackKey(track));
+      const media = mediaByTrack.get(bulkTrackKey(track));
       if (media) {
         await sendMedia(session.chatId, track, media);
         sent += 1;
         continue;
       }
 
-      // A previously cached file can fill an unmatched slot without another source request.
       const cached = await cache.get(track);
       if (cached) {
         await deliverCached(session.chatId, track, cached);
@@ -86,7 +103,7 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     }
   }
 
-  return { sent, missing, matched: matches.length };
+  return { sent, missing, matched: sourceMatches.length };
 }
 
 async function deliverBulkFromCacheIfComplete(session, tracks) {
