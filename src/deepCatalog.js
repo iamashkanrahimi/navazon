@@ -480,6 +480,23 @@ export class DeepCatalog {
           WHEN $6::boolean AND crawl_tasks.status = 'done' THEN 'queued'
           ELSE crawl_tasks.status
         END,
+        attempts = CASE
+          WHEN crawl_tasks.status = 'failed' THEN 0
+          WHEN $6::boolean AND crawl_tasks.status = 'done' THEN 0
+          ELSE crawl_tasks.attempts
+        END,
+        started_at = CASE
+          WHEN crawl_tasks.status = 'failed' OR ($6::boolean AND crawl_tasks.status = 'done') THEN NULL
+          ELSE crawl_tasks.started_at
+        END,
+        completed_at = CASE
+          WHEN crawl_tasks.status = 'failed' OR ($6::boolean AND crawl_tasks.status = 'done') THEN NULL
+          ELSE crawl_tasks.completed_at
+        END,
+        last_error = CASE
+          WHEN crawl_tasks.status = 'failed' OR ($6::boolean AND crawl_tasks.status = 'done') THEN NULL
+          ELSE crawl_tasks.last_error
+        END,
         updated_at = NOW()
       WHERE crawl_tasks.status <> 'done' OR $6::boolean
     `, [key, kind, safeJson(payload), priority, availableAt, reviveDone]);
