@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { CURATED_PLAYLISTS } from './homeCatalog.js';
 
 export const SESSION_TTL_MS = 12 * 60 * 1000;
 export const MAX_RESULTS = 5;
@@ -92,7 +93,7 @@ export function topMenuKeyboard(sessionId) {
   };
 }
 
-export function curatedPlaylistsKeyboard(sessionId, playlists = []) {
+export function curatedPlaylistsKeyboard(sessionId, playlists = CURATED_PLAYLISTS) {
   const rows = (playlists || []).slice(0, 6).map((playlist, index) => ([{
     text: `🎧 ${truncate(playlist.label || playlist.title || playlist.rawText || 'پلی‌لیست', 38)}`,
     callback_data: `hpo:${sessionId}:${index}`,
