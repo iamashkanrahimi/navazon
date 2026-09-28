@@ -148,6 +148,7 @@ export class CatalogStore {
       topTracks,
       recentTracks,
       albumButton: node.albumButton || null,
+      albumsAvailable: Array.isArray(node.albumList) && node.albumList.length > 0,
       fromCatalog: true,
     };
   }
