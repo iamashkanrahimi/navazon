@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
-import { bot, cache, catalog, follows, sessions, tg } from './runtime.js';
+import { bot, cache, catalog, deepCatalog, follows, sessions, tg } from './runtime.js';
 import { SerialQueue } from './queue.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
@@ -46,6 +46,14 @@ export const sourceQueue = new SerialQueue(async job => {
         const options = await searchPrimary(job.query);
         if (!options.length) throw new Error('No results');
         await catalog.recordSearch(job.query,options);
+        for (const track of options) {
+          try {
+            await deepCatalog.upsertTrack(track,{ discoveredFrom: 'user:search' });
+            await deepCatalog.seedTrackTasks(track,{ priority: 112 });
+          } catch (err) {
+            console.warn('[deep seed search]', track.artist, track.title, err.message);
+          }
+        }
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
