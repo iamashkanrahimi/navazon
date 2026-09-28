@@ -263,6 +263,30 @@ export class DeepCatalog {
     await this.completeTaskByKey(`track_metadata:${trackKey}`, { satisfiedBy: 'track_enrich' });
   }
 
+  async setCapabilities(track, capabilities = {}) {
+    const trackKey = await this.upsertTrack(track);
+    if (!trackKey) return;
+    await db.query(`
+      UPDATE deep_tracks
+      SET metadata = metadata || $2::jsonb,
+          updated_at = NOW()
+      WHERE track_key = $1
+    `, [
+      trackKey,
+      safeJson({
+        capabilities: {
+          hasHq: Boolean(capabilities.hasHq),
+          hasNormal: Boolean(capabilities.hasNormal),
+          hasLyrics: Boolean(capabilities.hasLyrics),
+          hasCover: Boolean(capabilities.hasCover),
+          hasMetadata: Boolean(capabilities.hasMetadata),
+          hasArtistPage: Boolean(capabilities.hasArtistPage),
+        },
+        capabilitiesCheckedAt: new Date().toISOString(),
+      }),
+    ]);
+  }
+
   async getTrackDetails(track = {}) {
     const trackKey = deepTrackKey(track);
     if (!trackKey || trackKey === '|') return null;
@@ -465,7 +489,13 @@ export class DeepCatalog {
   async seedTrackTasks(track, { priority = 70, preferBulk = false, includeMedia = true } = {}) {
     const trackKey = await this.upsertTrack(track);
     if (!trackKey) return;
-    const payload = { track: { ...track, trackKey }, trackKey };
+
+    // Deep source tasks require a live MeloBot button reference. Ahangify
+    // tracks are enriched/downloaded on demand through their own command.
+    const canUseMeloBot = Boolean(track?.rawText) && track?.source !== 'ahangify';
+    if (!canUseMeloBot) return;
+
+    const payload = { track: { ...track, trackKey, source: track.source || 'melobot' }, trackKey };
 
     // One bundled enrichment task replaces three separate 2-minute crawler turns.
     await this.enqueueTask('track_enrich', payload, {
