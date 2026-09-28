@@ -291,6 +291,14 @@ export class DeepCatalog {
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+      await client.query(`
+        UPDATE crawl_tasks
+        SET status = 'queued',
+            available_at = NOW(),
+            last_error = COALESCE(last_error, 'recovered stale running task'),
+            updated_at = NOW()
+        WHERE status = 'running' AND started_at < NOW() - INTERVAL '15 minutes'
+      `);
       const result = await client.query(`
         SELECT id, task_key, kind, payload, priority, attempts
         FROM crawl_tasks
@@ -349,7 +357,7 @@ export class DeepCatalog {
 
   async enqueueFeedSweep() {
     const feeds = [
-      { feed: '/new', priority: 120, everyMs: 30 * 60 * 1000, origin: 'iranian' },
+      { feed: '/new', priority: 120, everyMs: 30 * 60 * 1000, origin: 'unknown' },
       { feed: '/topday', priority: 118, everyMs: 60 * 60 * 1000, origin: 'unknown' },
       { feed: '/topweek', priority: 116, everyMs: 6 * 60 * 60 * 1000, origin: 'unknown' },
       { feed: '/foreign', priority: 114, everyMs: 2 * 60 * 60 * 1000, origin: 'foreign' },
