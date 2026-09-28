@@ -65,3 +65,13 @@ The crawler still runs at most one source stage per cron trigger and still waits
 - /admin/stats includes 24-hour productivity counters.
 
 No new environment variables are required.
+
+
+### Additional v1.3 optimizations
+
+- Bulk downloads stop waiting as soon as the expected audio count arrives, with a short quiet fallback for partial source responses.
+- Feed/artist/album tracks no longer create thousands of individual HQ/normal fallback jobs up front; native bulk gets first chance, and only real gaps become individual tasks.
+- Artist and album bulk jobs are only queued when enough media is actually missing to justify a bulk redownload.
+- Curated MeloBot playlists are explored daily as an additional long-tail discovery source.
+- Batch-forwarded media is correlated back to tracks using title/artist metadata.
+- Album/artist persistence and feed task creation use small parallel database batches to reduce Neon round trips.
