@@ -271,10 +271,19 @@ export const sourceQueue = new SerialQueue(async job => {
     if (job.type === 'search') {
       try {
         const cachedOptions = await catalog.getSearch(job.query, config.catalogSearchTtlMs);
-        const options = cachedOptions || await searchPrimary(job.query);
-        if (!options.length) throw new Error('No results');
+        let options = cachedOptions || [];
+        if (!cachedOptions) {
+          try {
+            options = await searchPrimary(job.query);
+          } catch (err) {
+            console.warn('[track search]', err.message);
+            options = [];
+          }
+        }
 
         const albumOptions = await searchAlbumOptions(job.query, options);
+        if (!options.length && !albumOptions.length) throw new Error('No results');
+
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
@@ -287,7 +296,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await sessions.set(sessionId,fresh);
         await showResults(sessionId,fresh);
 
-        if (!cachedOptions) {
+        if (!cachedOptions && options.length) {
           try { await catalog.recordSearch(job.query,options); } catch (err) {
             console.warn('[search catalog]', err.message);
           }
