@@ -492,7 +492,16 @@ export class DeepCatalog {
         SELECT id, task_key, kind, payload, priority, attempts
         FROM crawl_tasks
         WHERE status = 'queued' AND available_at <= NOW()
-        ORDER BY priority DESC, available_at ASC, id ASC
+        ORDER BY
+          (
+            priority +
+            LEAST(
+              60,
+              FLOOR(EXTRACT(EPOCH FROM (NOW() - available_at)) / 600)::int
+            )
+          ) DESC,
+          available_at ASC,
+          id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
       `);
