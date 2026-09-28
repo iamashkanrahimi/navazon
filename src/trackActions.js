@@ -106,6 +106,12 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
       media = legacy;
       cacheHit = true;
       cacheKey = legacy._cacheKey || null;
+      try {
+        await deepCatalog.setMedia(track, 'hq', legacy, {
+          source: legacy.source || track.source || 'cache',
+          satisfiedBy: 'legacy_cache',
+        });
+      } catch {}
     }
   }
 
