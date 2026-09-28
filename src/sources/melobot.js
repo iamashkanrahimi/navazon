@@ -442,7 +442,8 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
 }
 
 export async function listMeloBotAlbums(client, artistContext) {
-  const albumControl = artistContext.albumButton || '💿';
+  const albumControl = clean(artistContext.albumButton || '');
+  if (!albumControl) throw new Error('MeloBot album button is not present on the live artist keyboard.');
 
   const page = await sendAndCollect(client, albumControl, {
     timeoutMs: config.searchTimeoutMs,
@@ -497,35 +498,83 @@ export async function openMeloBotAlbum(client, artist, album) {
   return tracks;
 }
 
-export async function discoverMeloBotHome(client) {
-  let page = await sendAndCollect(client, '/start', {
-    timeoutMs: config.searchTimeoutMs,
-    quietMs: 1800,
-  });
+export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
+  // Bootstrap only through buttons that actually exist on MeloBot's live keyboard.
+  // Never invent a button label such as "💿".
+  const openHome = async () => {
+    let page = await sendAndCollect(client, '/start', {
+      timeoutMs: config.searchTimeoutMs,
+      quietMs: 1800,
+    });
 
-  const homeButton = findButton(page.messages, text => /صفحه\s*اصلی/u.test(clean(text)));
-  if (homeButton) {
-    try {
-      page = await sendAndCollect(client, homeButton, {
-        timeoutMs: config.searchTimeoutMs,
-        quietMs: 1800,
-      });
-    } catch {}
-  }
+    const homeButton = findButton(page.messages, text => /صفحه\s*اصلی/u.test(clean(text)));
+    if (homeButton) {
+      try {
+        page = await sendAndCollect(client, homeButton, {
+          timeoutMs: config.searchTimeoutMs,
+          quietMs: 1800,
+        });
+      } catch {}
+    }
+    return page;
+  };
 
-  const tracks = parseTracksFromMessages(page.messages);
-  const artists = [];
-  const seen = new Set();
-  for (const raw of buttonsFromMessages(page.messages)) {
+  const home = await openHome();
+  const homeButtons = buttonsFromMessages(home.messages);
+
+  const sectionButtons = homeButtons.filter(raw => {
     const text = clean(raw);
-    const match = text.match(/^[🗣🎤🎙]+\s*(.+)$/u);
-    if (!match) continue;
-    const name = clean(match[1]);
-    const key = normalize(name);
-    if (!key || seen.has(key) || /خواننده|پیشنهاد/u.test(name)) continue;
-    seen.add(key);
-    artists.push(name);
+    if (!text || isControl(text)) return false;
+    if (parseTrackButton(text) || parseAlbumButton(text)) return false;
+    // Buttons shown on MeloBot home commonly represent playlists/categories.
+    return true;
+  }).slice(0, Math.max(0, maxSections));
+
+  const tracks = [];
+  const artists = [];
+  const seenTracks = new Set();
+  const seenArtists = new Set();
+
+  const absorb = messages => {
+    for (const track of parseTracksFromMessages(messages)) {
+      const key = `${normalize(track.artist)}|${normalize(track.title)}|${normalize(track.rawText)}`;
+      if (seenTracks.has(key)) continue;
+      seenTracks.add(key);
+      tracks.push(track);
+      const artistKey = normalize(track.artist);
+      if (artistKey && !seenArtists.has(artistKey)) {
+        seenArtists.add(artistKey);
+        artists.push(track.artist);
+      }
+    }
+    for (const raw of buttonsFromMessages(messages)) {
+      const text = clean(raw);
+      const match = text.match(/^[🗣🎤🎙]+\s*(.+)$/u);
+      if (!match) continue;
+      const name = clean(match[1]);
+      const key = normalize(name);
+      if (!key || seenArtists.has(key) || /خواننده|پیشنهاد/u.test(name)) continue;
+      seenArtists.add(key);
+      artists.push(name);
+    }
+  };
+
+  absorb(home.messages);
+
+  for (const sectionButton of sectionButtons) {
+    try {
+      // Reset to a known keyboard state before every click.
+      await openHome();
+      const section = await sendAndCollect(client, sectionButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 2200,
+        stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
+      });
+      absorb(section.messages);
+    } catch (err) {
+      console.warn('[melobot bootstrap section]', sectionButton, err.message);
+    }
   }
 
-  return { tracks, artists };
+  return { tracks, artists, sections: sectionButtons };
 }
