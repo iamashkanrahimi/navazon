@@ -242,8 +242,34 @@ export async function openMeloBotArtistFresh(client, artist, preferredSeed = nul
   return openMeloBotArtist(client, seed);
 }
 
+async function resolveMeloBotTrackCandidate(client, candidate) {
+  const query = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
+    || candidate?.title
+    || candidate?.rawText;
+
+  if (!query) throw new Error('MeloBot track candidate is incomplete.');
+
+  try {
+    const results = await searchMeloBot(client, query);
+    const artist = normalize(candidate?.artist || '');
+    const title = normalize(candidate?.title || '');
+
+    return results.find(track =>
+      normalize(track.artist) === artist && normalize(track.title) === title
+    ) || results.find(track =>
+      title && normalize(track.title) === title
+    ) || results[0] || candidate;
+  } catch (err) {
+    console.warn('[melobot resolve track]', err.message);
+    return candidate;
+  }
+}
+
 async function openTrackMenu(client, candidate) {
-  const selected = await sendAndCollect(client, candidate.rawText, {
+  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
+  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+
+  const selected = await sendAndCollect(client, liveCandidate.rawText, {
     timeoutMs: config.searchTimeoutMs,
     quietMs: 1500,
     stopWhen: m => replyButtons(m).some(text =>
