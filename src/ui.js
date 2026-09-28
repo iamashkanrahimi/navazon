@@ -48,10 +48,17 @@ export function resultsKeyboard(sessionId, session) {
     text: trackButtonLabel(track,index,{ numbered: true }),
     callback_data: `t:${sessionId}:${index}`,
   }]));
-  const hasMeloArtist = artist && session.options.some(t =>
-    t.source === 'melobot' && (!t.artist || normalize(t.artist) === normalize(artist))
-  );
-  if (hasMeloArtist) rows.push([{ text: `صفحه‌ی 🗣 ${truncate(artist,30)}`, callback_data: `ar:${sessionId}` }]);
+  const artistSeedIndex = artist
+    ? session.options.findIndex(t =>
+        t.source === 'melobot' && normalize(t.artist || '') === normalize(artist)
+      )
+    : -1;
+  if (artistSeedIndex >= 0) {
+    rows.push([{
+      text: `صفحه‌ی 🗣 ${truncate(artist,30)}`,
+      callback_data: `ar:${sessionId}:${artistSeedIndex}`,
+    }]);
+  }
   return { inline_keyboard: rows };
 }
 
