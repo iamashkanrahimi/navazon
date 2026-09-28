@@ -5,6 +5,8 @@ import { SerialQueue } from './queue.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
   SESSION_TTL_MS, TOP_TRACKS_LIMIT, ALBUMS_PER_PAGE, normalize,
+  homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
+  curatedPlaylistsKeyboard, followedArtistsKeyboard,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
   albumsKeyboard, noAlbumsKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
@@ -341,6 +343,8 @@ export const sourceQueue = new SerialQueue(async job => {
       return;
     }
 
+    if (job.type.startsWith('home_') && !session) return;
+
     if (job.type === 'home_feed') {
       try {
         const feed = HOME_FEEDS[job.feedKey];
@@ -372,10 +376,15 @@ export const sourceQueue = new SerialQueue(async job => {
       } catch (err) {
         console.error('[home feed]', err.message);
         session.busy = false;
+        const feed = HOME_FEEDS[job.feedKey];
+        const keyboard = feed?.backAction === 'htop'
+          ? topMenuKeyboard(job.sessionId)
+          : newestMenuKeyboard(job.sessionId);
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'این بخش فعلاً در دسترس نیست. دوباره امتحان کن.'
+          'این بخش فعلاً در دسترس نیست. دوباره امتحان کن.',
+          { reply_markup: keyboard }
         );
       }
       return;
@@ -412,7 +421,8 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'این پلی‌لیست فعلاً در دسترس نیست.'
+          'این پلی‌لیست فعلاً در دسترس نیست.',
+          { reply_markup: curatedPlaylistsKeyboard(job.sessionId) }
         );
       }
       return;
@@ -454,7 +464,12 @@ export const sourceQueue = new SerialQueue(async job => {
       } catch (err) {
         console.error('[home artist]', err.message);
         session.busy = false;
-        await bot.editMessageText(session.chatId, job.messageId, 'باز کردن این خواننده ممکن نشد.');
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          'باز کردن این خواننده ممکن نشد.',
+          { reply_markup: followedArtistsKeyboard(job.sessionId, session.followedArtists || []) }
+        );
       }
       return;
     }
