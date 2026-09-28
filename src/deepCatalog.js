@@ -255,7 +255,8 @@ export class DeepCatalog {
       popularityCount,
       patch.popularityText || null,
       safeJson({
-        ...(patch.raw || patch),
+        ...(patch.raw && typeof patch.raw === 'object' ? patch.raw : patch),
+        ...(typeof patch.raw === 'string' && patch.raw ? { raw: patch.raw } : {}),
         metadataCheckedAt: new Date().toISOString(),
       }),
     ]);
