@@ -12,6 +12,7 @@ import {
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
   listMeloBotAlbums,
+  resolveMeloBotAlbums,
   matchBulkAudioToTracks,
   openMeloBotAlbum,
   openMeloBotAlbumContext,
@@ -564,7 +565,11 @@ async function runArtistProfile(task) {
     }
   }
 
-  if (live.albumButton) {
+  const hasAlbumSurface = Boolean(
+    live.albumButton
+    || (live.albumListingConfirmed && (live.albumList?.length || live.albumListingConfirmedEmpty))
+  );
+  if (hasAlbumSurface) {
     await deepCatalog.enqueueTask(
       'album_index',
       { artist: live.artist, seedTrack: seedTrack || recent[0] || top[0] || null },
@@ -577,7 +582,8 @@ async function runArtistProfile(task) {
     recent: recent.length,
     top: top.length,
     relatedArtists: (live.relatedArtists || []).length,
-    hasAlbums: Boolean(live.albumButton),
+    hasAlbums: Boolean(live.albumList?.length),
+    albumListingConfirmed: Boolean(live.albumListingConfirmed),
   };
 }
 
@@ -586,10 +592,20 @@ async function runAlbumIndex(task) {
   if (!artist) throw new Error('Album index task is missing artist.');
 
   const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
-  if (!live.albumButton) return { artist: live.artist, albums: 0 };
+  const resolved = await resolveMeloBotAlbums(tg, live, { allowEmpty: true });
+  const albums = resolved.albums;
 
-  const albums = await listMeloBotAlbums(tg, live);
-  await catalog.recordAlbums(live.artist, albums);
+  await catalog.recordAlbums(live.artist, albums, {
+    emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
+  });
+
+  if (!albums.length) {
+    return {
+      artist: live.artist,
+      albums: 0,
+      confirmedEmpty: Boolean(resolved.confirmedEmpty && resolved.complete),
+    };
+  }
 
   await Promise.all(albums.map(async album => {
     await deepCatalog.upsertAlbum(live.artist, album);
@@ -611,12 +627,19 @@ async function runAlbumDetail(task) {
   if (!artist || !album?.title) throw new Error('Album detail task is incomplete.');
 
   const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
-  const albums = await listMeloBotAlbums(tg, live);
+  const resolved = await resolveMeloBotAlbums(tg, live, { allowEmpty: true });
+  const albums = resolved.albums;
   const target = albums.find(item => deepNormalize(item.title) === deepNormalize(album.title)) || album;
   const albumContext = await openMeloBotAlbumContext(tg, live.artist, target);
   const tracks = albumContext.tracks;
 
-  await catalog.recordAlbums(live.artist, albums);
+  if (resolved.complete) {
+    await catalog.recordAlbums(live.artist, albums, {
+      emptyConfirmed: Boolean(resolved.confirmedEmpty),
+    });
+  } else {
+    await catalog.mergeAlbums(live.artist, albums);
+  }
   await catalog.recordAlbumTracks(live.artist, target, tracks);
   await deepCatalog.setAlbumTracks(live.artist, target, tracks);
   await seedTracks(tracks, 84, {

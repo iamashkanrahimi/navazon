@@ -14,6 +14,9 @@ process.env.ADMIN_TOKEN ||= 'test-admin';
 
 const {
   parseTrackButton,
+  parseAlbumButton,
+  inspectMeloBotAlbumListing,
+  albumQueryMatches,
   matchBulkAudioToTracks,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
@@ -185,4 +188,134 @@ test('home feed shortcuts map to the stable MeloBot commands', () => {
   assert.equal(HOME_FEEDS.ar.command, '/arabic');
   assert.equal(HOME_FEEDS.day.command, '/topday');
   assert.equal(HOME_FEEDS.week.command, '/topweek');
+});
+
+
+test('MeloBot album-list page is detected without treating an album as navigation', () => {
+  const messages = [{
+    message: 'آلبوم های خواننده (10) :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: '💿 In Roozha (8)' }] },
+        { buttons: [{ text: '💿 Shahre Divooneh (3)' }] },
+        { buttons: [{ text: '💿 Yek Khatereh Az Farda (12)' }] },
+      ],
+    },
+  }];
+
+  const listing = inspectMeloBotAlbumListing(messages);
+  assert.equal(listing.confirmed, true);
+  assert.equal(listing.confirmedEmpty, false);
+  assert.equal(listing.declaredCount, 10);
+  assert.deepEqual(listing.albums.map(album => album.title), [
+    'In Roozha',
+    'Shahre Divooneh',
+    'Yek Khatereh Az Farda',
+  ]);
+  assert.equal(parseAlbumButton('💿 In Roozha (8)').trackCount, 8);
+});
+
+test('album + artist query matches every album by that artist', () => {
+  assert.equal(
+    albumQueryMatches('آلبوم Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'In Roozha'),
+    true
+  );
+  assert.equal(
+    albumQueryMatches('album Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'Paeiz Tanhaei'),
+    true
+  );
+});
+
+test('specific album query still filters by album title', () => {
+  assert.equal(
+    albumQueryMatches(
+      'Ehsan Khajeamiri In Roozha',
+      'Ehsan Khajeamiri',
+      'In Roozha'
+    ),
+    true
+  );
+  assert.equal(
+    albumQueryMatches(
+      'Ehsan Khajeamiri In Roozha',
+      'Ehsan Khajeamiri',
+      'Paeiz Tanhaei'
+    ),
+    false
+  );
+});
+
+test('explicit album searches render albums before track rows', () => {
+  const session = {
+    albumFirst: true,
+    options: [{ source: 'melobot', artist: 'Ehsan', title: 'Track', rawText: 'x' }],
+    albumOptions: [{ artist: 'Ehsan', title: 'In Roozha', trackCount: 8 }],
+  };
+  const keyboard = resultsKeyboard('sess', session);
+  assert.equal(keyboard.inline_keyboard[0][0].callback_data, 'sal:sess:0');
+});
+
+
+test('album listing recognizes Persian digits and confirmed zero safely', () => {
+  const nonEmpty = inspectMeloBotAlbumListing([{
+    message: 'آلبوم‌های خواننده (۲) :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: '💿 Album One (۸)' }] },
+        { buttons: [{ text: '💿 Album Two (۳)' }] },
+      ],
+    },
+  }]);
+  assert.equal(nonEmpty.declaredCount, 2);
+  assert.equal(nonEmpty.complete, true);
+  assert.equal(nonEmpty.albums[0].trackCount, 8);
+
+  const empty = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده (۰) :',
+    replyMarkup: { rows: [] },
+  }]);
+  assert.equal(empty.confirmed, true);
+  assert.equal(empty.confirmedEmpty, true);
+  assert.equal(empty.complete, true);
+});
+
+test('declared album count prevents partial listings from being marked complete', () => {
+  const listing = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده (10) :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: '💿 In Roozha (8)' }] },
+        { buttons: [{ text: '💿 Shahre Divooneh (3)' }] },
+      ],
+    },
+  }]);
+  assert.equal(listing.confirmed, true);
+  assert.equal(listing.complete, false);
+});
+
+test('specific explicit album search filters the requested title once artist is known', () => {
+  const albums = [
+    { title: 'In Roozha' },
+    { title: 'Paeiz Tanhaei' },
+  ];
+  const matches = albums.filter(album =>
+    albumQueryMatches(
+      'album Ehsan Khajeamiri In Roozha',
+      'Ehsan Khajeamiri',
+      album.title
+    )
+  );
+  assert.deepEqual(matches.map(album => album.title), ['In Roozha']);
+});
+
+
+test('Persian album intent variants are treated as album searches', () => {
+  assert.equal(
+    albumQueryMatches('آلبوم‌های Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'In Roozha'),
+    true
+  );
+  assert.equal(
+    albumQueryMatches('البوم Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'Paeiz Tanhaei'),
+    true
+  );
 });

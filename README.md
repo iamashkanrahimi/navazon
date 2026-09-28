@@ -87,3 +87,14 @@ Navazon now has a compact first-page discovery menu:
 - Followed artists: opens the user's existing follows directly.
 
 The playlist menu is intentionally curated instead of mirroring every MeloBot playlist. Seasonal/noisy entries such as “قدر” are not exposed on Navazon's home page. Crawler-discovered feed and playlist tracks are reused as short-lived browse caches so home navigation usually avoids an extra source request.
+
+
+## Album reliability v1.4.1
+
+- Detects MeloBot pages that are already album listings instead of mistaking the first album row for an Albums navigation button.
+- “Album + artist” searches resolve the artist picker directly and can return album-only results without requiring a seed track.
+- Explicit album searches show album rows first and support common Persian spellings.
+- Negative album caching is trusted only after MeloBot explicitly confirms zero albums; legacy false-empty cache/session state self-heals automatically.
+- Album-search SQL bindings in both catalog stores are corrected.
+- Album-only search results can open tracks and use native bulk album download without a prior track seed.
+- The crawler now recognizes embedded album-list pages too.

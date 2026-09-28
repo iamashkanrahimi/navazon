@@ -380,23 +380,33 @@ export class DeepCatalog {
   }
 
   async searchAlbums(query, limit = 4) {
-    const tokens = deepNormalize(query)
-      .split(' ')
-      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    const allTokens = deepNormalize(query).split(' ').filter(Boolean);
+    const albumWords = new Set([
+      'album', 'albums',
+      'آلبوم', 'آلبومها', 'آلبومهای',
+      'البوم', 'البومها', 'البومهای',
+    ]);
+    const hasAlbumIntent = allTokens.some(token => albumWords.has(token));
+    const tokens = allTokens.filter(token =>
+      token.length >= 2
+      && !albumWords.has(token)
+      && !(hasAlbumIntent && ['ها','های'].includes(token))
+    );
     if (!tokens.length) return [];
 
     const clauses = tokens.map((_, index) =>
-      `LOWER(artist || ' ' || title) LIKE ${index + 1}`
+      "LOWER(artist || ' ' || title) LIKE $" + (index + 1)
     );
     const params = tokens.map(token => `%${token}%`);
     params.push(Math.max(1, Number(limit || 4)));
+    const limitParam = '$' + params.length;
 
     const result = await db.query(`
       SELECT album_key, artist, title, track_count, metadata, updated_at
       FROM deep_albums
       WHERE ${clauses.join(' AND ')}
       ORDER BY updated_at DESC
-      LIMIT ${params.length}
+      LIMIT ${limitParam}
     `, params);
 
     return result.rows.map(row => ({

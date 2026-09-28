@@ -18,6 +18,13 @@ function trackIdentity(track = {}) {
   return [normalize(track.artist), normalize(track.title), normalize(track.rawText || track.cmd || '')].join('|');
 }
 
+function looksLikeAlbumRowButton(value = '') {
+  const text = clean(value)
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .trim();
+  return /^.+?\s*\([۰-۹٠-٩0-9]+\)\s*$/u.test(text);
+}
+
 function freshEnough(iso, maxAgeMs) {
   if (!iso || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return false;
   const t = Date.parse(iso);
@@ -147,7 +154,9 @@ export class CatalogStore {
       tracks: topTracks.length ? topTracks : recentTracks,
       topTracks,
       recentTracks,
-      albumButton: node.albumButton || null,
+      albumButton: node.albumButton && !looksLikeAlbumRowButton(node.albumButton)
+        ? node.albumButton
+        : null,
       albumsAvailable: Array.isArray(node.albumList) && node.albumList.length > 0,
       fromCatalog: true,
     };
@@ -157,22 +166,38 @@ export class CatalogStore {
     const { node } = await this.readArtist(name);
     if (!node || !Array.isArray(node.albumList)) return null;
 
-    const ttl = node.albumList.length ? maxAgeMs : emptyMaxAgeMs;
-    if (!freshEnough(node.albumsUpdatedAt, ttl)) return null;
-    return node.albumList;
+    if (node.albumList.length) {
+      return freshEnough(node.albumsUpdatedAt, maxAgeMs) ? node.albumList : null;
+    }
+
+    // Empty album lists are trusted only when the source explicitly confirmed
+    // zero albums. Older empty rows created by the previous heuristic are
+    // intentionally ignored and will self-heal on the next request.
+    if (!freshEnough(node.albumsEmptyConfirmedAt, emptyMaxAgeMs)) return null;
+    return [];
   }
 
   async searchAlbums(query, limit = 4) {
-    const tokens = normalize(query)
-      .split(' ')
-      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    const allTokens = normalize(query).split(' ').filter(Boolean);
+    const albumWords = new Set([
+      'album', 'albums',
+      'آلبوم', 'آلبومها', 'آلبومهای',
+      'البوم', 'البومها', 'البومهای',
+    ]);
+    const hasAlbumIntent = allTokens.some(token => albumWords.has(token));
+    const tokens = allTokens.filter(token =>
+      token.length >= 2
+      && !albumWords.has(token)
+      && !(hasAlbumIntent && ['ها','های'].includes(token))
+    );
     if (!tokens.length) return [];
 
     const clauses = tokens.map((_, index) =>
-      `LOWER(a.name || ' ' || COALESCE(album->>'title','')) LIKE ${index + 1}`
+      "LOWER(a.name || ' ' || COALESCE(album->>'title','')) LIKE $" + (index + 1)
     );
     const params = tokens.map(token => `%${token}%`);
     params.push(Math.max(1, Number(limit || 4)));
+    const limitParam = '$' + params.length;
 
     const result = await db.query(`
       SELECT
@@ -186,7 +211,7 @@ export class CatalogStore {
       ) album
       WHERE ${clauses.join(' AND ')}
       ORDER BY a.updated_at DESC
-      LIMIT ${params.length}
+      LIMIT ${limitParam}
     `, params);
 
     return result.rows
@@ -247,16 +272,21 @@ export class CatalogStore {
     await this.seedArtistsFromTracks([...topTracks, ...recentTracks], `artist:${clean(name)}`);
   }
 
-  async recordAlbums(name, albums = []) {
+  async recordAlbums(name, albums = [], { emptyConfirmed = false } = {}) {
     const { key, node } = await this.readArtist(name);
     if (!node) return;
+
+    const now = new Date().toISOString();
     node.albumList = albums.map(album => ({
       title: clean(album.title),
       trackCount: album.trackCount || undefined,
       rawText: clean(album.rawText),
     }));
-    node.albumsUpdatedAt = new Date().toISOString();
+    node.albumsUpdatedAt = now;
+    node.albumsEmptyConfirmedAt = !albums.length && emptyConfirmed ? now : null;
+    node.albumButton = null;
     node.albums ||= {};
+
     for (const album of albums) {
       const albumKey = normalize(album.title);
       if (!albumKey) continue;
@@ -265,9 +295,45 @@ export class CatalogStore {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
-        listingUpdatedAt: new Date().toISOString(),
+        listingUpdatedAt: now,
       };
     }
+    await this.writeArtist(key, node);
+  }
+
+  async mergeAlbums(name, albums = []) {
+    if (!albums.length) return;
+    const { key, node } = await this.readArtist(name);
+    if (!node) return;
+
+    const existing = new Map(
+      (Array.isArray(node.albumList) ? node.albumList : [])
+        .filter(album => album?.title)
+        .map(album => [normalize(album.title), album])
+    );
+    const now = new Date().toISOString();
+    node.albums ||= {};
+
+    for (const album of albums) {
+      const albumKey = normalize(album.title);
+      if (!albumKey) continue;
+      const compact = {
+        title: clean(album.title),
+        trackCount: album.trackCount || undefined,
+        rawText: clean(album.rawText),
+      };
+      existing.set(albumKey, { ...(existing.get(albumKey) || {}), ...compact });
+      node.albums[albumKey] = {
+        ...(node.albums[albumKey] || {}),
+        ...compact,
+        listingUpdatedAt: now,
+      };
+    }
+
+    node.albumList = [...existing.values()];
+    // Partial discoveries improve the index but do not claim that the full
+    // album list was freshly enumerated.
+    node.albumsEmptyConfirmedAt = null;
     await this.writeArtist(key, node);
   }
 

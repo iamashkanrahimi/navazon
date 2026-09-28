@@ -113,17 +113,19 @@ export function followedArtistsKeyboard(sessionId, artists = []) {
 
 export function resultsKeyboard(sessionId, session) {
   const artist = dominantArtist(session.options || []);
-  const rows = (session.options || []).map((track,index) => ([{
+  const trackRows = (session.options || []).map((track,index) => ([{
     text: trackButtonLabel(track,index,{ numbered: true }),
     callback_data: `t:${sessionId}:${index}`,
   }]));
 
-  for (const [index, album] of (session.albumOptions || []).entries()) {
-    rows.push([{
-      text: albumButtonLabel(album),
-      callback_data: `sal:${sessionId}:${index}`,
-    }]);
-  }
+  const albumRows = (session.albumOptions || []).map((album,index) => ([{
+    text: albumButtonLabel(album),
+    callback_data: `sal:${sessionId}:${index}`,
+  }]));
+
+  const rows = session.albumFirst
+    ? [...albumRows, ...trackRows]
+    : [...trackRows, ...albumRows];
 
   const artistSeedIndex = artist
     ? session.options.findIndex(t =>
