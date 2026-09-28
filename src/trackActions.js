@@ -24,9 +24,10 @@ async function captureForwardedMedia(message) {
 
 export async function prepareTrackPage(track) {
   await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
+  try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
   let details = await deepCatalog.getTrackDetails(track);
   let capabilities = {
-    hasHq: Boolean(details?.media?.hq),
+    hasHq: Boolean(details?.media?.hq) || track?.source !== 'melobot',
     hasNormal: Boolean(details?.media?.normal),
     hasLyrics: Boolean(details?.lyrics_text),
     hasCover: Boolean(details?.cover_file_id),
@@ -89,19 +90,31 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
   let details = await deepCatalog.getTrackDetails(track);
   let media = details?.media?.[quality] || null;
 
+  if (!media && quality === 'hq') {
+    const legacy = await cache.get(track);
+    if (legacy?.fileId) media = legacy;
+  }
+
   if (!media) {
-    if (track?.source !== 'melobot' || !track?.rawText) {
+    if (track?.source === 'melobot' && track?.rawText) {
+      const result = await downloadMeloBotTrackQuality(tg, track, quality);
+      media = await captureForwardedMedia(result.audioMessage);
+      await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
+      if (quality === 'hq') {
+        await cache.set(track, media, { sourceFetch: true });
+      }
+    } else if (quality === 'hq') {
+      const { downloadTrackWithSources } = await import('./media.js');
+      const outcome = await downloadTrackWithSources(track, [track.artist, track.title].filter(Boolean).join(' '));
+      media = outcome.cached || outcome.media;
+      if (media) await deepCatalog.setMedia(track, 'hq', media, { source: track.source || 'ahangify' });
+    } else {
       throw new Error('Requested quality is not available for this track source.');
-    }
-    const result = await downloadMeloBotTrackQuality(tg, track, quality);
-    media = await captureForwardedMedia(result.audioMessage);
-    await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
-    if (quality === 'hq') {
-      await cache.set(track, media, { sourceFetch: true });
     }
   }
 
   await sendAudioMedia(chatId, track, media);
+  try { await cache.recordServe(track, { cacheHit: Boolean(details?.media?.[quality]) }); } catch {}
   return media;
 }
 
