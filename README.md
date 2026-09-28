@@ -1,4 +1,4 @@
-# Navazon Cloud v1.1 — Deep Catalog
+# Navazon Cloud v1.3 — Agile Deep Catalog
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -47,3 +47,21 @@ Selecting a song opens a compact song page instead of immediately downloading it
 - Artist pages expose both top tracks and newest tracks.
 - Song choices inside top/newest/album lists also open the same song page.
 - User-opened and user-searched tracks are promoted in the deep crawler queue so real usage improves the cache.
+
+
+## Crawler v1.3
+
+The crawler still runs at most one source stage per cron trigger and still waits for the configured user-idle window, but each stage now does more useful work.
+
+- Fresh feeds are prioritized: /new every ~20 minutes and /topday every ~45 minutes.
+- Artist pages persist recent and top tracks separately.
+- MeloBot native bulk download buttons warm HQ and normal file IDs for recent/top lists and albums.
+- Individual per-track downloads remain only as low-priority fallbacks.
+- Metadata + cover + lyrics are bundled into one track enrichment stage instead of consuming three separate crawler turns.
+- Home/category discovery explores more live MeloBot sections twice a day for broader long-tail discovery.
+- Queue compaction retires superseded legacy metadata/cover/lyrics jobs.
+- Bulk media cache writes automatically satisfy queued per-track media jobs.
+- Database-only seeding uses small parallel batches.
+- /admin/stats includes 24-hour productivity counters.
+
+No new environment variables are required.
