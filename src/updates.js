@@ -1,7 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { bot, bridge, follows, sessions } from './runtime.js';
 import { sourceQueue, showResults } from './jobs.js';
 import {
   SESSION_TTL_MS, TOP_TRACKS_LIMIT,
+  homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
+  curatedPlaylistsKeyboard, followedArtistsKeyboard,
   artistHomeKeyboard, artistSongsKeyboard, albumsKeyboard,
   albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
@@ -24,6 +27,43 @@ function searchAllowed(userId) {
     }
   }
   return true;
+}
+
+function newSessionId() {
+  return randomBytes(4).toString('hex');
+}
+
+async function sendHome(chatId, userId) {
+  const sessionId = newSessionId();
+  const session = {
+    chatId,
+    userId,
+    messageId: null,
+    options: [],
+    albumOptions: [],
+    artistContext: null,
+    artistSeed: null,
+    followedArtists: [],
+    isFollowing: false,
+    albums: null,
+    currentAlbum: null,
+    currentAlbumView: null,
+    albumsPage: 0,
+    albumTrackPage: 0,
+    currentTrack: null,
+    trackBack: null,
+    artistBack: 'hmn',
+    busy: false,
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  };
+
+  const message = await bot.sendMessage(
+    chatId,
+    'اسم آهنگ، خواننده یا آلبوم رو بفرست 🎵\n\nیا از بخش‌های زیر انتخاب کن:',
+    { reply_markup: homeKeyboard(sessionId) }
+  );
+  session.messageId = message.message_id;
+  await sessions.set(sessionId, session);
 }
 
 function validSession(callback, session) {
@@ -56,7 +96,81 @@ export async function handleUpdate(update) {
       await bot.answerCallbackQuery(callback.id);
       await noteUserActivity();
 
-      if (action === 't') {
+      if (action === 'hmn') {
+        session.busy = false;
+        session.resultsBackAction = null;
+        session.resultsBackText = null;
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          'اسم آهنگ، خواننده یا آلبوم رو بفرست 🎵\n\nیا از بخش‌های زیر انتخاب کن:',
+          { reply_markup: homeKeyboard(sessionId) }
+        );
+      } else if (action === 'hnew') {
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          '🔥 جدیدترین‌ها\nدسته‌بندی رو انتخاب کن:',
+          { reply_markup: newestMenuKeyboard(sessionId) }
+        );
+      } else if (action === 'htop') {
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          '📥 پردانلودترین‌ها\nبازه رو انتخاب کن:',
+          { reply_markup: topMenuKeyboard(sessionId) }
+        );
+      } else if (action === 'hnc' || action === 'htc') {
+        session.busy = true;
+        const feedKey = parts[2];
+        await bot.editMessageText(session.chatId, messageId, 'در حال دریافت آهنگ‌ها…');
+        sourceQueue.push({ type: 'home_feed', sessionId, messageId, feedKey });
+      } else if (action === 'hpl') {
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          '🎧 پلی‌لیست‌ها\nچند پلی‌لیست منتخب:',
+          { reply_markup: curatedPlaylistsKeyboard(sessionId) }
+        );
+      } else if (action === 'hpo') {
+        session.busy = true;
+        const playlistIndex = Number(parts[2]);
+        const playlists = curatedPlaylistsKeyboard(sessionId).inline_keyboard
+          .slice(0, -1)
+          .map((row, index) => ({ index, callback: row[0]?.callback_data }));
+        const selected = playlists.find(item => item.index === playlistIndex);
+        if (!selected) {
+          session.busy = false;
+          return;
+        }
+        const playlistKey = ['pop','nostalgia','remix','martik','gilaki'][playlistIndex];
+        await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن پلی‌لیست…');
+        sourceQueue.push({ type: 'home_playlist', sessionId, messageId, playlistKey });
+      } else if (action === 'hfol') {
+        session.followedArtists = await follows.listForUser(session.userId, 12);
+        if (!session.followedArtists.length) {
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            '🔔 دنبال‌شده‌ها\n\nهنوز خواننده‌ای رو فالو نکردی.',
+            { reply_markup: followedArtistsKeyboard(sessionId, []) }
+          );
+        } else {
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            '🔔 خواننده‌های دنبال‌شده',
+            { reply_markup: followedArtistsKeyboard(sessionId, session.followedArtists) }
+          );
+        }
+      } else if (action === 'hfa') {
+        const index = Number(parts[2]);
+        if (!session.followedArtists?.[index]) return;
+        session.busy = true;
+        await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن خواننده…');
+        sourceQueue.push({ type: 'home_artist', sessionId, messageId, index });
+      } else if (action === 't') {
         const track = session.options[Number(parts[2])]; if (!track) return;
         session.currentTrack = track;
         session.trackBack = { type: 'results' };
@@ -278,7 +392,8 @@ export async function handleUpdate(update) {
   if (!chatId || !userId) return;
   await noteUserActivity();
   if (/^\/start(?:@\w+)?(?:\s|$)/i.test(msg.text || '')) {
-    await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو بفرست.');
+    await noteUserActivity();
+    await sendHome(chatId, userId);
     return;
   }
   const query = msg.text?.trim();
