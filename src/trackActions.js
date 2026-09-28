@@ -26,20 +26,26 @@ async function captureForwardedMedia(message) {
 export async function prepareTrackPage(track) {
   await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
   try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
+
   let details = await deepCatalog.getTrackDetails(track);
+  const snapshot = details?.metadata?.capabilities || {};
+  const checkedAt = Date.parse(details?.metadata?.capabilitiesCheckedAt || '') || 0;
+  const snapshotFresh = checkedAt > 0 && (Date.now() - checkedAt) < 7 * 24 * 60 * 60 * 1000;
+
   let capabilities = {
-    hasHq: Boolean(details?.media?.hq) || track?.source !== 'melobot',
-    hasNormal: Boolean(details?.media?.normal),
-    hasLyrics: Boolean(details?.lyrics_text),
-    hasCover: Boolean(details?.cover_file_id),
+    hasHq: Boolean(details?.media?.hq) || Boolean(snapshot.hasHq) || track?.source !== 'melobot',
+    hasNormal: Boolean(details?.media?.normal) || Boolean(snapshot.hasNormal),
+    hasLyrics: Boolean(details?.lyrics_text) || Boolean(snapshot.hasLyrics),
+    hasCover: Boolean(details?.cover_file_id) || Boolean(snapshot.hasCover),
     hasMetadata: Boolean(
       details?.release_date || details?.release_date_raw || details?.duration_seconds ||
-      details?.popularity_count || details?.popularity_text || details?.albumInfo
+      details?.popularity_count || details?.popularity_text || details?.albumInfo ||
+      snapshot.hasMetadata
     ),
     hasArtistPage: Boolean(track?.artist),
   };
 
-  if (track?.source === 'melobot' && track?.rawText) {
+  if (!snapshotFresh && track?.source === 'melobot' && track?.rawText) {
     try {
       const live = await inspectMeloBotTrack(tg, track);
       capabilities = {
@@ -50,6 +56,7 @@ export async function prepareTrackPage(track) {
         hasMetadata: capabilities.hasMetadata || live.hasMetadata,
         hasArtistPage: capabilities.hasArtistPage || live.hasArtistPage,
       };
+      try { await deepCatalog.setCapabilities(track, capabilities); } catch {}
     } catch (err) {
       console.warn('[track page inspect]', err.message);
     }
