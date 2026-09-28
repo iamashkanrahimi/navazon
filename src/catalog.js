@@ -157,9 +157,15 @@ export class CatalogStore {
     const { node } = await this.readArtist(name);
     if (!node || !Array.isArray(node.albumList)) return null;
 
-    const ttl = node.albumList.length ? maxAgeMs : emptyMaxAgeMs;
-    if (!freshEnough(node.albumsUpdatedAt, ttl)) return null;
-    return node.albumList;
+    if (node.albumList.length) {
+      return freshEnough(node.albumsUpdatedAt, maxAgeMs) ? node.albumList : null;
+    }
+
+    // Empty album lists are trusted only when the source explicitly confirmed
+    // zero albums. Older empty rows created by the previous heuristic are
+    // intentionally ignored and will self-heal on the next request.
+    if (!freshEnough(node.albumsEmptyConfirmedAt, emptyMaxAgeMs)) return null;
+    return [];
   }
 
   async searchAlbums(query, limit = 4) {
@@ -247,16 +253,20 @@ export class CatalogStore {
     await this.seedArtistsFromTracks([...topTracks, ...recentTracks], `artist:${clean(name)}`);
   }
 
-  async recordAlbums(name, albums = []) {
+  async recordAlbums(name, albums = [], { emptyConfirmed = false } = {}) {
     const { key, node } = await this.readArtist(name);
     if (!node) return;
+
+    const now = new Date().toISOString();
     node.albumList = albums.map(album => ({
       title: clean(album.title),
       trackCount: album.trackCount || undefined,
       rawText: clean(album.rawText),
     }));
-    node.albumsUpdatedAt = new Date().toISOString();
+    node.albumsUpdatedAt = now;
+    node.albumsEmptyConfirmedAt = !albums.length && emptyConfirmed ? now : null;
     node.albums ||= {};
+
     for (const album of albums) {
       const albumKey = normalize(album.title);
       if (!albumKey) continue;
@@ -265,9 +275,45 @@ export class CatalogStore {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
-        listingUpdatedAt: new Date().toISOString(),
+        listingUpdatedAt: now,
       };
     }
+    await this.writeArtist(key, node);
+  }
+
+  async mergeAlbums(name, albums = []) {
+    if (!albums.length) return;
+    const { key, node } = await this.readArtist(name);
+    if (!node) return;
+
+    const existing = new Map(
+      (Array.isArray(node.albumList) ? node.albumList : [])
+        .filter(album => album?.title)
+        .map(album => [normalize(album.title), album])
+    );
+    const now = new Date().toISOString();
+    node.albums ||= {};
+
+    for (const album of albums) {
+      const albumKey = normalize(album.title);
+      if (!albumKey) continue;
+      const compact = {
+        title: clean(album.title),
+        trackCount: album.trackCount || undefined,
+        rawText: clean(album.rawText),
+      };
+      existing.set(albumKey, { ...(existing.get(albumKey) || {}), ...compact });
+      node.albums[albumKey] = {
+        ...(node.albums[albumKey] || {}),
+        ...compact,
+        listingUpdatedAt: now,
+      };
+    }
+
+    node.albumList = [...existing.values()];
+    // Partial discoveries improve the index but do not claim that the full
+    // album list was freshly enumerated.
+    node.albumsEmptyConfirmedAt = null;
     await this.writeArtist(key, node);
   }
 
