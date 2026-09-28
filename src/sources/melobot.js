@@ -490,6 +490,20 @@ export async function enrichMeloBotTrack(client, candidate) {
     },
     lyrics: { available: false, text: '' },
     cover: null,
+    capabilities: {
+      hasHq: menuButtons.some(text =>
+        clean(text).includes('کیفیت عالی') && !clean(text).includes('خرید اشتراک')
+      ),
+      hasNormal: menuButtons.some(text =>
+        clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
+      ),
+      hasLyrics: menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text))),
+      hasCover: false,
+      hasMetadata: false,
+      hasArtistPage: menuButtons.some(text =>
+        /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+      ),
+    },
     errors: [],
   };
 
@@ -520,6 +534,10 @@ export async function enrichMeloBotTrack(client, candidate) {
         quietMs: 1500,
       });
       const moreButtons = buttonsFromMessages(more.messages);
+      result.capabilities.hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
+      result.capabilities.hasMetadata = moreButtons.some(text =>
+        /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+      );
 
       const detailsButton = moreButtons.find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
       if (detailsButton) {
