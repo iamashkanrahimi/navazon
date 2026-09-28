@@ -49,6 +49,18 @@ export class FollowStore {
     return Boolean(result.rows[0]?.following);
   }
 
+  async listForUser(userId, limit = 20) {
+    const result = await db.query(
+      `SELECT artist_key, artist_name, followed_at
+       FROM follows
+       WHERE user_id = $1
+       ORDER BY followed_at DESC
+       LIMIT $2`,
+      [String(userId), Math.max(1, Number(limit || 20))]
+    );
+    return result.rows;
+  }
+
   async followersOf(artist) {
     const key = normalize(artist);
     if (!key) return [];
