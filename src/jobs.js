@@ -5,6 +5,8 @@ import { SerialQueue } from './queue.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
   SESSION_TTL_MS, TOP_TRACKS_LIMIT, ALBUMS_PER_PAGE, normalize,
+  homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
+  curatedPlaylistsKeyboard, followedArtistsKeyboard,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
   albumsKeyboard, noAlbumsKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
@@ -18,11 +20,13 @@ import {
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
   matchBulkAudioToTracks, listMeloBotAlbums, discoverMeloBotAlbumsForQuery,
+  discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { executeDeepTask } from './deepCrawler.js';
+import { HOME_FEEDS, curatedPlaylistByKey } from './homeCatalog.js';
 import {
   renderTrackPage,
   sendTrackQuality,
@@ -257,12 +261,36 @@ async function deliverAvailableBulkCache(session, tracks) {
 }
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
-  const prompt = session.albumOptions?.length
-    ? 'یک آهنگ یا آلبوم رو انتخاب کن:'
-    : 'یک نسخه رو انتخاب کن:';
-  await bot.editMessageText(session.chatId,messageId,`نتیجه‌ها برای «${session.query}»\n${prompt}`,{
+  const prompt = session.resultsPrompt || (
+    session.albumOptions?.length
+      ? 'یک آهنگ یا آلبوم رو انتخاب کن:'
+      : 'یک نسخه رو انتخاب کن:'
+  );
+  const title = session.resultsTitle || `نتیجه‌ها برای «${session.query}»`;
+  await bot.editMessageText(session.chatId,messageId,`${title}\n${prompt}`,{
     reply_markup: resultsKeyboard(sessionId,session),
   });
+}
+
+async function setBrowseResults(sessionId, session, messageId, tracks, {
+  title,
+  backAction,
+  backText = '🔙 برگشت',
+} = {}) {
+  const visible = (tracks || []).slice(0, 10);
+  if (!visible.length) throw new Error('Browse source returned no tracks.');
+
+  session.options = visible;
+  session.albumOptions = [];
+  session.query = title || 'موسیقی';
+  session.resultsTitle = title || 'موسیقی';
+  session.resultsPrompt = 'یک آهنگ رو انتخاب کن:';
+  session.resultsBackAction = backAction || 'hmn';
+  session.resultsBackText = backText;
+  session.currentTrack = null;
+  session.trackBack = null;
+  session.busy = false;
+  await showResults(sessionId, session, messageId);
 }
 
 export const sourceQueue = new SerialQueue(async job => {
@@ -311,6 +339,137 @@ export const sourceQueue = new SerialQueue(async job => {
       } catch (err) {
         console.error('[search]',err.message);
         await bot.editMessageText(job.chatId,job.statusMessageId,'نتیجه‌ای پیدا نشد.');
+      }
+      return;
+    }
+
+    if (job.type.startsWith('home_') && !session) return;
+
+    if (job.type === 'home_feed') {
+      try {
+        const feed = HOME_FEEDS[job.feedKey];
+        if (!feed) throw new Error('Unknown home feed.');
+
+        const cacheKey = `browse:${feed.command}`;
+        let tracks = await catalog.getSearch(cacheKey, config.catalogSearchTtlMs);
+        if (!tracks?.length) {
+          const result = await discoverMeloBotFeed(tg, feed.command, {
+            contentOrigin: feed.origin,
+          });
+          tracks = result.tracks || [];
+          if (tracks.length) {
+            try { await catalog.recordSearch(cacheKey, tracks); } catch {}
+            await Promise.all(tracks.map(track =>
+              deepCatalog.upsertTrack(track, {
+                discoveredFrom: `user:browse:${feed.command}`,
+                feed: feed.command,
+              }).catch(() => null)
+            ));
+          }
+        }
+
+        await setBrowseResults(job.sessionId, session, job.messageId, tracks, {
+          title: feed.title,
+          backAction: feed.backAction,
+          backText: '🔙 دسته‌بندی‌ها',
+        });
+      } catch (err) {
+        console.error('[home feed]', err.message);
+        session.busy = false;
+        const feed = HOME_FEEDS[job.feedKey];
+        const keyboard = feed?.backAction === 'htop'
+          ? topMenuKeyboard(job.sessionId)
+          : newestMenuKeyboard(job.sessionId);
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          'این بخش فعلاً در دسترس نیست. دوباره امتحان کن.',
+          { reply_markup: keyboard }
+        );
+      }
+      return;
+    }
+
+    if (job.type === 'home_playlist') {
+      try {
+        const playlist = curatedPlaylistByKey(job.playlistKey);
+        if (!playlist) throw new Error('Unknown curated playlist.');
+
+        const cacheKey = `browse:playlist:${playlist.key}`;
+        let tracks = await catalog.getSearch(cacheKey, 6 * 60 * 60 * 1000);
+        if (!tracks?.length) {
+          const opened = await openMeloBotCuratedPlaylist(tg, playlist);
+          tracks = opened.tracks || [];
+          if (tracks.length) {
+            try { await catalog.recordSearch(cacheKey, tracks); } catch {}
+            await Promise.all(tracks.map(track =>
+              deepCatalog.upsertTrack(track, {
+                discoveredFrom: `user:playlist:${playlist.key}`,
+              }).catch(() => null)
+            ));
+          }
+        }
+
+        await setBrowseResults(job.sessionId, session, job.messageId, tracks, {
+          title: `🎧 ${playlist.label}`,
+          backAction: 'hpl',
+          backText: '🔙 پلی‌لیست‌ها',
+        });
+      } catch (err) {
+        console.error('[home playlist]', err.message);
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          'این پلی‌لیست فعلاً در دسترس نیست.',
+          { reply_markup: curatedPlaylistsKeyboard(job.sessionId) }
+        );
+      }
+      return;
+    }
+
+    if (job.type === 'home_artist') {
+      try {
+        const artistRow = session.followedArtists?.[job.index];
+        const artist = artistRow?.artist_name || artistRow?.artistName || artistRow?.artist;
+        if (!artist) throw new Error('Followed artist is missing.');
+
+        const cachedArtist = await catalog.getArtistContext(artist, config.catalogArtistTtlMs);
+        session.artistContext = cachedArtist || await openMeloBotArtistFresh(tg, artist, null);
+        session.artistSeed = (
+          session.artistContext.recentTracks?.[0] ||
+          session.artistContext.topTracks?.[0] ||
+          session.artistContext.tracks?.[0] ||
+          null
+        );
+        await syncArtistContext(session.artistContext);
+        session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
+        session.artistBack = 'hfol';
+        session.albums = null;
+        session.busy = false;
+
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          session.artistContext.artist,
+          {
+            reply_markup: artistHomeKeyboard(
+              job.sessionId,
+              session.artistContext,
+              session.isFollowing,
+              { backAction: 'hfol' }
+            ),
+          }
+        );
+      } catch (err) {
+        console.error('[home artist]', err.message);
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          'باز کردن این خواننده ممکن نشد.',
+          { reply_markup: followedArtistsKeyboard(job.sessionId, session.followedArtists || []) }
+        );
       }
       return;
     }

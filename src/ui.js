@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { CURATED_PLAYLISTS } from './homeCatalog.js';
 
 export const SESSION_TTL_MS = 12 * 60 * 1000;
 export const MAX_RESULTS = 5;
@@ -49,6 +50,67 @@ function dominantArtist(tracks) {
   return best.artist;
 }
 
+export function homeKeyboard(sessionId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🔥 جدیدترین‌ها', callback_data: `hnew:${sessionId}` },
+        { text: '📥 پردانلودترین‌ها', callback_data: `htop:${sessionId}` },
+      ],
+      [
+        { text: '🎧 پلی‌لیست‌ها', callback_data: `hpl:${sessionId}` },
+        { text: '🔔 دنبال‌شده‌ها', callback_data: `hfol:${sessionId}` },
+      ],
+    ],
+  };
+}
+
+export function newestMenuKeyboard(sessionId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🇮🇷 ایرانی', callback_data: `hnc:${sessionId}:ir` },
+        { text: '🌍 خارجی', callback_data: `hnc:${sessionId}:foreign` },
+      ],
+      [
+        { text: '🇹🇷 ترکی', callback_data: `hnc:${sessionId}:tr` },
+        { text: '🌴 عربی', callback_data: `hnc:${sessionId}:ar` },
+      ],
+      [{ text: '🔙 صفحه‌ی اصلی', callback_data: `hmn:${sessionId}` }],
+    ],
+  };
+}
+
+export function topMenuKeyboard(sessionId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'روز', callback_data: `htc:${sessionId}:day` },
+        { text: 'هفته', callback_data: `htc:${sessionId}:week` },
+      ],
+      [{ text: '🔙 صفحه‌ی اصلی', callback_data: `hmn:${sessionId}` }],
+    ],
+  };
+}
+
+export function curatedPlaylistsKeyboard(sessionId, playlists = CURATED_PLAYLISTS) {
+  const rows = (playlists || []).slice(0, 6).map((playlist, index) => ([{
+    text: `🎧 ${truncate(playlist.label || playlist.title || playlist.rawText || 'پلی‌لیست', 38)}`,
+    callback_data: `hpo:${sessionId}:${index}`,
+  }]));
+  rows.push([{ text: '🔙 صفحه‌ی اصلی', callback_data: `hmn:${sessionId}` }]);
+  return { inline_keyboard: rows };
+}
+
+export function followedArtistsKeyboard(sessionId, artists = []) {
+  const rows = (artists || []).slice(0, 12).map((artist, index) => ([{
+    text: `🗣 ${truncate(artist.artist_name || artist.artistName || artist.artist || '', 38)}`,
+    callback_data: `hfa:${sessionId}:${index}`,
+  }]));
+  rows.push([{ text: '🔙 صفحه‌ی اصلی', callback_data: `hmn:${sessionId}` }]);
+  return { inline_keyboard: rows };
+}
+
 export function resultsKeyboard(sessionId, session) {
   const artist = dominantArtist(session.options || []);
   const rows = (session.options || []).map((track,index) => ([{
@@ -72,6 +134,12 @@ export function resultsKeyboard(sessionId, session) {
     rows.push([{
       text: `صفحه‌ی 🗣 ${truncate(artist,30)}`,
       callback_data: `ar:${sessionId}:${artistSeedIndex}`,
+    }]);
+  }
+  if (session.resultsBackAction) {
+    rows.push([{
+      text: session.resultsBackText || '🔙 برگشت',
+      callback_data: `${session.resultsBackAction}:${sessionId}`,
     }]);
   }
   return { inline_keyboard: rows };

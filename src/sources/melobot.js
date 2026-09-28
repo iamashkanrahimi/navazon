@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { CURATED_PLAYLISTS, curatedPlaylistByKey } from '../homeCatalog.js';
 import {
   collectNewMessages,
   isAudioMessage,
@@ -1086,42 +1087,98 @@ export async function openMeloBotAlbum(client, artist, album) {
   return context.tracks;
 }
 
-export async function discoverMeloBotPlaylists(client, { maxPlaylists = 6 } = {}) {
-  const openIndex = async () => sendAndCollect(client, '/playlists', {
+async function openMeloBotDailyPlaylists(client) {
+  const index = await sendAndCollect(client, '/playlists', {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 2000,
+    quietMs: 1800,
   });
 
-  const index = await openIndex();
-  const candidates = buttonsFromMessages(index.messages)
-    .filter(raw => {
-      const text = clean(raw);
-      if (!text || isControl(text)) return false;
-      if (parseTrackButton(text)) return false;
-      if (/^[🗣🎤🎙]/u.test(text)) return false;
-      return true;
-    })
-    .slice(0, Math.max(0, maxPlaylists));
+  const dailyButton = findButton(index.messages, text =>
+    /پلی\s*لیست.*روزانه|پلیلیست.*روزانه/u.test(clean(text))
+  );
+  if (!dailyButton) throw new Error('MeloBot daily playlists button was not found.');
 
+  return sendAndCollect(client, dailyButton, {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 1900,
+  });
+}
+
+export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } = {}) {
+  const page = await openMeloBotDailyPlaylists(client);
+  const buttons = buttonsFromMessages(page.messages);
+  const out = [];
+  const seen = new Set();
+
+  for (const rule of CURATED_PLAYLISTS) {
+    const rawText = buttons.find(text => rule.pattern.test(clean(text)));
+    if (!rawText) continue;
+    const key = rule.key;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      label: rule.label,
+      title: clean(rawText),
+      rawText,
+      source: 'melobot',
+    });
+    if (out.length >= Math.max(1, Number(maxPlaylists || 5))) break;
+  }
+
+  return out;
+}
+
+export async function openMeloBotCuratedPlaylist(client, playlist) {
+  if (!playlist?.key) throw new Error('Curated playlist key is missing.');
+  const rule = curatedPlaylistByKey(playlist.key);
+  if (!rule) throw new Error(`Unknown curated playlist: ${playlist.key}`);
+
+  const page = await openMeloBotDailyPlaylists(client);
+  const liveButton = buttonsFromMessages(page.messages).find(text => rule.pattern.test(clean(text)));
+  if (!liveButton) throw new Error(`MeloBot playlist is not available: ${playlist.label || playlist.key}`);
+
+  const result = await sendAndCollect(client, liveButton, {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 2300,
+    stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
+  });
+
+  const tracks = parseTracksFromMessages(result.messages).map(track => ({
+    ...track,
+    source: 'melobot',
+  }));
+
+  return {
+    playlist: {
+      ...playlist,
+      label: rule.label,
+      title: clean(liveButton),
+      rawText: liveButton,
+    },
+    tracks,
+  };
+}
+
+export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}) {
+  const playlists = await listCuratedMeloBotPlaylists(client, { maxPlaylists });
+  const entries = [];
   const tracks = [];
   const artists = [];
   const seenTracks = new Set();
   const seenArtists = new Set();
 
-  for (const playlistButton of candidates) {
+  for (const playlist of playlists) {
     try {
-      await openIndex();
-      const page = await sendAndCollect(client, playlistButton, {
-        timeoutMs: config.searchTimeoutMs,
-        quietMs: 2200,
-        stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
-      });
+      const opened = await openMeloBotCuratedPlaylist(client, playlist);
+      entries.push({ playlist: opened.playlist, tracks: opened.tracks });
 
-      for (const track of parseTracksFromMessages(page.messages)) {
+      for (const track of opened.tracks) {
         const key = `${normalize(track.artist)}|${normalize(track.title)}`;
-        if (seenTracks.has(key)) continue;
-        seenTracks.add(key);
-        tracks.push({ ...track, source: 'melobot' });
+        if (!seenTracks.has(key)) {
+          seenTracks.add(key);
+          tracks.push(track);
+        }
 
         const artistKey = normalize(track.artist);
         if (artistKey && !seenArtists.has(artistKey)) {
@@ -1130,12 +1187,13 @@ export async function discoverMeloBotPlaylists(client, { maxPlaylists = 6 } = {}
         }
       }
     } catch (err) {
-      console.warn('[melobot playlist discovery]', playlistButton, err.message);
+      console.warn('[melobot playlist discovery]', playlist.label, err.message);
     }
   }
 
   return {
-    playlists: candidates,
+    playlists,
+    entries,
     tracks,
     artists,
   };

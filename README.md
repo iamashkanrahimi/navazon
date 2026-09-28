@@ -75,3 +75,15 @@ No new environment variables are required.
 - Curated MeloBot playlists are explored daily as an additional long-tail discovery source.
 - Batch-forwarded media is correlated back to tracks using title/artist metadata.
 - Album/artist persistence and feed task creation use small parallel database batches to reduce Neon round trips.
+
+
+## Home discovery v1.4
+
+Navazon now has a compact first-page discovery menu:
+
+- Newest: Iranian, foreign, Turkish, Arabic.
+- Most downloaded: day and week.
+- Curated playlists: Pop Selection, Yadegari, Remix, Martik, Gilaki.
+- Followed artists: opens the user's existing follows directly.
+
+The playlist menu is intentionally curated instead of mirroring every MeloBot playlist. Seasonal/noisy entries such as “قدر” are not exposed on Navazon's home page. Crawler-discovered feed and playlist tracks are reused as short-lived browse caches so home navigation usually avoids an extra source request.
