@@ -51,7 +51,12 @@ export async function handleUpdate(update) {
       } else if (action === 'ar') {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
-        sourceQueue.push({ type: 'artist', sessionId, messageId });
+        sourceQueue.push({
+          type: 'artist',
+          sessionId,
+          messageId,
+          seedIndex: Number(parts[2]),
+        });
       } else if (action === 'rs') {
         await showResults(sessionId,session,messageId);
       } else if (action === 'trt') {
