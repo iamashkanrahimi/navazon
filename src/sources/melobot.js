@@ -987,6 +987,69 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
   return matches;
 }
 
+function albumQueryMatches(query, artist, albumTitle) {
+  const queryTokens = normalize(query)
+    .split(' ')
+    .filter(token => token && !['album','آلبوم'].includes(token));
+  const artistTokens = new Set(normalize(artist).split(' ').filter(Boolean));
+  const albumTokens = queryTokens.filter(token => !artistTokens.has(token));
+  if (!albumTokens.length) return false;
+
+  const title = normalize(albumTitle);
+  return albumTokens.every(token => title.includes(token));
+}
+
+export async function discoverMeloBotAlbumsForQuery(client, query, seedTracks = [], {
+  maxArtists = 2,
+  maxAlbums = 4,
+} = {}) {
+  const queryNorm = normalize(query);
+  const byArtist = new Map();
+
+  for (const track of seedTracks || []) {
+    if (!track?.artist || !track?.rawText) continue;
+    const key = normalize(track.artist);
+    if (!key || byArtist.has(key)) continue;
+    byArtist.set(key, track);
+  }
+
+  const candidates = [...byArtist.entries()]
+    .sort((a, b) => {
+      const aInQuery = queryNorm.includes(a[0]) ? 1 : 0;
+      const bInQuery = queryNorm.includes(b[0]) ? 1 : 0;
+      return bInQuery - aInQuery;
+    })
+    .slice(0, Math.max(1, Number(maxArtists || 2)));
+
+  const albums = [];
+  const seen = new Set();
+
+  for (const [, seed] of candidates) {
+    try {
+      const artistContext = await openMeloBotArtistBase(client, seed);
+      if (!artistContext.albumButton) continue;
+
+      const artistAlbums = await listMeloBotAlbums(client, artistContext);
+      for (const album of artistAlbums) {
+        if (!albumQueryMatches(query, artistContext.artist, album.title)) continue;
+        const key = `${normalize(artistContext.artist)}|${normalize(album.title)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        albums.push({
+          ...album,
+          artist: artistContext.artist,
+          source: 'melobot',
+        });
+        if (albums.length >= Math.max(1, Number(maxAlbums || 4))) return albums;
+      }
+    } catch (err) {
+      console.warn('[melobot album query]', seed.artist, err.message);
+    }
+  }
+
+  return albums;
+}
+
 export async function listMeloBotAlbums(client, artistContext) {
   const albumControl = clean(artistContext.albumButton || '');
   if (!albumControl) throw new Error('MeloBot album button is not present on the live artist keyboard.');
