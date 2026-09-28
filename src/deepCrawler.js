@@ -97,40 +97,41 @@ function uniqueTracks(tracks = []) {
 }
 
 async function enqueueArtistBulkTasks(artist, seedTrack, {
-  hasTop = true,
-  hasRecent = true,
+  topTracks = [],
+  recentTracks = [],
   skipTopHq = false,
 } = {}) {
   const artistKey = deepNormalize(artist);
   const bucket = dayBucket();
 
-  if (hasRecent) {
-    await deepCatalog.enqueueTask(
-      'artist_bulk_media',
-      { artist, seedTrack, mode: 'recent', quality: 'hq' },
-      { priority: 122, taskKey: `artist_bulk:recent:hq:${artistKey}:${bucket}` }
-    );
-    await deepCatalog.enqueueTask(
-      'artist_bulk_media',
-      { artist, seedTrack, mode: 'recent', quality: 'normal' },
-      { priority: 76, taskKey: `artist_bulk:recent:normal:${artistKey}:${bucket}` }
-    );
-  }
+  const plan = async (tracks, mode, quality, taskPriority, fallbackPriority, skip = false) => {
+    if (skip || !tracks?.length) return { skipped: true, missing: 0 };
 
-  if (hasTop) {
-    if (!skipTopHq) {
-      await deepCatalog.enqueueTask(
-        'artist_bulk_media',
-        { artist, seedTrack, mode: 'top', quality: 'hq' },
-        { priority: 120, taskKey: `artist_bulk:top:hq:${artistKey}:${bucket}` }
-      );
+    const missing = await deepCatalog.missingMediaTracks(tracks, quality);
+    if (!missing.length) return { complete: true, missing: 0 };
+
+    if (!shouldUseBulk(tracks.length, missing.length)) {
+      await enqueueSparseMediaFallback(missing, quality, fallbackPriority);
+      return { sparse: true, missing: missing.length };
     }
+
     await deepCatalog.enqueueTask(
       'artist_bulk_media',
-      { artist, seedTrack, mode: 'top', quality: 'normal' },
-      { priority: 74, taskKey: `artist_bulk:top:normal:${artistKey}:${bucket}` }
+      { artist, seedTrack, mode, quality },
+      {
+        priority: taskPriority,
+        taskKey: `artist_bulk:${mode}:${quality}:${artistKey}:${bucket}`,
+      }
     );
-  }
+    return { bulk: true, missing: missing.length };
+  };
+
+  return {
+    recentHq: await plan(recentTracks, 'recent', 'hq', 122, 114),
+    topHq: await plan(topTracks, 'top', 'hq', 120, 114, skipTopHq),
+    recentNormal: await plan(recentTracks, 'recent', 'normal', 76, 72),
+    topNormal: await plan(topTracks, 'top', 'normal', 74, 72),
+  };
 }
 
 function pairBridgedMedia(matches, received = []) {
@@ -499,8 +500,8 @@ async function runArtistProfile(task) {
   }
 
   await enqueueArtistBulkTasks(live.artist, bulkSeed, {
-    hasTop: top.length > 0,
-    hasRecent: recent.length > 0,
+    topTracks: top,
+    recentTracks: recent,
     skipTopHq: topHqComplete,
   });
 
@@ -595,17 +596,28 @@ async function runAlbumDetail(task) {
   }
 
   if (!albumHqComplete) {
+    const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
+    if (shouldUseBulk(tracks.length, missingHq.length)) {
+      await deepCatalog.enqueueTask(
+        'album_bulk_media',
+        { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
+        { priority: 92, taskKey: `album_bulk:hq:${albumKey}` }
+      );
+    } else if (missingHq.length) {
+      await enqueueSparseMediaFallback(missingHq, 'hq', 110);
+    }
+  }
+
+  const missingNormal = await deepCatalog.missingMediaTracks(tracks, 'normal');
+  if (shouldUseBulk(tracks.length, missingNormal.length)) {
     await deepCatalog.enqueueTask(
       'album_bulk_media',
-      { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
-      { priority: 92, taskKey: `album_bulk:hq:${albumKey}` }
+      { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
+      { priority: 68, taskKey: `album_bulk:normal:${albumKey}` }
     );
+  } else if (missingNormal.length) {
+    await enqueueSparseMediaFallback(missingNormal, 'normal', 70);
   }
-  await deepCatalog.enqueueTask(
-    'album_bulk_media',
-    { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
-    { priority: 68, taskKey: `album_bulk:normal:${albumKey}` }
-  );
 
   return {
     artist: live.artist,
