@@ -7,6 +7,25 @@ import {
 } from './ui.js';
 import { setState } from './state.js';
 
+const lastSearchAt = new Map();
+const SEARCH_COOLDOWN_MS = 1000;
+const MAX_SOURCE_QUEUE = 30;
+
+function searchAllowed(userId) {
+  const now = Date.now();
+  const key = String(userId);
+  const last = lastSearchAt.get(key) || 0;
+  if (now - last < SEARCH_COOLDOWN_MS) return false;
+  lastSearchAt.set(key, now);
+
+  if (lastSearchAt.size > 1000) {
+    for (const [id, at] of lastSearchAt) {
+      if (now - at > 10 * 60 * 1000) lastSearchAt.delete(id);
+    }
+  }
+  return true;
+}
+
 function validSession(callback, session) {
   return session && session.expiresAt > Date.now() && callback.from?.id === session.userId;
 }
@@ -257,6 +276,14 @@ export async function handleUpdate(update) {
   const query = msg.text?.trim();
   if (!query) {
     await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو به‌صورت متن بفرست.');
+    return;
+  }
+  if (!searchAllowed(userId)) {
+    await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
+    return;
+  }
+  if (sourceQueue.size() >= MAX_SOURCE_QUEUE) {
+    await bot.sendMessage(chatId,'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.');
     return;
   }
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
