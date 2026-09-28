@@ -3,6 +3,8 @@ import { db } from './db.js';
 export class SessionStore {
   constructor() {
     this.memory = new Map();
+    this.lastDbCleanupAt = 0;
+    this.dbCleanupIntervalMs = 300000;
   }
 
   async get(id) {
@@ -47,6 +49,8 @@ export class SessionStore {
     for (const [id, session] of this.memory) {
       if (!session || session.expiresAt <= now) this.memory.delete(id);
     }
+    if (now - this.lastDbCleanupAt < this.dbCleanupIntervalMs) return;
+    this.lastDbCleanupAt = now;
     await db.query('DELETE FROM sessions WHERE expires_at <= NOW()');
   }
 }

@@ -27,6 +27,11 @@ export async function initDb() {
       last_served_at TIMESTAMPTZ
     );
 
+    CREATE INDEX IF NOT EXISTS track_cache_key_pattern_idx
+      ON track_cache (track_key text_pattern_ops);
+    CREATE INDEX IF NOT EXISTS track_cache_updated_idx
+      ON track_cache (updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS artists (
       artist_key TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -48,6 +53,8 @@ export async function initDb() {
       followed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id, artist_key)
     );
+
+    CREATE INDEX IF NOT EXISTS follows_artist_idx ON follows (artist_key);
 
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
@@ -75,6 +82,9 @@ export async function initDb() {
       error TEXT
     );
 
+    CREATE INDEX IF NOT EXISTS crawler_runs_finished_idx
+      ON crawler_runs (finished_at DESC);
+
     CREATE TABLE IF NOT EXISTS deep_tracks (
       track_key TEXT PRIMARY KEY,
       artist TEXT NOT NULL,
@@ -101,6 +111,7 @@ export async function initDb() {
 
     CREATE INDEX IF NOT EXISTS deep_tracks_artist_idx ON deep_tracks (artist);
     CREATE INDEX IF NOT EXISTS deep_tracks_updated_idx ON deep_tracks (updated_at DESC);
+    CREATE INDEX IF NOT EXISTS deep_tracks_discovered_idx ON deep_tracks (discovered_at DESC);
 
     CREATE TABLE IF NOT EXISTS deep_track_media (
       track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
@@ -163,5 +174,8 @@ export async function initDb() {
 
     CREATE INDEX IF NOT EXISTS crawl_tasks_ready_idx
       ON crawl_tasks (status, priority DESC, available_at, id);
+    CREATE INDEX IF NOT EXISTS crawl_tasks_completed_idx
+      ON crawl_tasks (completed_at DESC)
+      WHERE completed_at IS NOT NULL;
   `);
 }

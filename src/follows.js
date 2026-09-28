@@ -29,17 +29,24 @@ export class FollowStore {
   async toggle(userId, artist) {
     const key = normalize(artist);
     if (!key) return false;
-    const existing = await this.isFollowing(userId, artist);
-    if (existing) {
-      await db.query('DELETE FROM follows WHERE user_id = $1 AND artist_key = $2', [String(userId), key]);
-      return false;
-    }
-    await db.query(`
-      INSERT INTO follows (user_id, artist_key, artist_name)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (user_id, artist_key) DO NOTHING
+
+    const result = await db.query(`
+      WITH deleted AS (
+        DELETE FROM follows
+        WHERE user_id = $1 AND artist_key = $2
+        RETURNING 1
+      ),
+      inserted AS (
+        INSERT INTO follows (user_id, artist_key, artist_name)
+        SELECT $1, $2, $3
+        WHERE NOT EXISTS (SELECT 1 FROM deleted)
+        ON CONFLICT (user_id, artist_key) DO NOTHING
+        RETURNING 1
+      )
+      SELECT EXISTS(SELECT 1 FROM inserted) AS following
     `, [String(userId), key, clean(artist)]);
-    return true;
+
+    return Boolean(result.rows[0]?.following);
   }
 
   async followersOf(artist) {

@@ -1,7 +1,7 @@
 import { config } from './config.js';
 import { bot, bridge, cache, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
-import { forwardHiddenToOurBot } from './mtproto.js';
+import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
 import { searchMeloBot, downloadMeloBotTrack } from './sources/melobot.js';
 import { searchAhangify, downloadAhangifyResult } from './sources/ahangify.js';
@@ -38,7 +38,7 @@ export async function deliverCached(chatId, track, cached) {
     ...(track.artist ? { performer: track.artist } : {}),
     ...(cached.duration ? { duration: cached.duration } : {}),
   });
-  await cache.recordServe(track,{ cacheHit: true });
+  await cache.recordServe(track,{ cacheHit: true, cacheKey: cached._cacheKey || null });
 }
 
 export async function bridgeSourceMessage(sourceUsername, audioMessage, track) {
@@ -53,6 +53,16 @@ export async function bridgeSourceAudio(sourceUsername, result, track) {
   return bridgeSourceMessage(sourceUsername,result.audioMessage,track);
 }
 
+export async function bridgeSourceMessages(sourceUsername, messages = []) {
+  const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
+  if (!ids.length) return { items: [], complete: true, expected: 0 };
+
+  const timeoutMs = Math.max(35_000, Math.min(120_000, 12_000 + ids.length * 4_000));
+  const wait = bridge.expectManyMedia(ids.length, timeoutMs);
+  await forwardHiddenManyToOurBot(tg, sourceUsername, ids);
+  return wait;
+}
+
 export async function sendMedia(chatId, track, media) {
   const caption = minimalBrandCaption();
   if (media.kind === 'audio') await bot.sendAudio(chatId,media.fileId,{
@@ -65,9 +75,63 @@ export async function sendMedia(chatId, track, media) {
   await cache.recordServe(track,{ cacheHit: false });
 }
 
+function normalizeMatch(value = '') {
+  return String(value)
+    .toLocaleLowerCase('en-US')
+    .replace(/[\u200e\u200f\u202a-\u202e]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function chooseAhangifyMatch(results, track) {
+  const wantedArtist = normalizeMatch(track?.artist || '');
+  const wantedTitle = normalizeMatch(track?.title || '');
+  let best = null;
+  let bestScore = -1;
+
+  for (const candidate of results || []) {
+    const parsed = sourceCandidateToTrack({ ...candidate, source: 'ahangify' });
+    const artist = normalizeMatch(parsed.artist || '');
+    const title = normalizeMatch(parsed.title || '');
+
+    const titleScore = !wantedTitle
+      ? 0
+      : title === wantedTitle
+        ? 2
+        : (title && (title.includes(wantedTitle) || wantedTitle.includes(title)) ? 1 : 0);
+
+    const artistScore = !wantedArtist
+      ? 0
+      : artist === wantedArtist
+        ? 2
+        : (artist && (artist.includes(wantedArtist) || wantedArtist.includes(artist)) ? 1 : 0);
+
+    if (wantedTitle && titleScore === 0) continue;
+    if (wantedArtist && artistScore === 0) continue;
+
+    const score = titleScore * 10 + artistScore * 8;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { candidate, parsed };
+    }
+  }
+
+  return best;
+}
+
 export async function downloadTrackWithSources(track, originalQuery) {
   const cached = await cache.get(track);
   if (cached) return { cached, track };
+
+  if (track.source === 'ahangify' && track.cmd) {
+    const result = await downloadAhangifyResult(tg, track);
+    return {
+      media: await bridgeSourceAudio(config.ahangifyUsername, result, track),
+      track,
+    };
+  }
+
   if (track.source === 'melobot') {
     try {
       const result = await downloadMeloBotTrack(tg,track);
@@ -76,14 +140,18 @@ export async function downloadTrackWithSources(track, originalQuery) {
       console.warn('[melobot download]',err.message);
     }
   }
+
   const fallbackQuery = [track.artist,track.title].filter(Boolean).join(' ') || originalQuery;
   const results = await searchAhangify(tg,fallbackQuery);
-  const chosen = results[0];
-  if (!chosen) throw new Error('Fallback source returned no result.');
-  const ahTrack = sourceCandidateToTrack({ ...chosen, source: 'ahangify' });
-  const result = await downloadAhangifyResult(tg,chosen);
-  const finalTrack = track.artist || track.title ? track : ahTrack;
-  return { media: await bridgeSourceAudio(config.ahangifyUsername,result,finalTrack), track: finalTrack };
+  const matched = chooseAhangifyMatch(results, track);
+  if (!matched) throw new Error('Fallback source returned no sufficiently close result.');
+
+  const result = await downloadAhangifyResult(tg,matched.candidate);
+  const finalTrack = track.artist || track.title ? track : matched.parsed;
+  return {
+    media: await bridgeSourceAudio(config.ahangifyUsername,result,finalTrack),
+    track: finalTrack,
+  };
 }
 
 export async function searchPrimary(query) {

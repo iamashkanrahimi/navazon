@@ -3,6 +3,7 @@ import { config } from './config.js';
 export const SESSION_TTL_MS = 12 * 60 * 1000;
 export const MAX_RESULTS = 5;
 export const ALBUMS_PER_PAGE = 7;
+export const ALBUM_TRACKS_PER_PAGE = 10;
 export const TOP_TRACKS_LIMIT = 10;
 
 export function clean(value = '') {
@@ -28,6 +29,12 @@ export function trackButtonLabel(track, index, { numbered = false } = {}) {
   return truncate(`${prefix}${body}`);
 }
 
+export function albumButtonLabel(album) {
+  const body = album.artist ? `${album.artist} — ${album.title}` : album.title;
+  const suffix = album.trackCount ? ` · ${album.trackCount} آهنگ` : '';
+  return truncate(`💿 ${body}${suffix}`);
+}
+
 function dominantArtist(tracks) {
   const counts = new Map();
   for (const track of tracks || []) {
@@ -48,10 +55,25 @@ export function resultsKeyboard(sessionId, session) {
     text: trackButtonLabel(track,index,{ numbered: true }),
     callback_data: `t:${sessionId}:${index}`,
   }]));
-  const hasMeloArtist = artist && session.options.some(t =>
-    t.source === 'melobot' && (!t.artist || normalize(t.artist) === normalize(artist))
-  );
-  if (hasMeloArtist) rows.push([{ text: `صفحه‌ی 🗣 ${truncate(artist,30)}`, callback_data: `ar:${sessionId}` }]);
+
+  for (const [index, album] of (session.albumOptions || []).entries()) {
+    rows.push([{
+      text: albumButtonLabel(album),
+      callback_data: `sal:${sessionId}:${index}`,
+    }]);
+  }
+
+  const artistSeedIndex = artist
+    ? session.options.findIndex(t =>
+        t.source === 'melobot' && normalize(t.artist || '') === normalize(artist)
+      )
+    : -1;
+  if (artistSeedIndex >= 0) {
+    rows.push([{
+      text: `صفحه‌ی 🗣 ${truncate(artist,30)}`,
+      callback_data: `ar:${sessionId}:${artistSeedIndex}`,
+    }]);
+  }
   return { inline_keyboard: rows };
 }
 
@@ -59,16 +81,15 @@ export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false
   const rows = [];
   const hasTop = Boolean(artistContext.topTracks?.length || artistContext.tracks?.length);
   const hasRecent = Boolean(artistContext.recentTracks?.length);
-  const hasAlbums = Boolean(artistContext.albumButton || artistContext.albumsAvailable);
-
   const firstRow = [];
   if (hasTop) firstRow.push({ text: '🎵 پربازدیدترین‌ها', callback_data: `ars:${sessionId}` });
   if (hasRecent) firstRow.push({ text: '🆕 جدیدترین‌ها', callback_data: `arn:${sessionId}` });
   if (firstRow.length) rows.push(firstRow);
 
-  const secondRow = [];
-  if (hasAlbums) secondRow.push({ text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` });
-  secondRow.push({ text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` });
+  const secondRow = [
+    { text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` },
+    { text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` },
+  ];
   rows.push(secondRow);
 
   rows.push([{ text: '🔙 برگشت', callback_data: `${backAction}:${sessionId}` }]);
@@ -160,11 +181,27 @@ export function albumsKeyboard(sessionId, albums, page) {
   return { inline_keyboard: rows };
 }
 
-export function trackAlbumKeyboard(sessionId, album, tracks) {
-  const rows = (tracks || []).slice(0, 20).map((track,index) => ([{
-    text: trackButtonLabel(track,index),
-    callback_data: `alt:${sessionId}:${index}`,
+function pagedAlbumTrackRows(sessionId, tracks, page = 0) {
+  const list = tracks || [];
+  const safePage = Math.max(0, Number(page || 0));
+  const start = safePage * ALBUM_TRACKS_PER_PAGE;
+  const visible = list.slice(start, start + ALBUM_TRACKS_PER_PAGE);
+  const rows = visible.map((track, offset) => ([{
+    text: trackButtonLabel(track, start + offset),
+    callback_data: `alt:${sessionId}:${start + offset}`,
   }]));
+
+  const nav = [];
+  if (safePage > 0) nav.push({ text: '‹', callback_data: `apg:${sessionId}:${safePage - 1}` });
+  if (start + ALBUM_TRACKS_PER_PAGE < list.length) {
+    nav.push({ text: '›', callback_data: `apg:${sessionId}:${safePage + 1}` });
+  }
+  if (nav.length) rows.push(nav);
+  return rows;
+}
+
+export function trackAlbumKeyboard(sessionId, album, tracks, page = 0) {
+  const rows = pagedAlbumTrackRows(sessionId, tracks, page);
   if ((tracks || []).length) {
     rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
   }
@@ -172,15 +209,23 @@ export function trackAlbumKeyboard(sessionId, album, tracks) {
   return { inline_keyboard: rows };
 }
 
-export function albumTracksKeyboard(sessionId, tracks, backPage = 0) {
-  const rows = (tracks || []).slice(0,12).map((track,index) => ([{
-    text: trackButtonLabel(track,index),
-    callback_data: `alt:${sessionId}:${index}`,
-  }]));
+export function albumTracksKeyboard(
+  sessionId,
+  tracks,
+  backPage = 0,
+  page = 0,
+  { backAction = 'albums' } = {}
+) {
+  const rows = pagedAlbumTrackRows(sessionId, tracks, page);
   if ((tracks || []).length) {
     rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
   }
-  rows.push([{ text: '‹ آلبوم‌ها', callback_data: `alb:${sessionId}:${backPage}` }]);
+
+  if (backAction === 'results') {
+    rows.push([{ text: '‹ نتایج جست‌وجو', callback_data: `rs:${sessionId}` }]);
+  } else {
+    rows.push([{ text: '‹ آلبوم‌ها', callback_data: `alb:${sessionId}:${backPage}` }]);
+  }
   return { inline_keyboard: rows };
 }
 

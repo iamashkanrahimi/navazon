@@ -1,5 +1,9 @@
 import { db } from './db.js';
 
+let recentUserActivityAt = 0;
+let lastUserActivityPersistAt = 0;
+const USER_ACTIVITY_PERSIST_MS = 15_000;
+
 export async function setState(key, value) {
   await db.query(`
     INSERT INTO app_state (key, value) VALUES ($1, $2::jsonb)
@@ -10,6 +14,22 @@ export async function setState(key, value) {
 export async function getState(key, fallback = null) {
   const result = await db.query('SELECT value FROM app_state WHERE key = $1', [key]);
   return result.rowCount ? result.rows[0].value : fallback;
+}
+
+export async function noteUserActivity() {
+  const now = Date.now();
+  recentUserActivityAt = now;
+  if (now - lastUserActivityPersistAt < USER_ACTIVITY_PERSIST_MS) return;
+  lastUserActivityPersistAt = now;
+  await setState('last_user_activity_at', { at: now });
+}
+
+export async function getLastUserActivity(fallbackAt = 0) {
+  if (recentUserActivityAt > 0) return recentUserActivityAt;
+  const saved = await getState('last_user_activity_at', { at: fallbackAt });
+  const at = Number(saved?.at || fallbackAt);
+  recentUserActivityAt = at;
+  return at;
 }
 
 export async function recordCrawlerStart(artist = null) {
@@ -29,7 +49,7 @@ export async function recordCrawlerFinish(id, { ok, summary = null, error = null
 }
 
 export async function getStats() {
-  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists] = await Promise.all([
+  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists, productivity, queueKinds, runKinds] = await Promise.all([
     db.query(`SELECT COUNT(*)::bigint AS artists,
       COALESCE(SUM(jsonb_object_length(COALESCE(data->'tracks','{}'::jsonb))),0)::bigint AS tracks,
       COALESCE(SUM(jsonb_array_length(COALESCE(data->'albumList','[]'::jsonb))),0)::bigint AS albums
@@ -66,6 +86,51 @@ export async function getStats() {
       COUNT(*) FILTER (WHERE list_type = 'recent')::bigint AS recent_rows,
       COUNT(*) FILTER (WHERE list_type = 'top')::bigint AS top_rows
       FROM deep_artist_tracks`),
+    db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM deep_tracks WHERE discovered_at >= NOW() - INTERVAL '24 hours')::bigint AS tracks_24h,
+        (SELECT COUNT(*) FROM deep_track_media WHERE updated_at >= NOW() - INTERVAL '24 hours')::bigint AS media_24h,
+        (SELECT COUNT(*) FROM crawl_tasks WHERE completed_at >= NOW() - INTERVAL '24 hours' AND status = 'done')::bigint AS tasks_done_24h,
+        (SELECT COUNT(*) FROM crawler_runs WHERE finished_at >= NOW() - INTERVAL '24 hours' AND ok = true)::bigint AS successful_runs_24h,
+        (SELECT COUNT(*) FROM crawler_runs WHERE finished_at >= NOW() - INTERVAL '24 hours' AND ok = false)::bigint AS failed_runs_24h
+    `),
+    db.query(`
+      SELECT COALESCE(
+        jsonb_object_agg(kind, jsonb_build_object(
+          'queued', queued,
+          'running', running,
+          'done', done,
+          'failed', failed
+        )),
+        '{}'::jsonb
+      ) AS by_kind
+      FROM (
+        SELECT kind,
+          COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
+          COUNT(*) FILTER (WHERE status = 'running')::int AS running,
+          COUNT(*) FILTER (WHERE status = 'done')::int AS done,
+          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+        FROM crawl_tasks
+        GROUP BY kind
+      ) grouped
+    `),
+    db.query(`
+      SELECT COALESCE(
+        jsonb_object_agg(kind, jsonb_build_object(
+          'successful', successful,
+          'failed', failed
+        )),
+        '{}'::jsonb
+      ) AS by_kind
+      FROM (
+        SELECT COALESCE(summary->>'kind', artist, 'unknown') AS kind,
+          COUNT(*) FILTER (WHERE ok = true)::int AS successful,
+          COUNT(*) FILTER (WHERE ok = false)::int AS failed
+        FROM crawler_runs
+        WHERE finished_at >= NOW() - INTERVAL '24 hours'
+        GROUP BY COALESCE(summary->>'kind', artist, 'unknown')
+      ) grouped
+    `),
   ]);
   const toNum = row => Object.fromEntries(Object.entries(row).map(([k,v]) => [k, typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v]));
   return {
@@ -80,6 +145,11 @@ export async function getStats() {
       tasks: toNum(deepTasks.rows[0]),
       albums: toNum(deepAlbums.rows[0]),
       artistLists: toNum(deepLists.rows[0]),
+      productivity24h: {
+        ...toNum(productivity.rows[0]),
+        runsByKind: runKinds.rows[0]?.by_kind || {},
+      },
+      queueByKind: queueKinds.rows[0]?.by_kind || {},
     },
   };
 }

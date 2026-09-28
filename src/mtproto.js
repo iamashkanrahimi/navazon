@@ -21,6 +21,7 @@ export async function latestMessageId(client, peer) {
 export async function collectNewMessages(client, peer, afterId, {
   timeoutMs,
   stopWhen,
+  stopWhenBatch,
   quietMs = 900,
   pollMs = 450,
 } = {}) {
@@ -29,7 +30,7 @@ export async function collectNewMessages(client, peer, afterId, {
   let lastNewAt = Date.now();
 
   while (Date.now() < deadline) {
-    const batch = await client.getMessages(peer, { limit: 30 });
+    const batch = await client.getMessages(peer, { limit: 100 });
     for (const m of batch) {
       if (m?.out) continue;
       if (m.id > afterId && !seen.has(m.id)) {
@@ -42,6 +43,9 @@ export async function collectNewMessages(client, peer, afterId, {
     if (stopWhen) {
       const hit = ordered.find(stopWhen);
       if (hit) return { messages: ordered, hit };
+    }
+    if (stopWhenBatch && stopWhenBatch(ordered)) {
+      return { messages: ordered, hit: null };
     }
 
     if (ordered.length && Date.now() - lastNewAt >= quietMs) {
@@ -71,13 +75,20 @@ function randomLong() {
 }
 
 export async function forwardHiddenToOurBot(client, sourcePeer, messageId) {
+  return forwardHiddenManyToOurBot(client, sourcePeer, [messageId]);
+}
+
+export async function forwardHiddenManyToOurBot(client, sourcePeer, messageIds = []) {
+  const ids = (messageIds || []).map(Number).filter(Number.isFinite);
+  if (!ids.length) return null;
+
   const fromPeer = await client.getInputEntity(sourcePeer);
   const toPeer = await client.getInputEntity(config.botUsername);
 
   return client.invoke(new Api.messages.ForwardMessages({
     fromPeer,
-    id: [messageId],
-    randomId: [randomLong()],
+    id: ids,
+    randomId: ids.map(() => randomLong()),
     toPeer,
     dropAuthor: true,
     dropMediaCaptions: true,

@@ -10,11 +10,18 @@ function normalize(value = '') {
     .trim();
 }
 
+function stableVariant(track = {}) {
+  let value = String(track.rawText || track.cmd || track.duration || track.bitrate || '');
+  if (track.rawText) {
+    value = value.replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '').trim();
+  }
+  return normalize(value);
+}
+
 export function trackCacheKey(track = {}) {
   const artist = normalize(track.artist || '');
   const title = normalize(track.title || '');
-  const variant = normalize(track.rawText || track.cmd || track.duration || track.bitrate || '');
-  return `${artist}|${title}|${variant}`;
+  return `${artist}|${title}|${stableVariant(track)}`;
 }
 
 export class FileCache {
@@ -22,16 +29,34 @@ export class FileCache {
 
   async get(track) {
     const key = trackCacheKey(track);
-    let result = await db.query('SELECT track, media FROM track_cache WHERE track_key = $1', [key]);
-    if (!result.rowCount && !track?.rawText && !track?.cmd) {
-      const prefix = `${normalize(track?.artist || '')}|${normalize(track?.title || '')}|%`;
-      result = await db.query(
-        'SELECT track, media FROM track_cache WHERE track_key LIKE $1 ORDER BY updated_at DESC LIMIT 1',
-        [prefix]
-      );
+    let result = await db.query(
+      'SELECT track_key, track, media FROM track_cache WHERE track_key = $1',
+      [key]
+    );
+
+    if (!result.rowCount) {
+      const artist = normalize(track?.artist || '');
+      const title = normalize(track?.title || '');
+      if (artist || title) {
+        const prefix = `${artist}|${title}|%`;
+        result = await db.query(`
+          SELECT track_key, track, media
+          FROM track_cache
+          WHERE track_key LIKE $1
+          ORDER BY
+            CASE WHEN COALESCE(track->>'source','') = $2 THEN 0 ELSE 1 END,
+            updated_at DESC
+          LIMIT 1
+        `, [prefix, String(track?.source || '')]);
+      }
     }
+
     if (!result.rowCount) return null;
-    return { ...result.rows[0].media, ...result.rows[0].track };
+    return {
+      ...result.rows[0].media,
+      ...result.rows[0].track,
+      _cacheKey: result.rows[0].track_key,
+    };
   }
 
   async set(track, media, { sourceFetch = true } = {}) {
@@ -69,7 +94,8 @@ export class FileCache {
     );
   }
 
-  async recordServe(track, { cacheHit = false } = {}) {
+  async recordServe(track, { cacheHit = false, cacheKey = null } = {}) {
+    const key = cacheKey || trackCacheKey(track);
     await db.query(`
       UPDATE track_cache SET
         navazon_serve_count = navazon_serve_count + 1,
@@ -77,7 +103,7 @@ export class FileCache {
         last_served_at = NOW(),
         updated_at = NOW()
       WHERE track_key = $1
-    `, [trackCacheKey(track), cacheHit ? 1 : 0]);
+    `, [key, cacheHit ? 1 : 0]);
   }
 
   async has(track) {

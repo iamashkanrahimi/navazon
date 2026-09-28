@@ -3,7 +3,7 @@ import { config } from './config.js';
 import { bot, catalog, db, deepCatalog, tg } from './runtime.js';
 import { handleUpdate } from './updates.js';
 import { sourceQueue } from './jobs.js';
-import { getState, setState, getStats } from './state.js';
+import { getState, setState, getStats, getLastUserActivity } from './state.js';
 
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
@@ -15,12 +15,12 @@ function authorized(req, token) {
 async function queueCrawler() {
   if (!config.discoveryEnabled) return { queued: false, reason: 'disabled' };
   if (!sourceQueue.isIdle()) return { queued: false, reason: 'source_queue_busy' };
-  const state = await getState('last_user_activity_at',{ at: startedAt });
-  const lastAt = Number(state?.at || startedAt);
+  const lastAt = await getLastUserActivity(startedAt);
   const idleForMs = Date.now() - lastAt;
   if (idleForMs < config.discoveryIdleMs) return { queued: false, reason: 'user_active', idleForMs };
 
   await deepCatalog.enqueueFeedSweep();
+  await deepCatalog.compactQueue();
   const deepTask = await deepCatalog.claimNextTask();
   if (deepTask) {
     sourceQueue.push({ type: 'deep_crawl', task: deepTask });

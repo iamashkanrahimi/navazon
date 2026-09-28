@@ -25,6 +25,11 @@ const CONTROL_WORDS = [
   'تبلیغ',
   'بیشتر',
   'بازگشت',
+  'بعدی',
+  'قبلی',
+  'صفحه بعد',
+  'صفحه قبل',
+  'ادامه',
 ];
 
 function clean(value = '') {
@@ -135,6 +140,22 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
     };
   }
 
+  const dashed = value.match(/^(.+?)\s+[–—-]\s+(.+)$/u);
+  if (dashed) {
+    const artist = clean(dashed[1]);
+    const title = stripMetricSuffix(dashed[2]);
+    if (artist && title) {
+      return {
+        type: 'track',
+        rawText: original,
+        artist,
+        title,
+        sourcePopularityText: popularity.text,
+        sourcePopularityCount: popularity.count,
+      };
+    }
+  }
+
   if (fallbackArtist) {
     const title = stripMetricSuffix(stripLeadingEmoji(original));
     if (title) {
@@ -188,6 +209,7 @@ async function sendAndCollect(client, text, {
   timeoutMs = config.searchTimeoutMs,
   quietMs = 1600,
   stopWhen,
+  stopWhenBatch,
 } = {}) {
   const peer = config.melobotUsername;
   const afterId = await latestMessageId(client, peer);
@@ -196,6 +218,7 @@ async function sendAndCollect(client, text, {
     timeoutMs,
     quietMs,
     stopWhen,
+    stopWhenBatch,
   });
 }
 
@@ -461,6 +484,117 @@ export async function getMeloBotCover(client, candidate) {
   return photo ? { source: 'melobot', photoMessage: photo } : null;
 }
 
+export async function enrichMeloBotTrack(client, candidate) {
+  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
+  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+
+  const selected = await sendAndCollect(client, liveCandidate.rawText, {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 1500,
+    stopWhen: message => replyButtons(message).some(text =>
+      text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
+    ),
+  });
+
+  const menuMessages = selected.messages;
+  const menuButtons = buttonsFromMessages(menuMessages);
+  const result = {
+    candidate: liveCandidate,
+    metadata: {
+      raw: '',
+      ...parsePopularityValue(liveCandidate.rawText || candidate?.rawText || ''),
+    },
+    lyrics: { available: false, text: '' },
+    cover: null,
+    capabilities: {
+      hasHq: menuButtons.some(text =>
+        clean(text).includes('کیفیت عالی') && !clean(text).includes('خرید اشتراک')
+      ),
+      hasNormal: menuButtons.some(text =>
+        clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
+      ),
+      hasLyrics: menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text))),
+      hasCover: false,
+      hasMetadata: false,
+      hasArtistPage: menuButtons.some(text =>
+        /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+      ),
+    },
+    errors: [],
+  };
+
+  const lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+  if (lyricsButton) {
+    try {
+      const lyricsResult = await sendAndCollect(client, lyricsButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 1800,
+      });
+      const raw = lyricsResult.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+      const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
+      result.lyrics = {
+        available: Boolean(text),
+        text,
+        rawText: raw,
+      };
+    } catch (err) {
+      result.errors.push(`lyrics: ${err.message}`);
+    }
+  }
+
+  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
+  if (moreButton) {
+    try {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 1500,
+      });
+      const moreButtons = buttonsFromMessages(more.messages);
+      result.capabilities.hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
+      result.capabilities.hasMetadata = moreButtons.some(text =>
+        /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+      );
+
+      const detailsButton = moreButtons.find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
+      if (detailsButton) {
+        try {
+          const details = await sendAndCollect(client, detailsButton, {
+            timeoutMs: config.searchTimeoutMs,
+            quietMs: 1600,
+          });
+          const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+          result.metadata = {
+            raw,
+            ...parseReleaseDate(raw),
+            ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
+          };
+        } catch (err) {
+          result.errors.push(`metadata: ${err.message}`);
+        }
+      }
+
+      const coverButton = moreButtons.find(text => /کاور/u.test(clean(text))) || null;
+      if (coverButton) {
+        try {
+          const coverResult = await sendAndCollect(client, coverButton, {
+            timeoutMs: config.searchTimeoutMs,
+            quietMs: 1600,
+            stopWhen: photoMessage,
+          });
+          const photo = coverResult.messages.find(photoMessage);
+          if (photo) result.cover = { source: 'melobot', photoMessage: photo };
+        } catch (err) {
+          result.errors.push(`cover: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      result.errors.push(`more: ${err.message}`);
+    }
+  }
+
+  return result;
+}
+
 export async function discoverMeloBotFeed(client, command, { contentOrigin = 'unknown' } = {}) {
   const result = await sendAndCollect(client, command, {
     timeoutMs: config.searchTimeoutMs,
@@ -690,7 +824,7 @@ export async function prepareMeloBotBulkRecentTracks(client, artist, preferredSe
   return context;
 }
 
-async function openMeloBotAlbumContext(client, artist, album) {
+export async function openMeloBotAlbumContext(client, artist, album) {
   const page = await sendAndCollect(client, album.rawText, {
     timeoutMs: config.searchTimeoutMs,
     quietMs: 2200,
@@ -749,12 +883,18 @@ export async function downloadMeloBotBulkTracks(client, {
   button,
   label = 'bulk',
   expectedCount = 0,
+  timeoutMs = null,
 } = {}) {
-  if (!button) throw new Error(`MeloBot ${label} bulk HQ button not found.`);
+  if (!button) throw new Error(`MeloBot ${label} bulk button not found.`);
 
   const download = await sendAndCollect(client, button, {
-    timeoutMs: Math.max(config.downloadTimeoutMs, 180000),
-    quietMs: expectedCount > 20 ? 18000 : 12000,
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : Math.max(config.downloadTimeoutMs, 180000),
+    quietMs: expectedCount > 20 ? 12000 : 8000,
+    stopWhenBatch: expectedCount > 0
+      ? messages => messages.filter(isAudioMessage).length >= expectedCount
+      : undefined,
   });
 
   const audios = download.messages.filter(isAudioMessage).map(audioMeta);
@@ -808,6 +948,7 @@ function audioMeta(message) {
 export function matchBulkAudioToTracks(tracks, audioItems) {
   const unused = audioItems.map((item, index) => ({ ...item, index }));
   const matches = [];
+  const allowPositionalFallback = tracks.length === audioItems.length;
 
   for (const track of tracks) {
     let best = null;
@@ -830,13 +971,83 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
       }
     }
 
-    if (!best || bestScore <= 0) best = unused.find(item => !item.used) || null;
-    if (!best) break;
+    // Avoid corrupting cache when a partial bulk response is missing a song.
+    // Positional matching is used only when the source returned the full count.
+    if (!best || bestScore < 5) {
+      best = allowPositionalFallback
+        ? (unused.find(item => !item.used) || null)
+        : null;
+    }
+    if (!best) continue;
+
     best.used = true;
     matches.push({ track, audioItem: best });
   }
 
   return matches;
+}
+
+function albumQueryMatches(query, artist, albumTitle) {
+  const queryTokens = normalize(query)
+    .split(' ')
+    .filter(token => token && !['album','آلبوم'].includes(token));
+  const artistTokens = new Set(normalize(artist).split(' ').filter(Boolean));
+  const albumTokens = queryTokens.filter(token => !artistTokens.has(token));
+  if (!albumTokens.length) return false;
+
+  const title = normalize(albumTitle);
+  return albumTokens.every(token => title.includes(token));
+}
+
+export async function discoverMeloBotAlbumsForQuery(client, query, seedTracks = [], {
+  maxArtists = 2,
+  maxAlbums = 4,
+} = {}) {
+  const queryNorm = normalize(query);
+  const byArtist = new Map();
+
+  for (const track of seedTracks || []) {
+    if (!track?.artist || !track?.rawText) continue;
+    const key = normalize(track.artist);
+    if (!key || byArtist.has(key)) continue;
+    byArtist.set(key, track);
+  }
+
+  const candidates = [...byArtist.entries()]
+    .sort((a, b) => {
+      const aInQuery = queryNorm.includes(a[0]) ? 1 : 0;
+      const bInQuery = queryNorm.includes(b[0]) ? 1 : 0;
+      return bInQuery - aInQuery;
+    })
+    .slice(0, Math.max(1, Number(maxArtists || 2)));
+
+  const albums = [];
+  const seen = new Set();
+
+  for (const [, seed] of candidates) {
+    try {
+      const artistContext = await openMeloBotArtistBase(client, seed);
+      if (!artistContext.albumButton) continue;
+
+      const artistAlbums = await listMeloBotAlbums(client, artistContext);
+      for (const album of artistAlbums) {
+        if (!albumQueryMatches(query, artistContext.artist, album.title)) continue;
+        const key = `${normalize(artistContext.artist)}|${normalize(album.title)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        albums.push({
+          ...album,
+          artist: artistContext.artist,
+          source: 'melobot',
+        });
+        if (albums.length >= Math.max(1, Number(maxAlbums || 4))) return albums;
+      }
+    } catch (err) {
+      console.warn('[melobot album query]', seed.artist, err.message);
+    }
+  }
+
+  return albums;
 }
 
 export async function listMeloBotAlbums(client, artistContext) {
@@ -873,6 +1084,61 @@ export async function openMeloBotAlbum(client, artist, album) {
   const context = await openMeloBotAlbumContext(client, artist, album);
   console.log(`[melobot] album ${album.title}: ${context.tracks.length} tracks`);
   return context.tracks;
+}
+
+export async function discoverMeloBotPlaylists(client, { maxPlaylists = 6 } = {}) {
+  const openIndex = async () => sendAndCollect(client, '/playlists', {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 2000,
+  });
+
+  const index = await openIndex();
+  const candidates = buttonsFromMessages(index.messages)
+    .filter(raw => {
+      const text = clean(raw);
+      if (!text || isControl(text)) return false;
+      if (parseTrackButton(text)) return false;
+      if (/^[🗣🎤🎙]/u.test(text)) return false;
+      return true;
+    })
+    .slice(0, Math.max(0, maxPlaylists));
+
+  const tracks = [];
+  const artists = [];
+  const seenTracks = new Set();
+  const seenArtists = new Set();
+
+  for (const playlistButton of candidates) {
+    try {
+      await openIndex();
+      const page = await sendAndCollect(client, playlistButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 2200,
+        stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
+      });
+
+      for (const track of parseTracksFromMessages(page.messages)) {
+        const key = `${normalize(track.artist)}|${normalize(track.title)}`;
+        if (seenTracks.has(key)) continue;
+        seenTracks.add(key);
+        tracks.push({ ...track, source: 'melobot' });
+
+        const artistKey = normalize(track.artist);
+        if (artistKey && !seenArtists.has(artistKey)) {
+          seenArtists.add(artistKey);
+          artists.push(track.artist);
+        }
+      }
+    } catch (err) {
+      console.warn('[melobot playlist discovery]', playlistButton, err.message);
+    }
+  }
+
+  return {
+    playlists: candidates,
+    tracks,
+    artists,
+  };
 }
 
 export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {

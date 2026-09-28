@@ -4,14 +4,47 @@ export class BotApi {
   }
 
   async call(method, payload = {}) {
-    const res = await fetch(`${this.base}/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(`Bot API ${method}: ${data.description || 'unknown error'}`);
-    return data.result;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let res;
+      try {
+        res = await fetch(`${this.base}/${method}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(20_000),
+        });
+      } catch (err) {
+        throw new Error(`Bot API ${method} network error: ${err.message}`);
+      }
+
+      const raw = await res.text();
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`Bot API ${method}: invalid response (HTTP ${res.status})`);
+      }
+
+      if (data.ok) return data.result;
+
+      const description = data.description || 'unknown error';
+      if (method === 'editMessageText' && /message is not modified/i.test(description)) {
+        return null;
+      }
+
+      if (Number(data.error_code) === 429 && attempt < 2) {
+        const retryAfter = Math.max(1, Math.min(8, Number(data.parameters?.retry_after || 1)));
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        continue;
+      }
+
+      const err = new Error(`Bot API ${method}: ${description}`);
+      err.code = data.error_code;
+      err.parameters = data.parameters;
+      throw err;
+    }
+
+    throw new Error(`Bot API ${method}: retry limit reached`);
   }
 
   sendMessage(chatId, text, extra = {}) {

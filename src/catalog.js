@@ -49,6 +49,7 @@ export class CatalogStore {
       artist: clean(policy.artist),
       title: clean(policy.title),
       rawText: clean(policy.rawText),
+      cmd: clean(policy.cmd),
       source: policy.source || undefined,
       duration: policy.duration || undefined,
       bitrate: policy.bitrate || undefined,
@@ -118,12 +119,12 @@ export class CatalogStore {
       }
     }
 
-    for (const { name, seedTracks, discoveredFrom: source } of names.values()) {
+    await Promise.all([...names.values()].map(async ({ name, seedTracks, discoveredFrom: source }) => {
       const { key, node } = await this.readArtist(name);
       if (!node.discoveredFrom) node.discoveredFrom = source;
       if (seedTracks.length) this.addTracksToNode(node, seedTracks);
       await this.writeArtist(key, node);
-    }
+    }));
   }
 
   async ensureArtist(name, { seedTrack = null, discoveredFrom = null } = {}) {
@@ -147,6 +148,7 @@ export class CatalogStore {
       topTracks,
       recentTracks,
       albumButton: node.albumButton || null,
+      albumsAvailable: Array.isArray(node.albumList) && node.albumList.length > 0,
       fromCatalog: true,
     };
   }
@@ -157,11 +159,64 @@ export class CatalogStore {
     return Array.isArray(node.albumList) && node.albumList.length ? node.albumList : null;
   }
 
+  async searchAlbums(query, limit = 4) {
+    const tokens = normalize(query)
+      .split(' ')
+      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    if (!tokens.length) return [];
+
+    const clauses = tokens.map((_, index) =>
+      `LOWER(a.name || ' ' || COALESCE(album->>'title','')) LIKE ${index + 1}`
+    );
+    const params = tokens.map(token => `%${token}%`);
+    params.push(Math.max(1, Number(limit || 4)));
+
+    const result = await db.query(`
+      SELECT
+        a.name AS artist,
+        album->>'title' AS title,
+        NULLIF(album->>'trackCount','')::int AS track_count,
+        album->>'rawText' AS raw_text
+      FROM artists a
+      CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(a.data->'albumList','[]'::jsonb)
+      ) album
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY a.updated_at DESC
+      LIMIT ${params.length}
+    `, params);
+
+    return result.rows
+      .filter(row => row.artist && row.title)
+      .map(row => ({
+        artist: row.artist,
+        title: row.title,
+        trackCount: row.track_count || undefined,
+        rawText: row.raw_text || undefined,
+        source: 'catalog',
+      }));
+  }
+
   async getAlbumTracks(name, albumTitle, maxAgeMs) {
     const { node } = await this.readArtist(name);
     const album = node?.albums?.[normalize(albumTitle)];
     if (!album || !freshEnough(album.updatedAt, maxAgeMs)) return null;
     return Array.isArray(album.tracks) && album.tracks.length ? album.tracks : null;
+  }
+
+  async getSearch(query, maxAgeMs) {
+    const key = normalize(query);
+    if (!key || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return null;
+    const result = await db.query(`
+      SELECT tracks, updated_at
+      FROM searches
+      WHERE query_key = $1
+        AND updated_at >= NOW() - ($2::bigint * INTERVAL '1 millisecond')
+      LIMIT 1
+    `, [key, Math.max(0, maxAgeMs)]);
+    if (!result.rowCount) return null;
+    const tracks = result.rows[0].tracks;
+    return Array.isArray(tracks) && tracks.length ? tracks : null;
   }
 
   async recordSearch(query, tracks = []) {

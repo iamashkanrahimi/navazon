@@ -5,17 +5,37 @@ import {
   artistHomeKeyboard, artistSongsKeyboard, albumsKeyboard,
   albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
-import { setState } from './state.js';
+import { noteUserActivity } from './state.js';
+
+const lastSearchAt = new Map();
+const SEARCH_COOLDOWN_MS = 1000;
+const MAX_SOURCE_QUEUE = 30;
+
+function searchAllowed(userId) {
+  const now = Date.now();
+  const key = String(userId);
+  const last = lastSearchAt.get(key) || 0;
+  if (now - last < SEARCH_COOLDOWN_MS) return false;
+  lastSearchAt.set(key, now);
+
+  if (lastSearchAt.size > 1000) {
+    for (const [id, at] of lastSearchAt) {
+      if (now - at > 10 * 60 * 1000) lastSearchAt.delete(id);
+    }
+  }
+  return true;
+}
 
 function validSession(callback, session) {
   return session && session.expiresAt > Date.now() && callback.from?.id === session.userId;
 }
 
-async function noteUserActivity() {
-  await setState('last_user_activity_at',{ at: Date.now() });
-}
-
 export async function handleUpdate(update) {
+  // Crawler/user-account bridge messages can arrive in bursts. Consume them
+  // before touching the sessions table so batch media warming stays fast.
+  const bridgeMessage = update.message;
+  if (bridgeMessage && bridge.consumeBotMessage(bridgeMessage)) return;
+
   await sessions.cleanup();
   const callback = update.callback_query;
   if (callback) {
@@ -43,10 +63,25 @@ export async function handleUpdate(update) {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
         sourceQueue.push({ type: 'track_page', sessionId, messageId });
+      } else if (action === 'sal') {
+        const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
+        session.busy = true;
+        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
+        sourceQueue.push({
+          type: 'search_album',
+          sessionId,
+          messageId,
+          index: Number(parts[2]),
+        });
       } else if (action === 'ar') {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
-        sourceQueue.push({ type: 'artist', sessionId, messageId });
+        sourceQueue.push({
+          type: 'artist',
+          sessionId,
+          messageId,
+          seedIndex: Number(parts[2]),
+        });
       } else if (action === 'rs') {
         await showResults(sessionId,session,messageId);
       } else if (action === 'trt') {
@@ -76,8 +111,19 @@ export async function handleUpdate(update) {
         } else if (back.type === 'album' && session.currentAlbum) {
           const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
           const keyboard = session.currentAlbumView === 'track'
-            ? trackAlbumKeyboard(sessionId,session.currentAlbum,session.currentAlbum.tracks)
-            : albumTracksKeyboard(sessionId,session.currentAlbum.tracks,session.albumsPage || 0);
+            ? trackAlbumKeyboard(
+                sessionId,
+                session.currentAlbum,
+                session.currentAlbum.tracks,
+                session.albumTrackPage || 0
+              )
+            : albumTracksKeyboard(
+                sessionId,
+                session.currentAlbum.tracks,
+                session.albumsPage || 0,
+                session.albumTrackPage || 0,
+                { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
+              );
           await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
         } else {
           await showResults(sessionId,session,messageId);
@@ -184,6 +230,25 @@ export async function handleUpdate(update) {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
         sourceQueue.push({ type: 'album', sessionId, index: Number(parts[2]), messageId });
+      } else if (action === 'apg') {
+        if (!session.currentAlbum?.tracks?.length) return;
+        session.albumTrackPage = Math.max(0, Number(parts[2] || 0));
+        const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
+        const keyboard = session.currentAlbumView === 'track'
+          ? trackAlbumKeyboard(
+              sessionId,
+              session.currentAlbum,
+              session.currentAlbum.tracks,
+              session.albumTrackPage
+            )
+          : albumTracksKeyboard(
+              sessionId,
+              session.currentAlbum.tracks,
+              session.albumsPage || 0,
+              session.albumTrackPage,
+              { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
+            );
+        await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
       } else if (action === 'alt') {
         const track = session.currentAlbum?.tracks?.[Number(parts[2])]; if (!track) return;
         session.currentTrack = { ...track, source: track.source || 'melobot' };
@@ -207,19 +272,34 @@ export async function handleUpdate(update) {
 
   const msg = update.message;
   if (!msg) return;
-  if (bridge.consumeBotMessage(msg)) return;
 
   const chatId = msg.chat?.id;
   const userId = msg.from?.id;
   if (!chatId || !userId) return;
   await noteUserActivity();
-  if (msg.text === '/start') {
+  if (/^\/start(?:@\w+)?(?:\s|$)/i.test(msg.text || '')) {
     await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو بفرست.');
     return;
   }
   const query = msg.text?.trim();
   if (!query) {
     await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو به‌صورت متن بفرست.');
+    return;
+  }
+  if (query.startsWith('/')) {
+    await bot.sendMessage(chatId,'برای جست‌وجو فقط اسم آهنگ یا خواننده رو بفرست.');
+    return;
+  }
+  if (query.length > 120) {
+    await bot.sendMessage(chatId,'عبارت جست‌وجو خیلی طولانیه؛ کوتاه‌ترش کن.');
+    return;
+  }
+  if (!searchAllowed(userId)) {
+    await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
+    return;
+  }
+  if (sourceQueue.size() >= MAX_SOURCE_QUEUE) {
+    await bot.sendMessage(chatId,'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.');
     return;
   }
   const status = await bot.sendMessage(chatId,'جست‌وجو…');

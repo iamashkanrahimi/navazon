@@ -1,17 +1,26 @@
 import { config } from './config.js';
 import { bridge, cache, catalog, deepCatalog, tg } from './runtime.js';
-import { forwardHiddenToOurBot } from './mtproto.js';
+import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import {
   discoverMeloBotFeed,
+  discoverMeloBotHome,
+  discoverMeloBotPlaylists,
   downloadMeloBotTrackQuality,
+  downloadMeloBotBulkTracks,
+  enrichMeloBotTrack,
   getMeloBotCover,
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
   listMeloBotAlbums,
+  matchBulkAudioToTracks,
   openMeloBotAlbum,
+  openMeloBotAlbumContext,
   openMeloBotArtistFresh,
+  prepareMeloBotBulkAlbum,
+  prepareMeloBotBulkRecentTracks,
+  prepareMeloBotBulkTopTracks,
 } from './sources/melobot.js';
-import { deepNormalize } from './deepCatalog.js';
+import { deepNormalize, deepTrackKey } from './deepCatalog.js';
 import { recordCrawlerFinish, recordCrawlerStart } from './state.js';
 
 function clean(value = '') {
@@ -25,8 +34,22 @@ async function captureForwardedMedia(message) {
   return wait;
 }
 
+async function captureForwardedMediaBatch(messages = []) {
+  const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
+  if (!ids.length) return { items: [], complete: true, expected: 0 };
+
+  const timeoutMs = Math.max(35_000, Math.min(120_000, 12_000 + ids.length * 4_000));
+  const wait = bridge.expectManyMedia(ids.length, timeoutMs);
+  await forwardHiddenManyToOurBot(tg, config.melobotUsername, ids);
+  return wait;
+}
+
 function dayBucket() {
   return Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+}
+
+function albumRefreshBucket() {
+  return Math.floor(Date.now() / (30 * 24 * 60 * 60 * 1000));
 }
 
 async function enqueueArtistProfile(artist, seedTrack, priority = 100) {
@@ -43,19 +66,406 @@ async function enqueueArtistProfile(artist, seedTrack, priority = 100) {
 }
 
 async function seedTracks(tracks, priority, context = {}) {
-  for (const sourceTrack of tracks || []) {
-    const track = {
-      ...sourceTrack,
-      source: sourceTrack.source || 'melobot',
-      ...(context.contentOrigin ? { contentOrigin: context.contentOrigin } : {}),
-    };
-    await deepCatalog.upsertTrack(track, {
-      discoveredFrom: context.discoveredFrom,
-      feed: context.feed,
-      album: context.album,
-    });
-    await deepCatalog.seedTrackTasks(track, { priority });
+  const items = tracks || [];
+  const concurrency = 4;
+  for (let index = 0; index < items.length; index += concurrency) {
+    const batch = items.slice(index, index + concurrency);
+    await Promise.all(batch.map(async sourceTrack => {
+      const track = {
+        ...sourceTrack,
+        source: sourceTrack.source || 'melobot',
+        ...(context.contentOrigin ? { contentOrigin: context.contentOrigin } : {}),
+      };
+      await deepCatalog.upsertTrack(track, {
+        discoveredFrom: context.discoveredFrom,
+        feed: context.feed,
+        album: context.album,
+      });
+      await deepCatalog.seedTrackTasks(track, {
+        priority,
+        preferBulk: Boolean(context.preferBulk),
+      });
+    }));
   }
+}
+
+function uniqueTracks(tracks = []) {
+  const seen = new Set();
+  const out = [];
+  for (const track of tracks || []) {
+    const key = `${deepNormalize(track.artist)}|${deepNormalize(track.title)}`;
+    if (!key || key === '|' || seen.has(key)) continue;
+    seen.add(key);
+    out.push(track);
+  }
+  return out;
+}
+
+async function enqueueArtistBulkTasks(artist, seedTrack, {
+  topTracks = [],
+  recentTracks = [],
+  skipTopHq = false,
+} = {}) {
+  const artistKey = deepNormalize(artist);
+  const bucket = dayBucket();
+
+  const plan = async (tracks, mode, quality, taskPriority, fallbackPriority, skip = false) => {
+    if (skip || !tracks?.length) return { skipped: true, missing: 0 };
+
+    const missing = await deepCatalog.missingMediaTracks(tracks, quality);
+    if (!missing.length) return { complete: true, missing: 0 };
+
+    if (!shouldUseBulk(tracks.length, missing.length)) {
+      await enqueueSparseMediaFallback(missing, quality, fallbackPriority);
+      return { sparse: true, missing: missing.length };
+    }
+
+    await deepCatalog.enqueueTask(
+      'artist_bulk_media',
+      { artist, seedTrack, mode, quality },
+      {
+        priority: taskPriority,
+        taskKey: `artist_bulk:${mode}:${quality}:${artistKey}:${bucket}`,
+      }
+    );
+    return { bulk: true, missing: missing.length };
+  };
+
+  return {
+    recentHq: await plan(recentTracks, 'recent', 'hq', 122, 114),
+    topHq: await plan(topTracks, 'top', 'hq', 120, 114, skipTopHq),
+    recentNormal: await plan(recentTracks, 'recent', 'normal', 76, 72),
+    topNormal: await plan(topTracks, 'top', 'normal', 74, 72),
+  };
+}
+
+function pairBridgedMedia(matches, received = []) {
+  const unused = (received || []).map((media, index) => ({ media, index, used: false }));
+  const pairs = [];
+  const allowPositionalFallback = matches.length === received.length;
+
+  for (const match of matches || []) {
+    const track = match.track || {};
+    const nt = deepNormalize(track.title);
+    const na = deepNormalize(track.artist);
+    let best = null;
+    let bestScore = -1;
+
+    for (const item of unused) {
+      if (item.used) continue;
+      const mt = deepNormalize(item.media?.title || item.media?.fileName || '');
+      const ma = deepNormalize(item.media?.performer || '');
+      let score = 0;
+      if (nt && mt === nt) score += 8;
+      else if (nt && mt && (mt.includes(nt) || nt.includes(mt))) score += 5;
+      if (na && ma === na) score += 4;
+      else if (na && ma && (ma.includes(na) || na.includes(ma))) score += 2;
+      if (score > bestScore) {
+        best = item;
+        bestScore = score;
+      }
+    }
+
+    if (!best || bestScore < 5) {
+      best = allowPositionalFallback
+        ? (unused.find(item => !item.used) || null)
+        : null;
+    }
+    if (!best) continue;
+
+    best.used = true;
+    pairs.push({ track, media: best.media });
+  }
+
+  return pairs;
+}
+
+async function cacheBulkMedia(tracks, bulk, quality, label) {
+  const sourceTracks = uniqueTracks(tracks);
+  const matches = matchBulkAudioToTracks(sourceTracks, bulk?.audioItems || []);
+  if (!matches.length) return { cached: 0, matched: 0, expected: sourceTracks.length };
+
+  let bridged;
+  try {
+    bridged = await captureForwardedMediaBatch(matches.map(item => item.audioItem.message));
+  } catch (err) {
+    console.warn(`[${label} batch bridge]`, err.message);
+    return { cached: 0, matched: matches.length, expected: sourceTracks.length, bridgeError: err.message };
+  }
+
+  let cached = 0;
+  const received = bridged.items || [];
+  const pairs = pairBridgedMedia(matches, received);
+  for (const pair of pairs) {
+    const track = { ...pair.track, source: 'melobot' };
+    const media = pair.media;
+    try {
+      await deepCatalog.setMedia(track, quality, media, {
+        source: 'melobot',
+        satisfiedBy: label,
+      });
+      if (quality === 'hq') {
+        await cache.set(track, media, { sourceFetch: true });
+      }
+      cached += 1;
+    } catch (err) {
+      console.warn(`[${label} cache]`, track.artist, track.title, err.message);
+    }
+  }
+
+  return {
+    cached,
+    matched: matches.length,
+    expected: sourceTracks.length,
+    bridgeComplete: Boolean(bridged.complete),
+    forwarded: received.length,
+    paired: pairs.length,
+  };
+}
+
+async function enqueueSparseMediaFallback(tracks, quality, priority = 104) {
+  for (const track of tracks || []) {
+    const trackKey = deepTrackKey(track);
+    if (!trackKey || trackKey === '|') continue;
+    await deepCatalog.enqueueTask(
+      quality === 'hq' ? 'track_hq' : 'track_normal',
+      { track: { ...track, trackKey }, trackKey },
+      {
+        priority,
+        taskKey: `track_${quality}:${trackKey}`,
+      }
+    );
+  }
+}
+
+function shouldUseBulk(total, missing) {
+  const count = Math.max(0, Number(missing || 0));
+  const all = Math.max(0, Number(total || 0));
+  if (!count || !all) return false;
+  if (count <= 2) return false;
+  return count / all >= 0.35;
+}
+
+async function runArtistBulkMedia(task) {
+  const { artist, seedTrack = null, mode = 'top', quality = 'hq' } = task.payload || {};
+  if (!artist) throw new Error('Artist bulk task is missing artist.');
+
+  const storedTracks = await deepCatalog.getArtistList(artist, mode, 20);
+  const missing = await deepCatalog.missingMediaTracks(storedTracks, quality);
+  if (!missing.length) {
+    return { artist, mode, quality, cached: 0, skipped: 'already_complete' };
+  }
+  if (!shouldUseBulk(storedTracks.length, missing.length)) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 114 : 72);
+    return {
+      artist,
+      mode,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'sparse_holes_deferred_to_individual',
+    };
+  }
+
+  const context = mode === 'recent'
+    ? await prepareMeloBotBulkRecentTracks(tg, artist, seedTrack)
+    : await prepareMeloBotBulkTopTracks(tg, artist, seedTrack);
+
+  const tracks = mode === 'recent'
+    ? (context.recentTracks || context.tracks || storedTracks)
+    : (context.topTracks || context.tracks || storedTracks);
+
+  const button = quality === 'hq'
+    ? (mode === 'recent' ? context.recentBulkHighButton : context.bulkHighButton)
+    : (mode === 'recent' ? context.recentBulkNormalButton : context.bulkNormalButton);
+
+  if (!button) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 114 : 72);
+    return {
+      artist,
+      mode,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'bulk_button_missing_deferred_to_individual',
+    };
+  }
+
+  const bulk = await downloadMeloBotBulkTracks(tg, {
+    button,
+    label: `${artist} ${mode} ${quality}`,
+    expectedCount: tracks.length,
+    timeoutMs: 75_000,
+  });
+
+  const saved = await cacheBulkMedia(tracks, bulk, quality, `artist_bulk_${mode}_${quality}`);
+  return {
+    artist,
+    mode,
+    quality,
+    missingBefore: missing.length,
+    ...saved,
+  };
+}
+
+async function runAlbumBulkMedia(task) {
+  const { artist, albumTitle, seedTrack = null, quality = 'hq' } = task.payload || {};
+  if (!artist || !albumTitle) throw new Error('Album bulk task is incomplete.');
+
+  const context = await prepareMeloBotBulkAlbum(tg, artist, albumTitle, seedTrack);
+  const missing = await deepCatalog.missingMediaTracks(context.tracks, quality);
+  if (!missing.length) {
+    return { artist, album: albumTitle, quality, cached: 0, skipped: 'already_complete' };
+  }
+  if (!shouldUseBulk(context.tracks.length, missing.length)) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 110 : 70);
+    return {
+      artist,
+      album: albumTitle,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'sparse_holes_deferred_to_individual',
+    };
+  }
+
+  const button = quality === 'hq' ? context.bulkHighButton : context.bulkNormalButton;
+  if (!button) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 110 : 70);
+    return {
+      artist,
+      album: albumTitle,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'bulk_button_missing_deferred_to_individual',
+    };
+  }
+
+  const bulk = await downloadMeloBotBulkTracks(tg, {
+    button,
+    label: `album ${albumTitle} ${quality}`,
+    expectedCount: context.tracks.length,
+  });
+  const saved = await cacheBulkMedia(context.tracks, bulk, quality, `album_bulk_${quality}`);
+  return {
+    artist,
+    album: albumTitle,
+    quality,
+    missingBefore: missing.length,
+    ...saved,
+  };
+}
+
+async function runTrackEnrich(task) {
+  const track = task.payload?.track;
+  if (!track?.rawText) throw new Error('Track enrichment task has no live MeloBot track reference.');
+
+  const bundle = await enrichMeloBotTrack(tg, track);
+  const liveTrack = { ...track, ...(bundle.candidate || {}), source: 'melobot' };
+  const summary = {
+    track: `${liveTrack.artist} — ${liveTrack.title}`,
+    metadata: false,
+    cover: false,
+    lyrics: false,
+    errors: [...(bundle.errors || [])],
+  };
+
+  if (bundle.capabilities) {
+    try { await deepCatalog.setCapabilities(liveTrack, bundle.capabilities); } catch {}
+  }
+
+  if (bundle.metadata) {
+    try {
+      await deepCatalog.setMetadata(liveTrack, bundle.metadata);
+      summary.metadata = true;
+      summary.releaseDate = bundle.metadata.releaseDate || bundle.metadata.releaseDateRaw || null;
+      summary.popularity = bundle.metadata.popularityCount || bundle.metadata.popularityText || null;
+    } catch (err) {
+      summary.errors.push(`metadata-save: ${err.message}`);
+    }
+  }
+
+  if (bundle.cover?.photoMessage) {
+    try {
+      const media = await captureForwardedMedia(bundle.cover.photoMessage);
+      if (media.kind === 'photo') {
+        await deepCatalog.setCover(liveTrack, media);
+        summary.cover = true;
+      }
+    } catch (err) {
+      summary.errors.push(`cover-save: ${err.message}`);
+    }
+  }
+
+  if (bundle.lyrics?.available && bundle.lyrics.text) {
+    try {
+      await deepCatalog.setLyrics(liveTrack, bundle.lyrics.text, 'melobot');
+      summary.lyrics = true;
+      summary.lyricsChars = bundle.lyrics.text.length;
+    } catch (err) {
+      summary.errors.push(`lyrics-save: ${err.message}`);
+    }
+  } else {
+    try { await deepCatalog.markNoLyrics(liveTrack, 'melobot'); } catch {}
+  }
+
+  if (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length) {
+    throw new Error(`Track enrichment failed: ${summary.errors.join(' | ')}`);
+  }
+  return summary;
+}
+
+async function runHomeDiscovery(task) {
+  const maxSections = Math.max(1, Number(task.payload?.maxSections || 8));
+  const discovered = await discoverMeloBotHome(tg, { maxSections });
+  await seedTracks(discovered.tracks, 78, {
+    discoveredFrom: 'home_discovery',
+    preferBulk: true,
+  });
+
+  const byArtist = new Map();
+  for (const track of discovered.tracks || []) {
+    const key = deepNormalize(track.artist);
+    if (key && !byArtist.has(key)) byArtist.set(key, track);
+  }
+  for (const artistName of discovered.artists || []) {
+    const key = deepNormalize(artistName);
+    if (!key) continue;
+    await enqueueArtistProfile(artistName, byArtist.get(key) || null, 84);
+  }
+
+  return {
+    sections: discovered.sections?.length || 0,
+    tracks: discovered.tracks?.length || 0,
+    artists: discovered.artists?.length || 0,
+  };
+}
+
+async function runPlaylistDiscovery(task) {
+  const maxPlaylists = Math.max(1, Number(task.payload?.maxPlaylists || 6));
+  const discovered = await discoverMeloBotPlaylists(tg, { maxPlaylists });
+
+  await seedTracks(discovered.tracks, 86, {
+    discoveredFrom: 'playlist_discovery',
+    preferBulk: true,
+  });
+
+  const byArtist = new Map();
+  for (const track of discovered.tracks || []) {
+    const key = deepNormalize(track.artist);
+    if (key && !byArtist.has(key)) byArtist.set(key, track);
+  }
+
+  await Promise.all([...byArtist.values()].map(track =>
+    enqueueArtistProfile(track.artist, track, 96)
+  ));
+
+  return {
+    playlists: discovered.playlists?.length || 0,
+    tracks: discovered.tracks?.length || 0,
+    artists: discovered.artists?.length || byArtist.size,
+  };
 }
 
 async function runFeed(task) {
@@ -63,10 +473,11 @@ async function runFeed(task) {
   if (!feed) throw new Error('Feed task is missing feed name.');
 
   const result = await discoverMeloBotFeed(tg, feed, { contentOrigin: origin });
-  await seedTracks(result.tracks, feed === '/new' ? 100 : 92, {
+  await seedTracks(result.tracks, feed === '/new' ? 108 : 96, {
     discoveredFrom: `feed:${feed}`,
     feed,
     contentOrigin: origin,
+    preferBulk: true,
   });
 
   const artistMap = new Map();
@@ -76,7 +487,7 @@ async function runFeed(task) {
   }
 
   for (const track of artistMap.values()) {
-    await enqueueArtistProfile(track.artist, track, feed === '/new' ? 108 : 98);
+    await enqueueArtistProfile(track.artist, track, feed === '/new' ? 125 : 115);
   }
 
   return { feed, tracks: result.tracks.length, artists: artistMap.size };
@@ -99,9 +510,43 @@ async function runArtistProfile(task) {
   await deepCatalog.setArtistList(live.artist, 'recent', recent);
   await deepCatalog.setArtistList(live.artist, 'top', top);
 
-  // New/recent songs get slightly higher cache priority, while top songs stay close behind.
-  await seedTracks(recent, 105, { discoveredFrom: `artist_recent:${live.artist}` });
-  await seedTracks(top, 100, { discoveredFrom: `artist_top:${live.artist}` });
+  // Prefer one native MeloBot bulk click over ten individual media tasks.
+  await seedTracks(recent, 104, {
+    discoveredFrom: `artist_recent:${live.artist}`,
+    preferBulk: true,
+  });
+  await seedTracks(top, 100, {
+    discoveredFrom: `artist_top:${live.artist}`,
+    preferBulk: true,
+  });
+
+  const bulkSeed = seedTrack || recent[0] || top[0] || null;
+  let topHqComplete = false;
+  if (top.length && live.bulkHighButton) {
+    try {
+      const missingTopHq = await deepCatalog.missingMediaTracks(top, 'hq');
+      if (shouldUseBulk(top.length, missingTopHq.length)) {
+        const bulk = await downloadMeloBotBulkTracks(tg, {
+          button: live.bulkHighButton,
+          label: `${live.artist} top hq inline`,
+          expectedCount: top.length,
+          timeoutMs: 75_000,
+        });
+        await cacheBulkMedia(top, bulk, 'hq', 'artist_profile_top_hq');
+      } else if (missingTopHq.length) {
+        await enqueueSparseMediaFallback(missingTopHq, 'hq', 114);
+      }
+      topHqComplete = (await deepCatalog.missingMediaTracks(top, 'hq')).length === 0;
+    } catch (err) {
+      console.warn('[artist profile inline HQ]', live.artist, err.message);
+    }
+  }
+
+  await enqueueArtistBulkTasks(live.artist, bulkSeed, {
+    topTracks: top,
+    recentTracks: recent,
+    skipTopHq: topHqComplete,
+  });
 
   for (const related of live.relatedArtists || []) {
     if (deepNormalize(related) !== deepNormalize(live.artist)) {
@@ -136,17 +581,17 @@ async function runAlbumIndex(task) {
   const albums = await listMeloBotAlbums(tg, live);
   await catalog.recordAlbums(live.artist, albums);
 
-  for (const album of albums) {
+  await Promise.all(albums.map(async album => {
     await deepCatalog.upsertAlbum(live.artist, album);
     await deepCatalog.enqueueTask(
       'album_detail',
       { artist: live.artist, album, seedTrack: seedTrack || live.recentTracks?.[0] || live.topTracks?.[0] || null },
       {
         priority: 76,
-        taskKey: `album_detail:${deepNormalize(live.artist)}:${deepNormalize(album.title)}`,
+        taskKey: `album_detail:${deepNormalize(live.artist)}:${deepNormalize(album.title)}:${albumRefreshBucket()}`,
       }
     );
-  }
+  }));
 
   return { artist: live.artist, albums: albums.length };
 }
@@ -158,7 +603,8 @@ async function runAlbumDetail(task) {
   const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
   const albums = await listMeloBotAlbums(tg, live);
   const target = albums.find(item => deepNormalize(item.title) === deepNormalize(album.title)) || album;
-  const tracks = await openMeloBotAlbum(tg, live.artist, target);
+  const albumContext = await openMeloBotAlbumContext(tg, live.artist, target);
+  const tracks = albumContext.tracks;
 
   await catalog.recordAlbums(live.artist, albums);
   await catalog.recordAlbumTracks(live.artist, target, tracks);
@@ -166,9 +612,63 @@ async function runAlbumDetail(task) {
   await seedTracks(tracks, 84, {
     discoveredFrom: `album:${target.title}`,
     album: target.title,
+    preferBulk: true,
   });
 
-  return { artist: live.artist, album: target.title, tracks: tracks.length };
+  const albumSeed = seedTrack || tracks[0] || live.recentTracks?.[0] || live.topTracks?.[0] || null;
+  const albumKey = `${deepNormalize(live.artist)}:${deepNormalize(target.title)}`;
+
+  let albumHqComplete = false;
+  if (albumContext.bulkHighButton && tracks.length) {
+    try {
+      const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
+      if (shouldUseBulk(tracks.length, missingHq.length)) {
+        const bulk = await downloadMeloBotBulkTracks(tg, {
+          button: albumContext.bulkHighButton,
+          label: `album ${target.title} hq inline`,
+          expectedCount: tracks.length,
+          timeoutMs: 75_000,
+        });
+        await cacheBulkMedia(tracks, bulk, 'hq', 'album_detail_hq');
+      } else if (missingHq.length) {
+        await enqueueSparseMediaFallback(missingHq, 'hq', 110);
+      }
+      albumHqComplete = (await deepCatalog.missingMediaTracks(tracks, 'hq')).length === 0;
+    } catch (err) {
+      console.warn('[album detail inline HQ]', live.artist, target.title, err.message);
+    }
+  }
+
+  if (!albumHqComplete) {
+    const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
+    if (shouldUseBulk(tracks.length, missingHq.length)) {
+      await deepCatalog.enqueueTask(
+        'album_bulk_media',
+        { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
+        { priority: 92, taskKey: `album_bulk:hq:${albumKey}`, reviveDone: true }
+      );
+    } else if (missingHq.length) {
+      await enqueueSparseMediaFallback(missingHq, 'hq', 110);
+    }
+  }
+
+  const missingNormal = await deepCatalog.missingMediaTracks(tracks, 'normal');
+  if (shouldUseBulk(tracks.length, missingNormal.length)) {
+    await deepCatalog.enqueueTask(
+      'album_bulk_media',
+      { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
+      { priority: 68, taskKey: `album_bulk:normal:${albumKey}`, reviveDone: true }
+    );
+  } else if (missingNormal.length) {
+    await enqueueSparseMediaFallback(missingNormal, 'normal', 70);
+  }
+
+  return {
+    artist: live.artist,
+    album: target.title,
+    tracks: tracks.length,
+    hqComplete: albumHqComplete,
+  };
 }
 
 async function runTrackHq(task) {
@@ -243,7 +743,12 @@ export async function executeDeepTask(task) {
   try {
     let summary;
     if (task.kind === 'feed') summary = await runFeed(task);
+    else if (task.kind === 'home_discovery') summary = await runHomeDiscovery(task);
+    else if (task.kind === 'playlist_discovery') summary = await runPlaylistDiscovery(task);
     else if (task.kind === 'artist_profile') summary = await runArtistProfile(task);
+    else if (task.kind === 'artist_bulk_media') summary = await runArtistBulkMedia(task);
+    else if (task.kind === 'album_bulk_media') summary = await runAlbumBulkMedia(task);
+    else if (task.kind === 'track_enrich') summary = await runTrackEnrich(task);
     else if (task.kind === 'album_index') summary = await runAlbumIndex(task);
     else if (task.kind === 'album_detail') summary = await runAlbumDetail(task);
     else if (task.kind === 'track_hq') summary = await runTrackHq(task);
