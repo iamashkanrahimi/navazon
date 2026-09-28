@@ -184,10 +184,11 @@ export class CatalogStore {
     if (!tokens.length) return [];
 
     const clauses = tokens.map((_, index) =>
-      `LOWER(a.name || ' ' || COALESCE(album->>'title','')) LIKE ${index + 1}`
+      "LOWER(a.name || ' ' || COALESCE(album->>'title','')) LIKE $" + (index + 1)
     );
     const params = tokens.map(token => `%${token}%`);
     params.push(Math.max(1, Number(limit || 4)));
+    const limitParam = '$' + params.length;
 
     const result = await db.query(`
       SELECT
@@ -201,7 +202,7 @@ export class CatalogStore {
       ) album
       WHERE ${clauses.join(' AND ')}
       ORDER BY a.updated_at DESC
-      LIMIT ${params.length}
+      LIMIT ${limitParam}
     `, params);
 
     return result.rows
