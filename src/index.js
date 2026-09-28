@@ -26,7 +26,7 @@ async function queueCrawler() {
     return { queued: true, type: 'artist', artist: candidate.artist };
   }
 
-  const lastBootstrap = await getState('last_bootstrap_at',{ at: 0 });
+  const lastBootstrap = await getState('last_bootstrap_v2_at',{ at: 0 });
   if (Date.now() - Number(lastBootstrap?.at || 0) < 6 * 60 * 60 * 1000) {
     return { queued: false, reason: 'no_candidate' };
   }
