@@ -19,8 +19,8 @@ import {
   openMeloBotArtist, openMeloBotArtistFresh,
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
-  matchBulkAudioToTracks, listMeloBotAlbums, discoverMeloBotAlbumsForQuery,
-  discoverMeloBotAlbumsByArtistQuery,
+  matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums,
+  discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
@@ -128,17 +128,37 @@ async function searchAlbumOptions(query, tracks = []) {
   ]);
   let albums = mergeAlbumResults(limit, deepAlbums, legacyAlbums);
 
+  // If the catalog already contains a fresh full album list for the one
+  // artist matched by this query, serve it without touching MeloBot.
+  if (albumIntent && albums.length) {
+    const artists = [...new Set(albums.map(album => album.artist).filter(Boolean))];
+    if (artists.length === 1) {
+      const fullCached = await catalog.getAlbums(
+        artists[0],
+        config.catalogAlbumsTtlMs,
+        config.catalogEmptyAlbumsTtlMs
+      ).catch(() => null);
+      if (Array.isArray(fullCached) && fullCached.length) {
+        return mergeAlbumResults(
+          limit,
+          fullCached.map(album => ({ ...album, artist: artists[0], source: 'catalog' })),
+          albums
+        );
+      }
+    }
+  }
+
   // Explicit "album + artist" queries should work even when track search
-  // returns no usable MeloBot seed. Resolve the artist picker directly.
+  // returns no usable MeloBot seed. Resolve the source's artist picker directly.
   if (albumIntent) {
     try {
       const direct = await discoverMeloBotAlbumsByArtistQuery(tg, query, {
         maxAlbums: limit,
       });
-      if (direct.artist && direct.complete) {
+      if (direct.artist) {
         await syncAlbumIndex(direct.artist, direct.albums, {
-          complete: true,
-          emptyConfirmed: Boolean(direct.confirmedEmpty),
+          complete: Boolean(direct.complete),
+          emptyConfirmed: Boolean(direct.confirmedEmpty && direct.complete),
         });
         albums = mergeAlbumResults(
           limit,
@@ -344,9 +364,13 @@ export const sourceQueue = new SerialQueue(async job => {
   try {
     if (job.type === 'search') {
       try {
-        const cachedOptions = await catalog.getSearch(job.query, config.catalogSearchTtlMs);
+        const albumIntent = isAlbumIntentQuery(job.query);
+        const cachedOptions = albumIntent
+          ? null
+          : await catalog.getSearch(job.query, config.catalogSearchTtlMs);
         let options = cachedOptions || [];
-        if (!cachedOptions) {
+
+        if (!albumIntent && !cachedOptions) {
           try {
             options = await searchPrimary(job.query);
           } catch (err) {
@@ -358,7 +382,7 @@ export const sourceQueue = new SerialQueue(async job => {
         const albumOptions = await searchAlbumOptions(job.query, options);
         if (!options.length && !albumOptions.length) throw new Error('No results');
 
-        const albumFirst = isAlbumIntentQuery(job.query) && albumOptions.length > 0;
+        const albumFirst = albumIntent && albumOptions.length > 0;
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
@@ -371,7 +395,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await sessions.set(sessionId,fresh);
         await showResults(sessionId,fresh);
 
-        if (!cachedOptions && options.length) {
+        if (!albumIntent && !cachedOptions && options.length) {
           try { await catalog.recordSearch(job.query,options); } catch (err) {
             console.warn('[search catalog]', err.message);
           }
@@ -1191,18 +1215,20 @@ export const sourceQueue = new SerialQueue(async job => {
               albumDeclaredCount: liveArtist.albumDeclaredCount ?? null,
             };
 
-            // listMeloBotAlbums can consume an album list already embedded in
-            // the artist page. An empty array is returned only when MeloBot
-            // explicitly confirms zero albums.
-            session.albums = await listMeloBotAlbums(
+            // The artist page may already be the album-list page. Resolve it
+            // without pressing one of the album rows as if it were navigation.
+            const resolvedAlbums = await resolveMeloBotAlbums(
               tg,
               session.artistContext,
               { allowEmpty: true }
             );
+            session.albums = resolvedAlbums.albums;
 
             await syncAlbumIndex(session.artistContext.artist, session.albums, {
-              complete: true,
-              emptyConfirmed: session.albums.length === 0,
+              complete: Boolean(resolvedAlbums.complete),
+              emptyConfirmed: Boolean(
+                resolvedAlbums.confirmedEmpty && resolvedAlbums.complete
+              ),
             });
           }
         }
