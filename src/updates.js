@@ -5,7 +5,7 @@ import {
   artistHomeKeyboard, artistSongsKeyboard, albumsKeyboard,
   albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
-import { setState } from './state.js';
+import { noteUserActivity } from './state.js';
 
 const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
@@ -28,10 +28,6 @@ function searchAllowed(userId) {
 
 function validSession(callback, session) {
   return session && session.expiresAt > Date.now() && callback.from?.id === session.userId;
-}
-
-async function noteUserActivity() {
-  await setState('last_user_activity_at',{ at: Date.now() });
 }
 
 export async function handleUpdate(update) {
