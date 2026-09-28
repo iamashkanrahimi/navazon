@@ -1146,7 +1146,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       return {
         artist,
         albums: listing.albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
-        complete: true,
+        complete: listing.complete,
         confirmedEmpty: listing.confirmedEmpty,
       };
     }
