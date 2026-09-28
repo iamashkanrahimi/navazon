@@ -875,7 +875,7 @@ export async function downloadMeloBotBulkTracks(client, {
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0
       ? timeoutMs
       : Math.max(config.downloadTimeoutMs, 180000),
-    quietMs: expectedCount > 20 ? 7000 : 4500,
+    quietMs: expectedCount > 20 ? 12000 : 8000,
     stopWhenBatch: expectedCount > 0
       ? messages => messages.filter(isAudioMessage).length >= expectedCount
       : undefined,
