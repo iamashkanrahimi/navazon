@@ -503,6 +503,110 @@ export const sourceQueue = new SerialQueue(async job => {
       return;
     }
 
+    if (job.type === 'download_album') {
+      const requestedTracks = session.currentAlbum?.tracks || [];
+      let sent = 0;
+      let missing = 0;
+
+      try {
+        const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
+        if (cached.complete) {
+          sent = cached.sent;
+        } else {
+          const artist = session.currentAlbum?.artist
+            || session.artistContext?.artist
+            || session.albumOriginTrack?.artist
+            || session.currentTrack?.artist;
+          const albumTitle = session.currentAlbum?.title;
+          const seed = session.artistSeed
+            || session.albumOriginTrack
+            || session.currentTrack
+            || session.options?.find(x =>
+              x.source === 'melobot' &&
+              (!artist || normalize(x.artist) === normalize(artist))
+            );
+
+          if (!artist || !albumTitle || !seed) {
+            throw new Error('Album artist/seed missing for native bulk HQ.');
+          }
+
+          let albumContext;
+          let bulk;
+          let lastError;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              albumContext = await prepareMeloBotBulkAlbum(tg, artist, albumTitle, seed);
+              bulk = await downloadMeloBotAlbumTracks(tg, albumContext);
+              lastError = null;
+              break;
+            } catch (err) {
+              lastError = err;
+              console.warn('[native bulk album retry]', attempt + 1, err.message);
+            }
+          }
+          if (lastError || !albumContext || !bulk) throw lastError || new Error('Album native bulk failed.');
+
+          session.currentAlbum = {
+            ...session.currentAlbum,
+            ...albumContext.album,
+            artist: albumContext.artist,
+            tracks: albumContext.tracks,
+          };
+
+          try {
+            await catalog.recordAlbumTracks(
+              albumContext.artist,
+              albumContext.album,
+              albumContext.tracks
+            );
+            await deepCatalog.setAlbumTracks(
+              albumContext.artist,
+              albumContext.album,
+              albumContext.tracks
+            );
+          } catch (err) {
+            console.warn('[native bulk album catalog]', err.message);
+          }
+
+          const delivered = await deliverNativeBulkHq(
+            session,
+            albumContext.tracks,
+            bulk,
+            { label: 'native bulk album' }
+          );
+          sent = delivered.sent;
+          missing = delivered.missing;
+        }
+      } catch (err) {
+        console.warn('[native bulk album failed]', err.message);
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        sent = fallback.sent;
+        missing = fallback.missing;
+        if (missing) {
+          await bot.sendMessage(
+            session.chatId,
+            'دانلود یکجای آلبوم از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+          );
+        }
+      }
+
+      session.busy = false;
+      const album = session.currentAlbum;
+      const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
+      const keyboard = session.currentAlbumView === 'track'
+        ? trackAlbumKeyboard(job.sessionId, album, album?.tracks || [])
+        : albumTracksKeyboard(job.sessionId, album?.tracks || [], session.albumsPage || 0);
+
+      await bot.editMessageText(
+        session.chatId,
+        job.messageId,
+        title,
+        { reply_markup: keyboard }
+      );
+      console.log(`[native bulk album] sent=${sent}, missing=${missing}`);
+      return;
+    }
+
     if (job.type === 'discover') {
       const candidate = job.candidate;
       if (!candidate?.artist) return;
