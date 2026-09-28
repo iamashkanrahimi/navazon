@@ -168,6 +168,11 @@ export const sourceQueue = new SerialQueue(async job => {
           topTracks: liveArtist.topTracks || liveArtist.tracks || [],
           recentTracks: liveArtist.recentTracks || [], albumButton: liveArtist.albumButton || null,
         });
+        for (const relatedArtist of liveArtist.relatedArtists || []) {
+          if (normalize(relatedArtist) !== normalize(liveArtist.artist)) {
+            await catalog.ensureArtist(relatedArtist,{ discoveredFrom: `artist-picker:${liveArtist.artist}` });
+          }
+        }
         if (config.discoveryUseAhangify) {
           try {
             const extra = await searchAhangify(tg,liveArtist.artist);
@@ -256,11 +261,18 @@ export const sourceQueue = new SerialQueue(async job => {
         session.artistSeed = seed;
         const cachedArtist = await catalog.getArtistContext(seed.artist,config.catalogArtistTtlMs);
         session.artistContext = cachedArtist || await openMeloBotArtist(tg,seed);
-        if (!cachedArtist) await catalog.recordArtist(session.artistContext.artist,{
-          topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
-          recentTracks: session.artistContext.recentTracks || [],
-          albumButton: session.artistContext.albumButton || null,
-        });
+        if (!cachedArtist) {
+          await catalog.recordArtist(session.artistContext.artist,{
+            topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
+            recentTracks: session.artistContext.recentTracks || [],
+            albumButton: session.artistContext.albumButton || null,
+          });
+          for (const relatedArtist of session.artistContext.relatedArtists || []) {
+            if (normalize(relatedArtist) !== normalize(session.artistContext.artist)) {
+              await catalog.ensureArtist(relatedArtist,{ discoveredFrom: `artist-picker:${session.artistContext.artist}` });
+            }
+          }
+        }
         session.isFollowing = await follows.isFollowing(session.userId,session.artistContext.artist);
         session.albums = null; session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,session.artistContext.artist,{
