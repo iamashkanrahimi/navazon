@@ -1107,7 +1107,9 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     stopWhen: message => {
       const buttons = replyButtons(message);
       const listing = inspectMeloBotAlbumListing([message]);
-      return listing.confirmed || buttons.some(text => /^[🗣🎤🎙]/u.test(clean(text)));
+      return listing.albums.length > 0
+        || listing.confirmedEmpty
+        || buttons.some(text => /^[🗣🎤🎙]/u.test(clean(text)));
     },
   });
 
@@ -1124,7 +1126,9 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
         quietMs: 2100,
         stopWhen: message => {
           const state = inspectMeloBotAlbumListing([message]);
-          return state.confirmed || Boolean(albumNavigationButton([message]));
+          return state.albums.length > 0
+            || state.confirmedEmpty
+            || Boolean(albumNavigationButton([message]));
         },
       });
       contextMessages = selected.messages;
@@ -1148,7 +1152,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       quietMs: 2200,
       stopWhen: message => {
         const state = inspectMeloBotAlbumListing([message]);
-        return state.confirmed;
+        return state.albums.length > 0 || state.confirmedEmpty;
       },
     });
     listing = inspectMeloBotAlbumListing(page.messages);
