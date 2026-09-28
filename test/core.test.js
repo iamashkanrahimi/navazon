@@ -18,7 +18,7 @@ const {
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const { trackCacheKey } = await import('../src/cache.js');
-const { resultsKeyboard, albumTracksKeyboard } = await import('../src/ui.js');
+const { resultsKeyboard, albumTracksKeyboard, noAlbumsKeyboard } = await import('../src/ui.js');
 
 test('MeloBot parser extracts artist, title and popularity', () => {
   const track = parseTrackButton('🎵 Shadmehr, Taghdir x 1.6M');
@@ -140,4 +140,11 @@ test('search-opened album returns to search results', () => {
   const keyboard = albumTracksKeyboard('sess', tracks, 0, 0, { backAction: 'results' });
   const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
   assert.ok(callbacks.includes('rs:sess'));
+});
+
+
+test('no-albums page returns to the artist page', () => {
+  const keyboard = noAlbumsKeyboard('sess');
+  assert.equal(keyboard.inline_keyboard[0][0].text, '🔙 صفحه‌ی خواننده');
+  assert.equal(keyboard.inline_keyboard[0][0].callback_data, 'arh:sess');
 });

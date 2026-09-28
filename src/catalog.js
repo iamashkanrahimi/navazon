@@ -153,10 +153,13 @@ export class CatalogStore {
     };
   }
 
-  async getAlbums(name, maxAgeMs) {
+  async getAlbums(name, maxAgeMs, emptyMaxAgeMs = maxAgeMs) {
     const { node } = await this.readArtist(name);
-    if (!node || !freshEnough(node.albumsUpdatedAt, maxAgeMs)) return null;
-    return Array.isArray(node.albumList) && node.albumList.length ? node.albumList : null;
+    if (!node || !Array.isArray(node.albumList)) return null;
+
+    const ttl = node.albumList.length ? maxAgeMs : emptyMaxAgeMs;
+    if (!freshEnough(node.albumsUpdatedAt, ttl)) return null;
+    return node.albumList;
   }
 
   async searchAlbums(query, limit = 4) {

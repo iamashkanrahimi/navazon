@@ -6,7 +6,7 @@ import { applyPolicyDefaults } from './policy.js';
 import {
   SESSION_TTL_MS, TOP_TRACKS_LIMIT, ALBUMS_PER_PAGE, normalize,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
-  albumsKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
+  albumsKeyboard, noAlbumsKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
@@ -56,7 +56,7 @@ async function syncArtistContext(artistContext) {
 }
 
 async function syncAlbumIndex(artist, albums = []) {
-  if (!artist || !albums.length) return;
+  if (!artist) return;
   const results = await Promise.allSettled([
     catalog.recordAlbums(artist, albums),
     ...albums.map(album => deepCatalog.upsertAlbum(artist, album)),
@@ -961,20 +961,47 @@ export const sourceQueue = new SerialQueue(async job => {
       try {
         if (!session.artistContext) throw new Error('Artist context missing');
         if (!session.albums) {
-          const cachedAlbums = await catalog.getAlbums(session.artistContext.artist,config.catalogAlbumsTtlMs);
-          if (cachedAlbums) session.albums = cachedAlbums;
-          else {
+          const cachedAlbums = await catalog.getAlbums(
+            session.artistContext.artist,
+            config.catalogAlbumsTtlMs,
+            config.catalogEmptyAlbumsTtlMs
+          );
+
+          if (cachedAlbums) {
+            session.albums = cachedAlbums;
+          } else {
             const seed = session.artistSeed || session.options.find(x =>
               x.source === 'melobot' && normalize(x.artist) === normalize(session.artistContext.artist));
             if (!seed) throw new Error('Artist seed missing for album navigation.');
+
             const liveArtist = await openMeloBotArtist(tg,seed);
-            session.artistContext = { ...session.artistContext, albumButton: liveArtist.albumButton || null };
-            session.albums = await listMeloBotAlbums(tg,session.artistContext);
+            session.artistContext = {
+              ...session.artistContext,
+              albumButton: liveArtist.albumButton || null,
+            };
+
+            session.albums = liveArtist.albumButton
+              ? await listMeloBotAlbums(tg, session.artistContext, { allowEmpty: true })
+              : [];
+
             await syncAlbumIndex(session.artistContext.artist, session.albums);
           }
         }
+
         session.busy = false;
-        const page = Math.max(0,job.page || 0); session.albumsPage = page;
+        const page = Math.max(0,job.page || 0);
+        session.albumsPage = page;
+
+        if (!session.albums.length) {
+          await bot.editMessageText(
+            session.chatId,
+            job.messageId,
+            `${session.artistContext.artist}\n💿 آلبوم‌ها\n\nاین خواننده هنوز آلبومی منتشر نکرده.`,
+            { reply_markup: noAlbumsKeyboard(job.sessionId) }
+          );
+          return;
+        }
+
         await bot.editMessageText(session.chatId,job.messageId,`${session.artistContext.artist}\n💿 آلبوم‌ها`,{
           reply_markup: albumsKeyboard(job.sessionId,session.albums,page),
         });

@@ -1050,7 +1050,7 @@ export async function discoverMeloBotAlbumsForQuery(client, query, seedTracks = 
   return albums;
 }
 
-export async function listMeloBotAlbums(client, artistContext) {
+export async function listMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
   const albumControl = clean(artistContext.albumButton || '');
   if (!albumControl) throw new Error('MeloBot album button is not present on the live artist keyboard.');
 
@@ -1071,7 +1071,7 @@ export async function listMeloBotAlbums(client, artistContext) {
     albums.push(album);
   }
 
-  if (!albums.length) {
+  if (!albums.length && !allowEmpty) {
     const response = page.messages.map(messageText).filter(Boolean).join('\n');
     throw new Error(`No albums found in MeloBot artist page. ${response.slice(0, 350)}`);
   }
