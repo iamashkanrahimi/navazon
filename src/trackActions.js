@@ -97,10 +97,16 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
   assertDeliveryAllowed(track, userRegion);
   let details = await deepCatalog.getTrackDetails(track);
   let media = details?.media?.[quality] || null;
+  let cacheHit = Boolean(media);
+  let cacheKey = null;
 
   if (!media && quality === 'hq') {
     const legacy = await cache.get(track);
-    if (legacy?.fileId) media = legacy;
+    if (legacy?.fileId) {
+      media = legacy;
+      cacheHit = true;
+      cacheKey = legacy._cacheKey || null;
+    }
   }
 
   if (!media) {
@@ -122,7 +128,7 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
   }
 
   await sendAudioMedia(chatId, track, media);
-  try { await cache.recordServe(track, { cacheHit: Boolean(details?.media?.[quality]) }); } catch {}
+  try { await cache.recordServe(track, { cacheHit, cacheKey }); } catch {}
   return media;
 }
 
