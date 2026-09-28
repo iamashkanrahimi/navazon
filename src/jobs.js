@@ -271,12 +271,17 @@ export const sourceQueue = new SerialQueue(async job => {
     if (job.type === 'track_artist') {
       try {
         const seed = session.currentTrack;
-        if (!seed?.artist || seed.source !== 'melobot') {
-          throw new Error('Artist page requires a MeloBot track.');
-        }
-        session.artistSeed = seed;
+        if (!seed?.artist) throw new Error('Track artist is missing.');
+
         const cachedArtist = await catalog.getArtistContext(seed.artist, config.catalogArtistTtlMs);
-        session.artistContext = cachedArtist || await openMeloBotArtist(tg, seed);
+        session.artistContext = cachedArtist || await openMeloBotArtistFresh(
+          tg,
+          seed.artist,
+          seed.source === 'melobot' ? seed : null
+        );
+        session.artistSeed = seed.source === 'melobot'
+          ? seed
+          : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null);
         if (!cachedArtist) {
           await catalog.recordArtist(session.artistContext.artist, {
             topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
@@ -726,7 +731,12 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'artist') {
       try {
-        const seed = session.options.find(x => x.source === 'melobot');
+        const indexedSeed = Number.isInteger(job.seedIndex) && job.seedIndex >= 0
+          ? session.options?.[job.seedIndex]
+          : null;
+        const seed = indexedSeed?.source === 'melobot'
+          ? indexedSeed
+          : session.options.find(x => x.source === 'melobot');
         if (!seed) throw new Error('Artist profile currently requires MeloBot result.');
         session.artistSeed = seed;
         const cachedArtist = await catalog.getArtistContext(seed.artist,config.catalogArtistTtlMs);
