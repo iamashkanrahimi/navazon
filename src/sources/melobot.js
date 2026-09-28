@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { CURATED_PLAYLISTS, curatedPlaylistByKey } from '../homeCatalog.js';
 import {
   collectNewMessages,
   isAudioMessage,
@@ -1086,14 +1087,6 @@ export async function openMeloBotAlbum(client, artist, album) {
   return context.tracks;
 }
 
-const CURATED_PLAYLIST_RULES = [
-  { key: 'pop', label: 'گلچین پاپ', match: text => /گلچین.*پاپ/u.test(clean(text)) },
-  { key: 'nostalgia', label: 'یادگاری', match: text => /یادگاری/u.test(clean(text)) },
-  { key: 'remix', label: 'ریمیکس', match: text => /ملوبیت.*ریمیکس|ریمیکس/u.test(clean(text)) },
-  { key: 'martik', label: 'مارتیک', match: text => /مارتیک/u.test(clean(text)) },
-  { key: 'gilaki', label: 'گیلکی', match: text => /گیلکی/u.test(clean(text)) },
-];
-
 async function openMeloBotDailyPlaylists(client) {
   const index = await sendAndCollect(client, '/playlists', {
     timeoutMs: config.searchTimeoutMs,
@@ -1117,8 +1110,8 @@ export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } =
   const out = [];
   const seen = new Set();
 
-  for (const rule of CURATED_PLAYLIST_RULES) {
-    const rawText = buttons.find(text => rule.match(text));
+  for (const rule of CURATED_PLAYLISTS) {
+    const rawText = buttons.find(text => rule.pattern.test(clean(text)));
     if (!rawText) continue;
     const key = rule.key;
     if (seen.has(key)) continue;
@@ -1138,11 +1131,11 @@ export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } =
 
 export async function openMeloBotCuratedPlaylist(client, playlist) {
   if (!playlist?.key) throw new Error('Curated playlist key is missing.');
-  const rule = CURATED_PLAYLIST_RULES.find(item => item.key === playlist.key);
+  const rule = curatedPlaylistByKey(playlist.key);
   if (!rule) throw new Error(`Unknown curated playlist: ${playlist.key}`);
 
   const page = await openMeloBotDailyPlaylists(client);
-  const liveButton = buttonsFromMessages(page.messages).find(text => rule.match(text));
+  const liveButton = buttonsFromMessages(page.messages).find(text => rule.pattern.test(clean(text)));
   if (!liveButton) throw new Error(`MeloBot playlist is not available: ${playlist.label || playlist.key}`);
 
   const result = await sendAndCollect(client, liveButton, {
