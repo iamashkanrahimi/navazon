@@ -173,7 +173,7 @@ export class CatalogStore {
       SELECT tracks, updated_at
       FROM searches
       WHERE query_key = $1
-        AND updated_at >= NOW() - ($2 * INTERVAL '1 millisecond')
+        AND updated_at >= NOW() - ($2::bigint * INTERVAL '1 millisecond')
       LIMIT 1
     `, [key, Math.max(0, maxAgeMs)]);
     if (!result.rowCount) return null;
