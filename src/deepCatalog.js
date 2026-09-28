@@ -426,8 +426,8 @@ export class DeepCatalog {
         )
     `);
 
-    -- Recurring bucketed tasks have new keys on future runs, so old completed
-    -- rows can be removed without losing one-time completion memory.
+    // Recurring bucketed tasks have new keys on future runs, so old completed
+    // rows can be removed without losing one-time completion memory.
     await db.query(`
       DELETE FROM crawl_tasks
       WHERE status = 'done'
