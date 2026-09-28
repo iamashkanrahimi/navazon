@@ -5,6 +5,7 @@ import { FileCache } from './cache.js';
 import { CatalogStore } from './catalog.js';
 import { FollowStore } from './follows.js';
 import { SessionStore } from './sessions.js';
+import { DeepCatalog } from './deepCatalog.js';
 import { initDb, db } from './db.js';
 import { createTelegramClient } from './mtproto.js';
 
@@ -16,6 +17,7 @@ export const cache = new FileCache();
 export const catalog = new CatalogStore();
 export const follows = new FollowStore();
 export const sessions = new SessionStore();
+export const deepCatalog = new DeepCatalog();
 export const tg = createTelegramClient();
 
 await tg.connect();
