@@ -47,6 +47,7 @@ async function sendHome(chatId, userId) {
     followedArtists: [],
     isFollowing: false,
     albums: null,
+    albumsEmptyConfirmed: false,
     currentAlbum: null,
     currentAlbumView: null,
     albumsPage: 0,
