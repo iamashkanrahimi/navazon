@@ -234,7 +234,7 @@ export const sourceQueue = new SerialQueue(async job => {
           await catalog.recordSearch('__melobot_home__',discovered.tracks.map(track => ({ ...track, source: 'melobot' })));
         }
         for (const artist of discovered.artists || []) await catalog.ensureArtist(artist,{ discoveredFrom: 'crawl:melobot-home' });
-        await setState('last_bootstrap_at',{ at: Date.now() });
+        await setState('last_bootstrap_v2_at',{ at: Date.now() });
         const bootstrapSummary = {
           tracks: discovered.tracks?.length || 0,
           artists: discovered.artists?.length || 0,
