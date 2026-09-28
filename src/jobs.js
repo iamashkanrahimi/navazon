@@ -165,7 +165,7 @@ export const sourceQueue = new SerialQueue(async job => {
           chatId: job.chatId, userId: job.userId, query: job.query,
           messageId: job.statusMessageId, options, artistContext: null,
           artistSeed: null, isFollowing: false, albums: null,
-          currentAlbum: null, currentAlbumView: null, albumsPage: 0,
+          currentAlbum: null, currentAlbumView: null, albumsPage: 0, albumTrackPage: 0,
           currentTrack: null, trackBack: null, artistBack: 'rs', busy: false,
           expiresAt: Date.now() + SESSION_TTL_MS,
         };
@@ -327,12 +327,13 @@ export const sourceQueue = new SerialQueue(async job => {
         session.albumOriginBack = session.trackBack;
         session.currentAlbum = { ...albumData.album, tracks: albumData.tracks };
         session.currentAlbumView = 'track';
+        session.albumTrackPage = 0;
         session.busy = false;
         await bot.editMessageText(
           session.chatId,
           job.messageId,
           `💿 ${albumData.album.title}\n${albumData.album.artist || session.currentTrack.artist}`,
-          { reply_markup: trackAlbumKeyboard(job.sessionId, albumData.album, albumData.tracks) }
+          { reply_markup: trackAlbumKeyboard(job.sessionId, albumData.album, albumData.tracks, 0) }
         );
       } catch (err) {
         console.error('[track album]', err.message);
@@ -622,8 +623,13 @@ export const sourceQueue = new SerialQueue(async job => {
       const album = session.currentAlbum;
       const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
       const keyboard = session.currentAlbumView === 'track'
-        ? trackAlbumKeyboard(job.sessionId, album, album?.tracks || [])
-        : albumTracksKeyboard(job.sessionId, album?.tracks || [], session.albumsPage || 0);
+        ? trackAlbumKeyboard(job.sessionId, album, album?.tracks || [], session.albumTrackPage || 0)
+        : albumTracksKeyboard(
+            job.sessionId,
+            album?.tracks || [],
+            session.albumsPage || 0,
+            session.albumTrackPage || 0
+          );
 
       await bot.editMessageText(
         session.chatId,
@@ -829,9 +835,10 @@ export const sourceQueue = new SerialQueue(async job => {
         }
         session.currentAlbum = { ...album, tracks };
         session.currentAlbumView = 'artist';
+        session.albumTrackPage = 0;
         session.albumsPage = Math.floor(job.index / ALBUMS_PER_PAGE); session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,`💿 ${album.title}\n${session.artistContext.artist}`,{
-          reply_markup: albumTracksKeyboard(job.sessionId,tracks,session.albumsPage),
+          reply_markup: albumTracksKeyboard(job.sessionId,tracks,session.albumsPage,0),
         });
       } catch (err) {
         console.error('[album]',err.message); session.busy = false;
