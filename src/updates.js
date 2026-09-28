@@ -9,6 +9,7 @@ import {
   albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
 import { noteUserActivity } from './state.js';
+import { CURATED_PLAYLISTS } from './homeCatalog.js';
 
 const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
@@ -136,17 +137,18 @@ export async function handleUpdate(update) {
       } else if (action === 'hpo') {
         session.busy = true;
         const playlistIndex = Number(parts[2]);
-        const playlists = curatedPlaylistsKeyboard(sessionId).inline_keyboard
-          .slice(0, -1)
-          .map((row, index) => ({ index, callback: row[0]?.callback_data }));
-        const selected = playlists.find(item => item.index === playlistIndex);
-        if (!selected) {
+        const playlist = CURATED_PLAYLISTS[playlistIndex];
+        if (!playlist) {
           session.busy = false;
           return;
         }
-        const playlistKey = ['pop','nostalgia','remix','martik','gilaki'][playlistIndex];
         await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن پلی‌لیست…');
-        sourceQueue.push({ type: 'home_playlist', sessionId, messageId, playlistKey });
+        sourceQueue.push({
+          type: 'home_playlist',
+          sessionId,
+          messageId,
+          playlistKey: playlist.key,
+        });
       } else if (action === 'hfol') {
         session.followedArtists = await follows.listForUser(session.userId, 12);
         if (!session.followedArtists.length) {
