@@ -20,6 +20,7 @@ import {
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
+import { executeDeepTask } from './deepCrawler.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
@@ -50,6 +51,15 @@ export const sourceQueue = new SerialQueue(async job => {
       } catch (err) {
         console.error('[search]',err.message);
         await bot.editMessageText(job.chatId,job.statusMessageId,'نتیجه‌ای پیدا نشد.');
+      }
+      return;
+    }
+
+    if (job.type === 'deep_crawl') {
+      try {
+        await executeDeepTask(job.task);
+      } catch (err) {
+        console.warn('[deep crawl job]', err.message);
       }
       return;
     }

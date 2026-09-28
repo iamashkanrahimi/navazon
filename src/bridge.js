@@ -35,6 +35,7 @@ export class BridgeInbox {
         title: message.audio.title || undefined,
         performer: message.audio.performer || undefined,
         duration: message.audio.duration || undefined,
+        fileSize: message.audio.file_size || undefined,
       });
       return true;
     }
@@ -45,6 +46,20 @@ export class BridgeInbox {
         fileId: message.document.file_id,
         fileUniqueId: message.document.file_unique_id,
         fileName: message.document.file_name || undefined,
+        fileSize: message.document.file_size || undefined,
+      });
+      return true;
+    }
+
+    if (Array.isArray(message.photo) && message.photo.length) {
+      const best = message.photo[message.photo.length - 1];
+      this.waiter.resolve({
+        kind: 'photo',
+        fileId: best.file_id,
+        fileUniqueId: best.file_unique_id,
+        width: best.width || undefined,
+        height: best.height || undefined,
+        fileSize: best.file_size || undefined,
       });
       return true;
     }

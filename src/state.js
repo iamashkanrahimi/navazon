@@ -29,7 +29,7 @@ export async function recordCrawlerFinish(id, { ok, summary = null, error = null
 }
 
 export async function getStats() {
-  const [artists, cache, follows, crawler, sessions] = await Promise.all([
+  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists] = await Promise.all([
     db.query(`SELECT COUNT(*)::bigint AS artists,
       COALESCE(SUM(jsonb_object_length(COALESCE(data->'tracks','{}'::jsonb))),0)::bigint AS tracks,
       COALESCE(SUM(jsonb_array_length(COALESCE(data->'albumList','[]'::jsonb))),0)::bigint AS albums
@@ -46,6 +46,26 @@ export async function getStats() {
       MAX(finished_at) AS last_finished_at
       FROM crawler_runs`),
     db.query('SELECT COUNT(*)::bigint AS active_sessions FROM sessions WHERE expires_at > NOW()'),
+    db.query(`SELECT COUNT(*)::bigint AS tracks,
+      COUNT(*) FILTER (WHERE lyrics_text IS NOT NULL AND lyrics_text <> '')::bigint AS lyrics,
+      COUNT(*) FILTER (WHERE cover_file_id IS NOT NULL)::bigint AS covers,
+      COUNT(*) FILTER (WHERE release_date IS NOT NULL OR release_date_raw IS NOT NULL)::bigint AS release_dates
+      FROM deep_tracks`),
+    db.query(`SELECT COUNT(*)::bigint AS media,
+      COUNT(*) FILTER (WHERE quality = 'hq')::bigint AS hq,
+      COUNT(*) FILTER (WHERE quality = 'normal')::bigint AS normal
+      FROM deep_track_media`),
+    db.query(`SELECT
+      COUNT(*) FILTER (WHERE status = 'queued')::bigint AS queued,
+      COUNT(*) FILTER (WHERE status = 'running')::bigint AS running,
+      COUNT(*) FILTER (WHERE status = 'done')::bigint AS done,
+      COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed
+      FROM crawl_tasks`),
+    db.query('SELECT COUNT(*)::bigint AS albums FROM deep_albums'),
+    db.query(`SELECT
+      COUNT(*) FILTER (WHERE list_type = 'recent')::bigint AS recent_rows,
+      COUNT(*) FILTER (WHERE list_type = 'top')::bigint AS top_rows
+      FROM deep_artist_tracks`),
   ]);
   const toNum = row => Object.fromEntries(Object.entries(row).map(([k,v]) => [k, typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v]));
   return {
@@ -54,5 +74,12 @@ export async function getStats() {
     follows: toNum(follows.rows[0]),
     crawler: toNum(crawler.rows[0]),
     sessions: toNum(sessions.rows[0]),
+    deepCatalog: {
+      tracks: toNum(deepTracks.rows[0]),
+      media: toNum(deepMedia.rows[0]),
+      tasks: toNum(deepTasks.rows[0]),
+      albums: toNum(deepAlbums.rows[0]),
+      artistLists: toNum(deepLists.rows[0]),
+    },
   };
 }

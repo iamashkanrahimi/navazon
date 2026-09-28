@@ -1,43 +1,37 @@
-# Navazon Cloud v1
+# Navazon Cloud v1.1 — Deep Catalog
 
 Cloud-ready Navazon Telegram music bot.
 
 ## Architecture
 
 - Render Free Web Service: Telegram webhook + serialized source worker
-- Neon Postgres: persistent catalog, Telegram file_id cache, follows, sessions, crawler metrics
-- Telegram MTProto proxy account: MeloBot Premium first, Ahangify fallback
-- External cron: calls `/crawler` every 2 minutes
+- Neon Postgres: persistent catalog, Telegram file_id cache, follows, sessions and crawler queue
+- Telegram MTProto proxy account: MeloBot Premium first, Ahangify fallback for user requests
+- External cron: calls /crawler every 2 minutes
 
-Audio bytes are not stored in Render or Neon. Navazon stores Telegram `file_id` values and metadata.
+Audio and cover bytes are not stored in Render or Neon. Navazon stores Telegram file_id values plus metadata.
 
-## Render
+## Deep crawler
 
-Build command:
+v1.1 uses a persistent, feed-driven task queue. It discovers content from MeloBot feeds:
+- /new
+- /topday
+- /topweek
+- /foreign
+- /turkish
+- /arabic
 
-```bash
-npm install
-```
+For every artist it stores recent and top tracks separately, then expands albums and album tracklists.
 
-Start command:
+For every discovered track, separate tasks progressively collect HQ and normal Telegram file IDs, release date and popularity metadata, cover photo file IDs, and lyrics text when available.
 
-```bash
-npm start
-```
-
-Required environment variables are documented in `.env.example`.
+Only one source task runs at a time. Crawl tasks are stored in Neon, so Render restarts do not lose the queue.
 
 ## Endpoints
 
-- `GET /health`
-- `POST /telegram/webhook`
-- `GET|POST /crawler` — Bearer `CRAWLER_TOKEN`
-- `GET /admin/stats` — Bearer `ADMIN_TOKEN`
+- GET /health
+- POST /telegram/webhook
+- GET or POST /crawler with Bearer CRAWLER_TOKEN
+- GET /admin/stats with Bearer ADMIN_TOKEN
 
-On Render, the app uses `RENDER_EXTERNAL_URL` and configures the Telegram webhook at startup.
-
-## Crawler
-
-Crawler is metadata-first and runs only when the source queue is idle and the user has been inactive for at least 2 minutes. It expands the catalog through search results, top tracks, albums, album tracklists, featured artists, Ahangify supplemental metadata, and MeloBot-home bootstrap discovery.
-
-Automatic audio warming remains disabled by default with `DISCOVERY_WARM_TOP_TRACKS=0`.
+/admin/stats includes deep catalog coverage for tracks, media qualities, covers, lyrics, release dates, albums, and queue state.

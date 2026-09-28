@@ -74,5 +74,94 @@ export async function initDb() {
       summary JSONB,
       error TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS deep_tracks (
+      track_key TEXT PRIMARY KEY,
+      artist TEXT NOT NULL,
+      title TEXT NOT NULL,
+      album TEXT,
+      duration_seconds INTEGER,
+      release_date DATE,
+      release_date_raw TEXT,
+      popularity_count BIGINT,
+      popularity_text TEXT,
+      content_origin TEXT NOT NULL DEFAULT 'unknown',
+      availability_policy TEXT NOT NULL DEFAULT 'unknown',
+      source_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      lyrics_text TEXT,
+      lyrics_source TEXT,
+      lyrics_updated_at TIMESTAMPTZ,
+      cover_file_id TEXT,
+      cover_unique_id TEXT,
+      cover_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+      discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS deep_tracks_artist_idx ON deep_tracks (artist);
+    CREATE INDEX IF NOT EXISTS deep_tracks_updated_idx ON deep_tracks (updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS deep_track_media (
+      track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
+      quality TEXT NOT NULL,
+      file_id TEXT NOT NULL,
+      file_unique_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'audio',
+      bitrate INTEGER,
+      file_size BIGINT,
+      duration_seconds INTEGER,
+      source TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (track_key, quality)
+    );
+
+    CREATE TABLE IF NOT EXISTS deep_albums (
+      album_key TEXT PRIMARY KEY,
+      artist TEXT NOT NULL,
+      title TEXT NOT NULL,
+      track_count INTEGER,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      cover_file_id TEXT,
+      cover_unique_id TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS deep_album_tracks (
+      album_key TEXT NOT NULL REFERENCES deep_albums(album_key) ON DELETE CASCADE,
+      track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
+      position INTEGER,
+      PRIMARY KEY (album_key, track_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS deep_artist_tracks (
+      artist_key TEXT NOT NULL,
+      artist_name TEXT NOT NULL,
+      list_type TEXT NOT NULL,
+      track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
+      rank INTEGER,
+      observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (artist_key, list_type, track_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS crawl_tasks (
+      id BIGSERIAL PRIMARY KEY,
+      task_key TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      priority INTEGER NOT NULL DEFAULT 50,
+      status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      last_error TEXT,
+      result JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS crawl_tasks_ready_idx
+      ON crawl_tasks (status, priority DESC, available_at, id);
   `);
 }
