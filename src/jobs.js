@@ -20,7 +20,7 @@ import {
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
   matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums,
-  discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
+  albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
@@ -160,9 +160,15 @@ async function searchAlbumOptions(query, tracks = []) {
           complete: Boolean(direct.complete),
           emptyConfirmed: Boolean(direct.confirmedEmpty && direct.complete),
         });
+
+        const matched = direct.albums.filter(album =>
+          albumQueryMatches(query, direct.artist, album.title)
+        );
+        const visible = matched.length ? matched : direct.albums;
+
         albums = mergeAlbumResults(
           limit,
-          direct.albums.map(album => ({ ...album, artist: direct.artist, source: 'melobot' })),
+          visible.map(album => ({ ...album, artist: direct.artist, source: 'melobot' })),
           albums
         );
       }
