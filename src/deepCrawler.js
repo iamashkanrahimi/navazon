@@ -4,6 +4,7 @@ import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import {
   discoverMeloBotFeed,
   discoverMeloBotHome,
+  discoverMeloBotPlaylists,
   downloadMeloBotTrackQuality,
   downloadMeloBotBulkTracks,
   enrichMeloBotTrack,
@@ -426,6 +427,32 @@ async function runHomeDiscovery(task) {
   };
 }
 
+async function runPlaylistDiscovery(task) {
+  const maxPlaylists = Math.max(1, Number(task.payload?.maxPlaylists || 6));
+  const discovered = await discoverMeloBotPlaylists(tg, { maxPlaylists });
+
+  await seedTracks(discovered.tracks, 86, {
+    discoveredFrom: 'playlist_discovery',
+    preferBulk: true,
+  });
+
+  const byArtist = new Map();
+  for (const track of discovered.tracks || []) {
+    const key = deepNormalize(track.artist);
+    if (key && !byArtist.has(key)) byArtist.set(key, track);
+  }
+
+  await Promise.all([...byArtist.values()].map(track =>
+    enqueueArtistProfile(track.artist, track, 96)
+  ));
+
+  return {
+    playlists: discovered.playlists?.length || 0,
+    tracks: discovered.tracks?.length || 0,
+    artists: discovered.artists?.length || byArtist.size,
+  };
+}
+
 async function runFeed(task) {
   const { feed, origin = 'unknown' } = task.payload || {};
   if (!feed) throw new Error('Feed task is missing feed name.');
@@ -700,6 +727,7 @@ export async function executeDeepTask(task) {
     let summary;
     if (task.kind === 'feed') summary = await runFeed(task);
     else if (task.kind === 'home_discovery') summary = await runHomeDiscovery(task);
+    else if (task.kind === 'playlist_discovery') summary = await runPlaylistDiscovery(task);
     else if (task.kind === 'artist_profile') summary = await runArtistProfile(task);
     else if (task.kind === 'artist_bulk_media') summary = await runArtistBulkMedia(task);
     else if (task.kind === 'album_bulk_media') summary = await runAlbumBulkMedia(task);
