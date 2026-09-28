@@ -17,7 +17,7 @@ import {
   openMeloBotArtist, openMeloBotArtistFresh,
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
-  matchBulkAudioToTracks, listMeloBotAlbums,
+  matchBulkAudioToTracks, listMeloBotAlbums, discoverMeloBotAlbumsForQuery,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
@@ -79,6 +79,70 @@ async function syncAlbumTracks(artist, album, tracks = []) {
       console.warn('[album track sync]', artist, album.title, result.reason?.message || result.reason);
     }
   }
+}
+
+function mergeAlbumResults(...groups) {
+  const out = [];
+  const seen = new Set();
+  for (const group of groups) {
+    for (const album of group || []) {
+      if (!album?.artist || !album?.title) continue;
+      const key = `${normalize(album.artist)}|${normalize(album.title)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(album);
+      if (out.length >= 4) return out;
+    }
+  }
+  return out;
+}
+
+async function searchAlbumOptions(query, tracks = []) {
+  const [deepAlbums, legacyAlbums] = await Promise.all([
+    deepCatalog.searchAlbums(query, 4).catch(() => []),
+    catalog.searchAlbums(query, 4).catch(() => []),
+  ]);
+  let albums = mergeAlbumResults(deepAlbums, legacyAlbums);
+  if (albums.length >= 4) return albums;
+
+  const q = normalize(query);
+  const melobotSeeds = (tracks || []).filter(track =>
+    track?.source === 'melobot' && track?.rawText && track?.artist
+  );
+  const artistMentioned = melobotSeeds.some(track =>
+    q.includes(normalize(track.artist))
+  );
+  const shouldTryLive = melobotSeeds.length && (
+    artistMentioned || q.split(/\s+/).filter(Boolean).length >= 2
+  );
+
+  if (shouldTryLive) {
+    try {
+      const liveAlbums = await discoverMeloBotAlbumsForQuery(
+        tg,
+        query,
+        melobotSeeds,
+        { maxArtists: 2, maxAlbums: 4 }
+      );
+
+      const grouped = new Map();
+      for (const album of liveAlbums) {
+        const key = normalize(album.artist);
+        const group = grouped.get(key) || { artist: album.artist, albums: [] };
+        group.albums.push(album);
+        grouped.set(key, group);
+      }
+      await Promise.all([...grouped.values()].map(group =>
+        syncAlbumIndex(group.artist, group.albums)
+      ));
+
+      albums = mergeAlbumResults(albums, liveAlbums);
+    } catch (err) {
+      console.warn('[album search discovery]', err.message);
+    }
+  }
+
+  return albums;
 }
 
 function bulkTrackKey(track = {}) {
@@ -193,7 +257,10 @@ async function deliverAvailableBulkCache(session, tracks) {
 }
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
-  await bot.editMessageText(session.chatId,messageId,`نتیجه‌ها برای «${session.query}»\nیک نسخه رو انتخاب کن:`,{
+  const prompt = session.albumOptions?.length
+    ? 'یک آهنگ یا آلبوم رو انتخاب کن:'
+    : 'یک نسخه رو انتخاب کن:';
+  await bot.editMessageText(session.chatId,messageId,`نتیجه‌ها برای «${session.query}»\n${prompt}`,{
     reply_markup: resultsKeyboard(sessionId,session),
   });
 }
@@ -207,10 +274,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const options = cachedOptions || await searchPrimary(job.query);
         if (!options.length) throw new Error('No results');
 
+        const albumOptions = await searchAlbumOptions(job.query, options);
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
-          messageId: job.statusMessageId, options, artistContext: null,
+          messageId: job.statusMessageId, options, albumOptions, artistContext: null,
           artistSeed: null, isFollowing: false, albums: null,
           currentAlbum: null, currentAlbumView: null, albumsPage: 0, albumTrackPage: 0,
           currentTrack: null, trackBack: null, artistBack: 'rs', busy: false,
@@ -249,6 +317,73 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (!session && !['discover','discover_bootstrap'].includes(job.type)) return;
     if (session) session.expiresAt = Date.now() + SESSION_TTL_MS;
+
+    if (job.type === 'search_album') {
+      try {
+        const album = session.albumOptions?.[job.index];
+        if (!album?.artist || !album?.title) throw new Error('Search album is missing.');
+
+        let tracks = album.albumKey
+          ? await deepCatalog.getAlbumTracksByKey(album.albumKey)
+          : [];
+        if (!tracks.length) {
+          tracks = await catalog.getAlbumTracks(
+            album.artist,
+            album.title,
+            config.catalogAlbumTracksTtlMs
+          ) || [];
+        }
+
+        let liveAlbum = album;
+        if (!tracks.length) {
+          const seed = session.options?.find(track =>
+            track.source === 'melobot' &&
+            normalize(track.artist) === normalize(album.artist)
+          ) || null;
+          const liveArtist = await openMeloBotArtistFresh(tg, album.artist, seed);
+          session.artistSeed = seed || liveArtist.recentTracks?.[0] || liveArtist.topTracks?.[0] || null;
+          await syncArtistContext(liveArtist);
+
+          const liveAlbums = await listMeloBotAlbums(tg, liveArtist);
+          await syncAlbumIndex(liveArtist.artist, liveAlbums);
+          liveAlbum = liveAlbums.find(item =>
+            normalize(item.title) === normalize(album.title)
+          ) || album;
+          tracks = await openMeloBotAlbum(tg, liveArtist.artist, liveAlbum);
+          await syncAlbumTracks(liveArtist.artist, liveAlbum, tracks);
+        }
+
+        session.currentAlbum = {
+          ...liveAlbum,
+          ...album,
+          artist: album.artist,
+          tracks,
+        };
+        session.currentAlbumView = 'search';
+        session.albumTrackPage = 0;
+        session.busy = false;
+
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          `💿 ${album.title}\n${album.artist}`,
+          {
+            reply_markup: albumTracksKeyboard(
+              job.sessionId,
+              tracks,
+              0,
+              0,
+              { backAction: 'results' }
+            ),
+          }
+        );
+      } catch (err) {
+        console.error('[search album]', err.message);
+        session.busy = false;
+        await showResults(job.sessionId, session, job.messageId);
+      }
+      return;
+    }
 
     if (job.type === 'track_page') {
       try {
@@ -657,7 +792,8 @@ export const sourceQueue = new SerialQueue(async job => {
             job.sessionId,
             album?.tracks || [],
             session.albumsPage || 0,
-            session.albumTrackPage || 0
+            session.albumTrackPage || 0,
+            { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
           );
 
       await bot.editMessageText(
