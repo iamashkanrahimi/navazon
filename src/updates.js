@@ -265,13 +265,21 @@ export async function handleUpdate(update) {
   const userId = msg.from?.id;
   if (!chatId || !userId) return;
   await noteUserActivity();
-  if (msg.text === '/start') {
+  if (/^\/start(?:@\w+)?(?:\s|$)/i.test(msg.text || '')) {
     await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو بفرست.');
     return;
   }
   const query = msg.text?.trim();
   if (!query) {
     await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو به‌صورت متن بفرست.');
+    return;
+  }
+  if (query.startsWith('/')) {
+    await bot.sendMessage(chatId,'برای جست‌وجو فقط اسم آهنگ یا خواننده رو بفرست.');
+    return;
+  }
+  if (query.length > 120) {
+    await bot.sendMessage(chatId,'عبارت جست‌وجو خیلی طولانیه؛ کوتاه‌ترش کن.');
     return;
   }
   if (!searchAllowed(userId)) {
