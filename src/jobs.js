@@ -1283,26 +1283,44 @@ export const sourceQueue = new SerialQueue(async job => {
           } else {
             const seed = session.artistSeed || session.options.find(x =>
               x.source === 'melobot' && normalize(x.artist) === normalize(session.artistContext.artist));
-            if (!seed) throw new Error('Artist seed missing for album navigation.');
 
-            const liveArtist = await openMeloBotArtist(tg,seed);
-            session.artistContext = {
-              ...session.artistContext,
-              artist: liveArtist.artist || session.artistContext.artist,
-              albumButton: liveArtist.albumButton || null,
-              albumList: liveArtist.albumList || [],
-              albumListingConfirmed: Boolean(liveArtist.albumListingConfirmed),
-              albumListingConfirmedEmpty: Boolean(liveArtist.albumListingConfirmedEmpty),
-              albumDeclaredCount: liveArtist.albumDeclaredCount ?? null,
-            };
+            let resolvedAlbums;
+            if (seed) {
+              const liveArtist = await openMeloBotArtist(tg,seed);
+              session.artistContext = {
+                ...session.artistContext,
+                artist: liveArtist.artist || session.artistContext.artist,
+                albumButton: liveArtist.albumButton || null,
+                albumList: liveArtist.albumList || [],
+                albumListingConfirmed: Boolean(liveArtist.albumListingConfirmed),
+                albumListingConfirmedEmpty: Boolean(liveArtist.albumListingConfirmedEmpty),
+                albumDeclaredCount: liveArtist.albumDeclaredCount ?? null,
+              };
 
-            // The artist page may already be the album-list page. Resolve it
-            // without pressing one of the album rows as if it were navigation.
-            const resolvedAlbums = await resolveMeloBotAlbums(
-              tg,
-              session.artistContext,
-              { allowEmpty: true }
-            );
+              // The artist page may already be the album-list page. Resolve it
+              // without pressing one of the album rows as if it were navigation.
+              resolvedAlbums = await resolveMeloBotAlbums(
+                tg,
+                session.artistContext,
+                { allowEmpty: true }
+              );
+            } else {
+              const direct = await discoverMeloBotAlbumsByArtistQuery(
+                tg,
+                `album ${session.artistContext.artist}`,
+                { maxAlbums: 30 }
+              );
+              session.artistContext = {
+                ...session.artistContext,
+                artist: direct.artist || session.artistContext.artist,
+              };
+              resolvedAlbums = {
+                albums: direct.albums || [],
+                complete: Boolean(direct.complete),
+                confirmedEmpty: Boolean(direct.confirmedEmpty),
+              };
+            }
+
             session.albums = resolvedAlbums.albums;
             session.albumsEmptyConfirmed = Boolean(
               resolvedAlbums.confirmedEmpty && resolvedAlbums.complete
