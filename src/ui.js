@@ -55,7 +55,7 @@ export function resultsKeyboard(sessionId, session) {
   return { inline_keyboard: rows };
 }
 
-export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false) {
+export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false, { backAction = 'rs' } = {}) {
   const rows = [];
   const hasTop = Boolean(artistContext.topTracks?.length || artistContext.tracks?.length);
   const hasRecent = Boolean(artistContext.recentTracks?.length);
@@ -71,7 +71,7 @@ export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false
   secondRow.push({ text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` });
   rows.push(secondRow);
 
-  rows.push([{ text: '🔙 برگشت', callback_data: `rs:${sessionId}` }]);
+  rows.push([{ text: '🔙 برگشت', callback_data: `${backAction}:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
 
@@ -157,6 +157,15 @@ export function albumsKeyboard(sessionId, albums, page) {
   if (start + ALBUMS_PER_PAGE < albums.length) nav.push({ text: '›', callback_data: `alb:${sessionId}:${page + 1}` });
   if (nav.length) rows.push(nav);
   rows.push([{ text: '‹ خواننده', callback_data: `arh:${sessionId}` }]);
+  return { inline_keyboard: rows };
+}
+
+export function trackAlbumKeyboard(sessionId, album, tracks) {
+  const rows = (tracks || []).slice(0, 20).map((track,index) => ([{
+    text: trackButtonLabel(track,index),
+    callback_data: `alt:${sessionId}:${index}`,
+  }]));
+  rows.push([{ text: '🔙 آهنگ', callback_data: `tret:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
 
