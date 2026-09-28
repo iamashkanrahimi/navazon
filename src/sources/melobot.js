@@ -1139,7 +1139,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   if (listing.confirmed) {
     return {
       artist,
-      albums: listing.albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
+      albums: listing.albums,
       complete: listing.complete,
       confirmedEmpty: listing.confirmedEmpty,
     };
@@ -1159,7 +1159,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     if (listing.confirmed) {
       return {
         artist,
-        albums: listing.albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
+        albums: listing.albums,
         complete: listing.complete,
         confirmedEmpty: listing.confirmedEmpty,
       };
@@ -1182,7 +1182,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty: true });
     return {
       artist: artistContext.artist,
-      albums: resolved.albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
+      albums: resolved.albums,
       complete: resolved.complete,
       confirmedEmpty: resolved.confirmedEmpty,
     };
