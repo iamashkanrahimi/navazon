@@ -114,7 +114,7 @@ function mergeAlbumResults(limit, ...groups) {
 
 async function searchAlbumOptions(query, tracks = []) {
   const albumIntent = isAlbumIntentQuery(query);
-  const limit = albumIntent ? 12 : 4;
+  const limit = albumIntent ? 20 : 4;
 
   const [deepAlbums, legacyAlbums] = await Promise.all([
     deepCatalog.searchAlbums(query, limit).catch(err => {
@@ -579,17 +579,55 @@ export const sourceQueue = new SerialQueue(async job => {
             track.source === 'melobot' &&
             normalize(track.artist) === normalize(album.artist)
           ) || null;
-          const liveArtist = await openMeloBotArtistFresh(tg, album.artist, seed);
-          session.artistSeed = seed || liveArtist.recentTracks?.[0] || liveArtist.topTracks?.[0] || null;
-          await syncArtistContext(liveArtist);
 
-          const liveAlbums = await listMeloBotAlbums(tg, liveArtist);
-          await syncAlbumIndex(liveArtist.artist, liveAlbums);
+          let liveArtistName = album.artist;
+          let liveAlbums = [];
+
+          if (seed) {
+            const liveArtist = await openMeloBotArtistFresh(tg, album.artist, seed);
+            liveArtistName = liveArtist.artist;
+            session.artistSeed = seed
+              || liveArtist.recentTracks?.[0]
+              || liveArtist.topTracks?.[0]
+              || null;
+            await syncArtistContext(liveArtist);
+
+            const resolved = await resolveMeloBotAlbums(
+              tg,
+              liveArtist,
+              { allowEmpty: true }
+            );
+            liveAlbums = resolved.albums;
+            await syncAlbumIndex(liveArtist.artist, liveAlbums, {
+              complete: Boolean(resolved.complete),
+              emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
+            });
+          } else {
+            // Album-only searches deliberately skip track search. Re-open the
+            // source's artist picker/list directly so an album can still be
+            // opened even when no seed track exists in the session.
+            const direct = await discoverMeloBotAlbumsByArtistQuery(
+              tg,
+              `album ${album.artist}`,
+              { maxAlbums: 30 }
+            );
+            liveArtistName = direct.artist || album.artist;
+            liveAlbums = direct.albums || [];
+            await syncAlbumIndex(liveArtistName, liveAlbums, {
+              complete: Boolean(direct.complete),
+              emptyConfirmed: Boolean(direct.confirmedEmpty && direct.complete),
+            });
+          }
+
           liveAlbum = liveAlbums.find(item =>
             normalize(item.title) === normalize(album.title)
-          ) || album;
-          tracks = await openMeloBotAlbum(tg, liveArtist.artist, liveAlbum);
-          await syncAlbumTracks(liveArtist.artist, liveAlbum, tracks);
+          ) || null;
+          if (!liveAlbum) {
+            throw new Error(`Album disappeared from live source: ${album.title}`);
+          }
+
+          tracks = await openMeloBotAlbum(tg, liveArtistName, liveAlbum);
+          await syncAlbumTracks(liveArtistName, liveAlbum, tracks);
         }
 
         session.currentAlbum = {
