@@ -14,8 +14,10 @@ import {
   sourceCandidateToTrack,
 } from './media.js';
 import {
-  openMeloBotArtist, openMeloBotArtistFresh, prepareMeloBotBulkTopTracks,
-  downloadMeloBotTopTracks, matchBulkAudioToTracks, listMeloBotAlbums,
+  openMeloBotArtist, openMeloBotArtistFresh,
+  prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
+  downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
+  matchBulkAudioToTracks, listMeloBotAlbums,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
@@ -31,6 +33,78 @@ import {
 } from './trackActions.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
+
+function bulkTrackKey(track = {}) {
+  return track.rawText || `${normalize(track.artist)}|${normalize(track.title)}`;
+}
+
+async function deliverNativeBulkHq(session, tracks, bulkResult, {
+  label = 'bulk',
+} = {}) {
+  const sourceTracks = (tracks || []).slice();
+  if (!sourceTracks.length) return { sent: 0, missing: 0, matched: 0 };
+
+  const matches = matchBulkAudioToTracks(sourceTracks, bulkResult?.audioItems || []);
+  const mediaByTrack = new Map();
+
+  // Bridge every file produced by MeloBot once, then reuse its Bot API file_id.
+  for (const { track: sourceTrack, audioItem } of matches) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    try {
+      const media = await bridgeSourceMessage(config.melobotUsername, audioItem.message, track);
+      mediaByTrack.set(bulkTrackKey(track), media);
+      try { await deepCatalog.setMedia(track, 'hq', media, { source: 'melobot' }); } catch {}
+    } catch (err) {
+      console.warn(`[${label} bridge]`, track.artist, track.title, err.message);
+    }
+  }
+
+  let sent = 0;
+  let missing = 0;
+  for (const sourceTrack of sourceTracks) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    try {
+      assertDeliveryAllowed(track, session.userRegion || 'unknown');
+      let media = mediaByTrack.get(bulkTrackKey(track));
+      if (media) {
+        await sendMedia(session.chatId, track, media);
+        sent += 1;
+        continue;
+      }
+
+      // A previously cached file can fill an unmatched slot without another source request.
+      const cached = await cache.get(track);
+      if (cached) {
+        await deliverCached(session.chatId, track, cached);
+        sent += 1;
+      } else {
+        missing += 1;
+      }
+    } catch (err) {
+      console.warn(`[${label} deliver]`, track.artist, track.title, err.message);
+      missing += 1;
+    }
+  }
+
+  return { sent, missing, matched: matches.length };
+}
+
+async function deliverBulkFromCacheIfComplete(session, tracks) {
+  const sourceTracks = (tracks || []).slice();
+  if (!sourceTracks.length) return { complete: false, sent: 0 };
+  const cached = await Promise.all(sourceTracks.map(track => cache.get(track)));
+  if (!cached.every(Boolean)) return { complete: false, sent: 0 };
+
+  let sent = 0;
+  for (let index = 0; index < sourceTracks.length; index += 1) {
+    const track = applyPolicyDefaults({ ...sourceTracks[index], source: 'melobot' });
+    assertDeliveryAllowed(track, session.userRegion || 'unknown');
+    await deliverCached(session.chatId, track, cached[index]);
+    sent += 1;
+  }
+  return { complete: true, sent };
+}
+
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
   await bot.editMessageText(session.chatId,messageId,`نتیجه‌ها برای «${session.query}»\nیک نسخه رو انتخاب کن:`,{
