@@ -360,6 +360,10 @@ async function runTrackEnrich(task) {
     errors: [...(bundle.errors || [])],
   };
 
+  if (bundle.capabilities) {
+    try { await deepCatalog.setCapabilities(liveTrack, bundle.capabilities); } catch {}
+  }
+
   if (bundle.metadata) {
     try {
       await deepCatalog.setMetadata(liveTrack, bundle.metadata);
