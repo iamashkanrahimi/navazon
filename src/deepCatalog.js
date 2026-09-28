@@ -473,17 +473,16 @@ export class DeepCatalog {
       taskKey: `track_enrich:${trackKey}`,
     });
 
-    if (includeMedia) {
-      // Individual media tasks remain as a low-priority safety net. Native bulk
-      // artist/album tasks will satisfy and auto-complete these when possible.
-      const hqPriority = preferBulk ? priority - 18 : priority + 20;
-      const normalPriority = preferBulk ? priority - 24 : priority + 10;
+    if (includeMedia && !preferBulk) {
+      // For user-selected/standalone tracks, warm files individually.
+      // Feed/artist/album tracks wait for native bulk first; sparse misses are
+      // enqueued later only when bulk cannot efficiently fill them.
       await this.enqueueTask('track_hq', payload, {
-        priority: hqPriority,
+        priority: priority + 20,
         taskKey: `track_hq:${trackKey}`,
       });
       await this.enqueueTask('track_normal', payload, {
-        priority: normalPriority,
+        priority: priority + 10,
         taskKey: `track_normal:${trackKey}`,
       });
     }
