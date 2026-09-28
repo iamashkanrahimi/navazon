@@ -538,7 +538,7 @@ async function runAlbumIndex(task) {
   const albums = await listMeloBotAlbums(tg, live);
   await catalog.recordAlbums(live.artist, albums);
 
-  for (const album of albums) {
+  await Promise.all(albums.map(async album => {
     await deepCatalog.upsertAlbum(live.artist, album);
     await deepCatalog.enqueueTask(
       'album_detail',
@@ -548,7 +548,7 @@ async function runAlbumIndex(task) {
         taskKey: `album_detail:${deepNormalize(live.artist)}:${deepNormalize(album.title)}`,
       }
     );
-  }
+  }));
 
   return { artist: live.artist, albums: albums.length };
 }
