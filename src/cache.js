@@ -39,10 +39,15 @@ export class FileCache {
       const title = normalize(track?.title || '');
       if (artist || title) {
         const prefix = `${artist}|${title}|%`;
-        result = await db.query(
-          'SELECT track_key, track, media FROM track_cache WHERE track_key LIKE $1 ORDER BY updated_at DESC LIMIT 1',
-          [prefix]
-        );
+        result = await db.query(`
+          SELECT track_key, track, media
+          FROM track_cache
+          WHERE track_key LIKE $1
+          ORDER BY
+            CASE WHEN COALESCE(track->>'source','') = $2 THEN 0 ELSE 1 END,
+            updated_at DESC
+          LIMIT 1
+        `, [prefix, String(track?.source || '')]);
       }
     }
 
