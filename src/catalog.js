@@ -159,6 +159,44 @@ export class CatalogStore {
     return Array.isArray(node.albumList) && node.albumList.length ? node.albumList : null;
   }
 
+  async searchAlbums(query, limit = 4) {
+    const tokens = normalize(query)
+      .split(' ')
+      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    if (!tokens.length) return [];
+
+    const clauses = tokens.map((_, index) =>
+      `LOWER(a.name || ' ' || COALESCE(album->>'title','')) LIKE ${index + 1}`
+    );
+    const params = tokens.map(token => `%${token}%`);
+    params.push(Math.max(1, Number(limit || 4)));
+
+    const result = await db.query(`
+      SELECT
+        a.name AS artist,
+        album->>'title' AS title,
+        NULLIF(album->>'trackCount','')::int AS track_count,
+        album->>'rawText' AS raw_text
+      FROM artists a
+      CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(a.data->'albumList','[]'::jsonb)
+      ) album
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY a.updated_at DESC
+      LIMIT ${params.length}
+    `, params);
+
+    return result.rows
+      .filter(row => row.artist && row.title)
+      .map(row => ({
+        artist: row.artist,
+        title: row.title,
+        trackCount: row.track_count || undefined,
+        rawText: row.raw_text || undefined,
+        source: 'catalog',
+      }));
+  }
+
   async getAlbumTracks(name, albumTitle, maxAgeMs) {
     const { node } = await this.readArtist(name);
     const album = node?.albums?.[normalize(albumTitle)];
