@@ -3,7 +3,7 @@ name: syntax-check
 on:
   push:
     branches:
-      - v1.1-deep-catalog
+      - 'v*'
   pull_request:
     branches:
       - main
