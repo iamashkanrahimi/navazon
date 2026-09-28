@@ -523,6 +523,7 @@ export const sourceQueue = new SerialQueue(async job => {
         session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
         session.artistBack = 'hfol';
         session.albums = null;
+        session.albumsEmptyConfirmed = false;
         session.busy = false;
 
         await bot.editMessageText(
@@ -756,6 +757,7 @@ export const sourceQueue = new SerialQueue(async job => {
         session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
         session.artistBack = 'trt';
         session.albums = null;
+        session.albumsEmptyConfirmed = false;
         session.busy = false;
         await bot.editMessageText(
           session.chatId,
@@ -1243,7 +1245,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
         session.isFollowing = await follows.isFollowing(session.userId,session.artistContext.artist);
         session.artistBack = 'rs';
-        session.albums = null; session.busy = false;
+        session.albums = null; session.albumsEmptyConfirmed = false; session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,session.artistContext.artist,{
           reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext,session.isFollowing,{ backAction: session.artistBack || 'rs' }),
         });
@@ -1257,15 +1259,20 @@ export const sourceQueue = new SerialQueue(async job => {
     if (job.type === 'albums') {
       try {
         if (!session.artistContext) throw new Error('Artist context missing');
-        if (!session.albums) {
+        const trustedSessionAlbums = Array.isArray(session.albums) && (
+          session.albums.length > 0 || session.albumsEmptyConfirmed === true
+        );
+
+        if (!trustedSessionAlbums) {
           const cachedAlbums = await catalog.getAlbums(
             session.artistContext.artist,
             config.catalogAlbumsTtlMs,
             config.catalogEmptyAlbumsTtlMs
           );
 
-          if (cachedAlbums) {
+          if (Array.isArray(cachedAlbums)) {
             session.albums = cachedAlbums;
+            session.albumsEmptyConfirmed = cachedAlbums.length === 0;
           } else {
             const seed = session.artistSeed || session.options.find(x =>
               x.source === 'melobot' && normalize(x.artist) === normalize(session.artistContext.artist));
@@ -1290,12 +1297,13 @@ export const sourceQueue = new SerialQueue(async job => {
               { allowEmpty: true }
             );
             session.albums = resolvedAlbums.albums;
+            session.albumsEmptyConfirmed = Boolean(
+              resolvedAlbums.confirmedEmpty && resolvedAlbums.complete
+            );
 
             await syncAlbumIndex(session.artistContext.artist, session.albums, {
               complete: Boolean(resolvedAlbums.complete),
-              emptyConfirmed: Boolean(
-                resolvedAlbums.confirmedEmpty && resolvedAlbums.complete
-              ),
+              emptyConfirmed: session.albumsEmptyConfirmed,
             });
           }
         }
@@ -1305,6 +1313,9 @@ export const sourceQueue = new SerialQueue(async job => {
         session.albumsPage = page;
 
         if (!session.albums.length) {
+          if (!session.albumsEmptyConfirmed) {
+            throw new Error('Album list is empty but was not confirmed by the source.');
+          }
           await bot.editMessageText(
             session.chatId,
             job.messageId,
