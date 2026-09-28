@@ -93,7 +93,12 @@ async function syncAlbumTracks(artist, album, tracks = []) {
 
 function isAlbumIntentQuery(query = '') {
   const tokens = normalize(query).split(/\s+/).filter(Boolean);
-  return tokens.includes('album') || tokens.includes('آلبوم');
+  const albumWords = new Set([
+    'album', 'albums',
+    'آلبوم', 'آلبومها', 'آلبومهای',
+    'البوم', 'البومها', 'البومهای',
+  ]);
+  return tokens.some(token => albumWords.has(token));
 }
 
 function mergeAlbumResults(limit, ...groups) {
