@@ -209,12 +209,23 @@ export function trackAlbumKeyboard(sessionId, album, tracks, page = 0) {
   return { inline_keyboard: rows };
 }
 
-export function albumTracksKeyboard(sessionId, tracks, backPage = 0, page = 0) {
+export function albumTracksKeyboard(
+  sessionId,
+  tracks,
+  backPage = 0,
+  page = 0,
+  { backAction = 'albums' } = {}
+) {
   const rows = pagedAlbumTrackRows(sessionId, tracks, page);
   if ((tracks || []).length) {
     rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
   }
-  rows.push([{ text: '‹ آلبوم‌ها', callback_data: `alb:${sessionId}:${backPage}` }]);
+
+  if (backAction === 'results') {
+    rows.push([{ text: '‹ نتایج جست‌وجو', callback_data: `rs:${sessionId}` }]);
+  } else {
+    rows.push([{ text: '‹ آلبوم‌ها', callback_data: `alb:${sessionId}:${backPage}` }]);
+  }
   return { inline_keyboard: rows };
 }
 
