@@ -654,8 +654,20 @@ export const sourceQueue = new SerialQueue(async job => {
         if (config.discoveryUseAhangify) {
           try {
             const extra = await searchAhangify(tg,liveArtist.artist);
-            const tracks = extra.map(item => sourceCandidateToTrack({ ...item, source: 'ahangify' }));
-            await catalog.recordSupplementalTracks(liveArtist.artist,tracks,'crawl:ahangify');
+            const targetArtist = normalize(liveArtist.artist);
+            const tracks = extra
+              .map(item => sourceCandidateToTrack({ ...item, source: 'ahangify' }))
+              .filter(track => {
+                const candidateArtist = normalize(track.artist || '');
+                if (!candidateArtist) return false;
+                if (candidateArtist === targetArtist) return true;
+                return candidateArtist
+                  .split(/\s*(?:&|,|\bx\b)\s*/iu)
+                  .some(part => normalize(part) === targetArtist);
+              });
+            if (tracks.length) {
+              await catalog.recordSupplementalTracks(liveArtist.artist,tracks,'crawl:ahangify');
+            }
           } catch (err) { console.warn('[crawler ahangify]',liveArtist.artist,err.message); }
         }
         let albums = [];
