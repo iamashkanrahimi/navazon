@@ -1183,7 +1183,12 @@ export const sourceQueue = new SerialQueue(async job => {
             const liveArtist = await openMeloBotArtist(tg,seed);
             session.artistContext = {
               ...session.artistContext,
-              ...liveArtist,
+              artist: liveArtist.artist || session.artistContext.artist,
+              albumButton: liveArtist.albumButton || null,
+              albumList: liveArtist.albumList || [],
+              albumListingConfirmed: Boolean(liveArtist.albumListingConfirmed),
+              albumListingConfirmedEmpty: Boolean(liveArtist.albumListingConfirmedEmpty),
+              albumDeclaredCount: liveArtist.albumDeclaredCount ?? null,
             };
 
             // listMeloBotAlbums can consume an album list already embedded in
