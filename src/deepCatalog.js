@@ -251,6 +251,122 @@ export class DeepCatalog {
     ]);
   }
 
+  async getTrackDetails(track = {}) {
+    const trackKey = deepTrackKey(track);
+    if (!trackKey || trackKey === '|') return null;
+
+    const [trackResult, mediaResult, albumResult] = await Promise.all([
+      db.query(`
+        SELECT track_key, artist, title, album, duration_seconds,
+          release_date, release_date_raw, popularity_count, popularity_text,
+          content_origin, availability_policy, metadata,
+          lyrics_text, lyrics_source,
+          cover_file_id, cover_unique_id, cover_meta
+        FROM deep_tracks
+        WHERE track_key = $1
+      `, [trackKey]),
+      db.query(`
+        SELECT quality, file_id, file_unique_id, kind, bitrate, file_size, duration_seconds, source
+        FROM deep_track_media
+        WHERE track_key = $1
+      `, [trackKey]),
+      db.query(`
+        SELECT a.album_key, a.artist, a.title, a.track_count
+        FROM deep_album_tracks dat
+        JOIN deep_albums a ON a.album_key = dat.album_key
+        WHERE dat.track_key = $1
+        ORDER BY a.updated_at DESC
+        LIMIT 1
+      `, [trackKey]),
+    ]);
+
+    const row = trackResult.rows[0] || null;
+    const media = {};
+    for (const item of mediaResult.rows) {
+      media[item.quality] = {
+        fileId: item.file_id,
+        fileUniqueId: item.file_unique_id,
+        kind: item.kind,
+        bitrate: item.bitrate,
+        fileSize: item.file_size ? Number(item.file_size) : undefined,
+        duration: item.duration_seconds || undefined,
+        source: item.source || undefined,
+      };
+    }
+
+    return {
+      ...(row || {
+        track_key: trackKey,
+        artist: clean(track.artist),
+        title: clean(track.title),
+      }),
+      media,
+      albumInfo: albumResult.rows[0] || null,
+    };
+  }
+
+  async getArtistList(artist, listType = 'top', limit = 10) {
+    const artistKey = deepNormalize(artist);
+    if (!artistKey) return [];
+    const result = await db.query(`
+      SELECT
+        t.track_key,
+        t.artist,
+        t.title,
+        t.album,
+        t.duration_seconds,
+        t.popularity_count,
+        t.popularity_text,
+        t.content_origin,
+        t.availability_policy,
+        t.source_data,
+        at.rank
+      FROM deep_artist_tracks at
+      JOIN deep_tracks t ON t.track_key = at.track_key
+      WHERE at.artist_key = $1 AND at.list_type = $2
+      ORDER BY at.rank ASC NULLS LAST, at.observed_at DESC
+      LIMIT $3
+    `, [artistKey, listType, Math.max(1, Number(limit || 10))]);
+
+    return result.rows.map(row => ({
+      artist: row.artist,
+      title: row.title,
+      album: row.album || undefined,
+      durationSeconds: row.duration_seconds || undefined,
+      sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+      sourcePopularityText: row.popularity_text || undefined,
+      contentOrigin: row.content_origin || 'unknown',
+      availabilityPolicy: row.availability_policy || 'unknown',
+      ...(row.source_data || {}),
+      source: row.source_data?.source || 'melobot',
+      rawText: row.source_data?.rawText || undefined,
+    }));
+  }
+
+  async getAlbumTracksByKey(albumKey) {
+    if (!albumKey) return [];
+    const result = await db.query(`
+      SELECT t.*, dat.position
+      FROM deep_album_tracks dat
+      JOIN deep_tracks t ON t.track_key = dat.track_key
+      WHERE dat.album_key = $1
+      ORDER BY dat.position ASC NULLS LAST
+    `, [albumKey]);
+    return result.rows.map(row => ({
+      artist: row.artist,
+      title: row.title,
+      album: row.album || undefined,
+      durationSeconds: row.duration_seconds || undefined,
+      sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+      sourcePopularityText: row.popularity_text || undefined,
+      contentOrigin: row.content_origin || 'unknown',
+      availabilityPolicy: row.availability_policy || 'unknown',
+      ...(row.source_data || {}),
+      source: row.source_data?.source || 'melobot',
+      rawText: row.source_data?.rawText || undefined,
+    }));
+  }
+
   async enqueueTask(kind, payload = {}, {
     priority = 50,
     delayMs = 0,

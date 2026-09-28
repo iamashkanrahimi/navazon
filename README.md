@@ -35,3 +35,15 @@ Only one source task runs at a time. Crawl tasks are stored in Neon, so Render r
 - GET /admin/stats with Bearer ADMIN_TOKEN
 
 /admin/stats includes deep catalog coverage for tracks, media qualities, covers, lyrics, release dates, albums, and queue state.
+
+
+## Track pages
+
+Selecting a song opens a compact song page instead of immediately downloading it.
+
+- HQ and normal quality buttons are shown when available.
+- Lyrics, cover, metadata, artist page, and album buttons are conditional.
+- Album is shown only when the catalog has a verified album relation for that track.
+- Artist pages expose both top tracks and newest tracks.
+- Song choices inside top/newest/album lists also open the same song page.
+- User-opened and user-searched tracks are promoted in the deep crawler queue so real usage improves the cache.

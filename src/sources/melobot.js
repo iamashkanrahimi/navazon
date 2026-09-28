@@ -242,8 +242,34 @@ export async function openMeloBotArtistFresh(client, artist, preferredSeed = nul
   return openMeloBotArtist(client, seed);
 }
 
+async function resolveMeloBotTrackCandidate(client, candidate) {
+  const query = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
+    || candidate?.title
+    || candidate?.rawText;
+
+  if (!query) throw new Error('MeloBot track candidate is incomplete.');
+
+  try {
+    const results = await searchMeloBot(client, query);
+    const artist = normalize(candidate?.artist || '');
+    const title = normalize(candidate?.title || '');
+
+    return results.find(track =>
+      normalize(track.artist) === artist && normalize(track.title) === title
+    ) || results.find(track =>
+      title && normalize(track.title) === title
+    ) || results[0] || candidate;
+  } catch (err) {
+    console.warn('[melobot resolve track]', err.message);
+    return candidate;
+  }
+}
+
 async function openTrackMenu(client, candidate) {
-  const selected = await sendAndCollect(client, candidate.rawText, {
+  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
+  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+
+  const selected = await sendAndCollect(client, liveCandidate.rawText, {
     timeoutMs: config.searchTimeoutMs,
     quietMs: 1500,
     stopWhen: m => replyButtons(m).some(text =>
@@ -436,6 +462,48 @@ export async function discoverMeloBotFeed(client, command, { contentOrigin = 'un
 
   const artists = [...new Set(tracks.map(track => clean(track.artist)).filter(Boolean))];
   return { command, tracks, artists };
+}
+
+export async function inspectMeloBotTrack(client, candidate) {
+  const menuMessages = await openTrackMenu(client, candidate);
+  const menuButtons = buttonsFromMessages(menuMessages);
+
+  const hasHq = menuButtons.some(text =>
+    clean(text).includes('کیفیت عالی') && !clean(text).includes('خرید اشتراک')
+  );
+  const hasNormal = menuButtons.some(text =>
+    clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
+  );
+  const hasLyrics = menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
+  const hasArtistPage = menuButtons.some(text =>
+    /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+  );
+  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
+
+  let hasCover = false;
+  let hasMetadata = false;
+  if (moreButton) {
+    try {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 1400,
+      });
+      const moreButtons = buttonsFromMessages(more.messages);
+      hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
+      hasMetadata = moreButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text)));
+    } catch (err) {
+      console.warn('[melobot inspect more]', err.message);
+    }
+  }
+
+  return {
+    hasHq,
+    hasNormal,
+    hasLyrics,
+    hasCover,
+    hasMetadata,
+    hasArtistPage,
+  };
 }
 
 export async function openMeloBotArtist(client, seedTrack) {

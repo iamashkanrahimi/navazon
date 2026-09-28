@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
-import { bot, cache, catalog, follows, sessions, tg } from './runtime.js';
+import { bot, cache, catalog, deepCatalog, follows, sessions, tg } from './runtime.js';
 import { SerialQueue } from './queue.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
   SESSION_TTL_MS, TOP_TRACKS_LIMIT, ALBUMS_PER_PAGE, normalize,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
-  albumsKeyboard, albumTracksKeyboard,
+  albumsKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage,
@@ -21,6 +21,14 @@ import {
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { executeDeepTask } from './deepCrawler.js';
+import {
+  renderTrackPage,
+  sendTrackQuality,
+  sendTrackLyrics,
+  sendTrackCover,
+  getTrackInfoText,
+  getTrackAlbum,
+} from './trackActions.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
@@ -38,12 +46,21 @@ export const sourceQueue = new SerialQueue(async job => {
         const options = await searchPrimary(job.query);
         if (!options.length) throw new Error('No results');
         await catalog.recordSearch(job.query,options);
+        for (const track of options) {
+          try {
+            await deepCatalog.upsertTrack(track,{ discoveredFrom: 'user:search' });
+            await deepCatalog.seedTrackTasks(track,{ priority: 112 });
+          } catch (err) {
+            console.warn('[deep seed search]', track.artist, track.title, err.message);
+          }
+        }
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
           messageId: job.statusMessageId, options, artistContext: null,
           artistSeed: null, isFollowing: false, albums: null,
-          currentAlbum: null, albumsPage: 0, busy: false,
+          currentAlbum: null, currentAlbumView: null, albumsPage: 0,
+          currentTrack: null, trackBack: null, artistBack: 'rs', busy: false,
           expiresAt: Date.now() + SESSION_TTL_MS,
         };
         await sessions.set(sessionId,fresh);
@@ -66,6 +83,173 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (!session && !['discover','discover_bootstrap'].includes(job.type)) return;
     if (session) session.expiresAt = Date.now() + SESSION_TTL_MS;
+
+    if (job.type === 'track_page') {
+      try {
+        await renderTrackPage(job.sessionId, session, job.messageId);
+      } catch (err) {
+        console.error('[track page]', err.message);
+        await bot.editMessageText(session.chatId, job.messageId, 'باز کردن صفحه‌ی آهنگ ممکن نشد.');
+      }
+      session.busy = false;
+      return;
+    }
+
+    if (job.type === 'track_quality') {
+      try {
+        await sendTrackQuality(
+          session.chatId,
+          session.currentTrack,
+          job.quality,
+          session.userRegion || 'unknown'
+        );
+      } catch (err) {
+        console.error('[track quality]', err.message);
+        const text = err.code === 'REGION_RESTRICTED_IRAN_ONLY'
+          ? 'این محتوا فقط برای کاربران داخل ایران در دسترسه.'
+          : 'این کیفیت فعلاً در دسترس نیست.';
+        await bot.sendMessage(session.chatId, text);
+      }
+      session.busy = false;
+      try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      return;
+    }
+
+    if (job.type === 'track_lyrics') {
+      try {
+        await sendTrackLyrics(session.chatId, session.currentTrack);
+      } catch (err) {
+        console.error('[track lyrics]', err.message);
+        await bot.sendMessage(session.chatId, 'متن این آهنگ فعلاً در دسترس نیست.');
+      }
+      session.busy = false;
+      try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      return;
+    }
+
+    if (job.type === 'track_cover') {
+      try {
+        await sendTrackCover(session.chatId, session.currentTrack);
+      } catch (err) {
+        console.error('[track cover]', err.message);
+        await bot.sendMessage(session.chatId, 'کاور این آهنگ فعلاً در دسترس نیست.');
+      }
+      session.busy = false;
+      try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      return;
+    }
+
+    if (job.type === 'track_info') {
+      try {
+        const text = await getTrackInfoText(session.currentTrack);
+        await bot.sendMessage(session.chatId, text);
+      } catch (err) {
+        console.error('[track info]', err.message);
+        await bot.sendMessage(session.chatId, 'مشخصات بیشتری برای این آهنگ پیدا نشد.');
+      }
+      session.busy = false;
+      try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      return;
+    }
+
+    if (job.type === 'track_artist') {
+      try {
+        const seed = session.currentTrack;
+        if (!seed?.artist || seed.source !== 'melobot') {
+          throw new Error('Artist page requires a MeloBot track.');
+        }
+        session.artistSeed = seed;
+        const cachedArtist = await catalog.getArtistContext(seed.artist, config.catalogArtistTtlMs);
+        session.artistContext = cachedArtist || await openMeloBotArtist(tg, seed);
+        if (!cachedArtist) {
+          await catalog.recordArtist(session.artistContext.artist, {
+            topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
+            recentTracks: session.artistContext.recentTracks || [],
+            albumButton: session.artistContext.albumButton || null,
+          });
+        }
+        session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
+        session.artistBack = 'trt';
+        session.albums = null;
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          session.artistContext.artist,
+          {
+            reply_markup: artistHomeKeyboard(
+              job.sessionId,
+              session.artistContext,
+              session.isFollowing,
+              { backAction: 'trt' }
+            ),
+          }
+        );
+      } catch (err) {
+        console.error('[track artist]', err.message);
+        session.busy = false;
+        try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      }
+      return;
+    }
+
+    if (job.type === 'track_album') {
+      try {
+        const albumData = await getTrackAlbum(session.currentTrack);
+        if (!albumData?.album || !albumData.tracks?.length) {
+          throw new Error('Track album is not available.');
+        }
+        session.albumOriginTrack = session.currentTrack;
+        session.albumOriginBack = session.trackBack;
+        session.currentAlbum = { ...albumData.album, tracks: albumData.tracks };
+        session.currentAlbumView = 'track';
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          `💿 ${albumData.album.title}\n${albumData.album.artist || session.currentTrack.artist}`,
+          { reply_markup: trackAlbumKeyboard(job.sessionId, albumData.album, albumData.tracks) }
+        );
+      } catch (err) {
+        console.error('[track album]', err.message);
+        session.busy = false;
+        try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      }
+      return;
+    }
+
+    if (job.type === 'download_recent') {
+      const tracks = session.artistContext?.recentTracks?.slice(0, TOP_TRACKS_LIMIT) || [];
+      let sent = 0;
+      for (const track of tracks) {
+        try {
+          await sendTrackQuality(
+            session.chatId,
+            { ...track, source: track.source || 'melobot' },
+            'hq',
+            session.userRegion || 'unknown'
+          );
+          sent += 1;
+        } catch (err) {
+          console.warn('[download recent]', track.artist, track.title, err.message);
+        }
+      }
+      session.busy = false;
+      await bot.editMessageText(
+        session.chatId,
+        job.messageId,
+        `${session.artistContext.artist}\n🆕 جدیدترین آهنگ‌ها`,
+        {
+          reply_markup: artistSongsKeyboard(
+            job.sessionId,
+            session.artistContext.recentTracks,
+            { mode: 'recent' }
+          ),
+        }
+      );
+      if (!sent) console.warn('[download recent] no tracks delivered');
+      return;
+    }
 
     if (job.type === 'download') {
       const track = applyPolicyDefaults(job.track);
@@ -284,9 +468,10 @@ export const sourceQueue = new SerialQueue(async job => {
           }
         }
         session.isFollowing = await follows.isFollowing(session.userId,session.artistContext.artist);
+        session.artistBack = 'rs';
         session.albums = null; session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,session.artistContext.artist,{
-          reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext,session.isFollowing),
+          reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext,session.isFollowing,{ backAction: session.artistBack || 'rs' }),
         });
       } catch (err) {
         console.error('[artist]',err.message); session.busy = false;
@@ -319,7 +504,7 @@ export const sourceQueue = new SerialQueue(async job => {
       } catch (err) {
         console.error('[albums]',err.message); session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,session.artistContext?.artist || 'خواننده',{
-          reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext || { tracks: [] },session.isFollowing),
+          reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext || { tracks: [] },session.isFollowing,{ backAction: session.artistBack || 'rs' }),
         });
       }
       return;
@@ -342,6 +527,7 @@ export const sourceQueue = new SerialQueue(async job => {
           await catalog.recordAlbumTracks(session.artistContext.artist,liveAlbum,tracks);
         }
         session.currentAlbum = { ...album, tracks };
+        session.currentAlbumView = 'artist';
         session.albumsPage = Math.floor(job.index / ALBUMS_PER_PAGE); session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,`💿 ${album.title}\n${session.artistContext.artist}`,{
           reply_markup: albumTracksKeyboard(job.sessionId,tracks,session.albumsPage),

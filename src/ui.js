@@ -55,31 +55,93 @@ export function resultsKeyboard(sessionId, session) {
   return { inline_keyboard: rows };
 }
 
-export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false) {
+export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false, { backAction = 'rs' } = {}) {
   const rows = [];
-  if (artistContext.tracks?.length) {
-    rows.push([
-      { text: '🎵 پربازدیدترین‌ها', callback_data: `ars:${sessionId}` },
-      { text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` },
-    ]);
-  } else {
-    rows.push([{ text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` }]);
-  }
-  rows.push([
-    { text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` },
-    { text: '‹ برگشت', callback_data: `rs:${sessionId}` },
-  ]);
+  const hasTop = Boolean(artistContext.topTracks?.length || artistContext.tracks?.length);
+  const hasRecent = Boolean(artistContext.recentTracks?.length);
+  const hasAlbums = Boolean(artistContext.albumButton || artistContext.albumsAvailable);
+
+  const firstRow = [];
+  if (hasTop) firstRow.push({ text: '🎵 پربازدیدترین‌ها', callback_data: `ars:${sessionId}` });
+  if (hasRecent) firstRow.push({ text: '🆕 جدیدترین‌ها', callback_data: `arn:${sessionId}` });
+  if (firstRow.length) rows.push(firstRow);
+
+  const secondRow = [];
+  if (hasAlbums) secondRow.push({ text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` });
+  secondRow.push({ text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` });
+  rows.push(secondRow);
+
+  rows.push([{ text: '🔙 برگشت', callback_data: `${backAction}:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
 
-export function artistSongsKeyboard(sessionId, tracks) {
+export function artistSongsKeyboard(sessionId, tracks, { mode = 'top' } = {}) {
   const visible = (tracks || []).slice(0, TOP_TRACKS_LIMIT);
+  const trackAction = mode === 'recent' ? 'rt' : 'at';
+  const bulkAction = mode === 'recent' ? 'rta' : 'ata';
+  const bulkText = mode === 'recent'
+    ? '📥 دانلود یکجا جدیدترین‌ها'
+    : '📥 دانلود یکجا پربازدیدترین‌ها';
+
   const rows = visible.map((track,index) => ([{
     text: trackButtonLabel(track,index,{ numbered: true }),
-    callback_data: `at:${sessionId}:${index}`,
+    callback_data: `${trackAction}:${sessionId}:${index}`,
   }]));
-  if (visible.length) rows.push([{ text: '📥 دانلود همه با کیفیت عالی', callback_data: `ata:${sessionId}` }]);
-  rows.push([{ text: '‹ خواننده', callback_data: `arh:${sessionId}` }]);
+  if (visible.length) rows.push([{ text: bulkText, callback_data: `${bulkAction}:${sessionId}` }]);
+  rows.push([{ text: '🔙 صفحه‌ی خواننده', callback_data: `arh:${sessionId}` }]);
+  return { inline_keyboard: rows };
+}
+
+export function trackPageTitle(track = {}) {
+  const artist = clean(track.artist || '');
+  const title = clean(track.title || '');
+  return [artist, title].filter(Boolean).join(' - ') || 'آهنگ';
+}
+
+export function trackPageKeyboard(sessionId, track, details = {}, capabilities = {}) {
+  const rows = [];
+  const media = details?.media || {};
+
+  const qualityRow = [];
+  if (media.hq || capabilities.hasHq) {
+    qualityRow.push({ text: '📥 کیفیت عالی', callback_data: `tqh:${sessionId}` });
+  }
+  if (media.normal || capabilities.hasNormal) {
+    qualityRow.push({ text: '📥 کیفیت معمولی', callback_data: `tqn:${sessionId}` });
+  }
+  if (qualityRow.length) rows.push(qualityRow);
+
+  const extras = [];
+  const hasKnownLyrics = Boolean(details?.lyrics_text);
+  const lyricsKnownMissing = details?.metadata?.hasLyrics === false;
+  if (hasKnownLyrics || (!lyricsKnownMissing && capabilities.hasLyrics)) {
+    extras.push({ text: '📝 متن', callback_data: `tly:${sessionId}` });
+  }
+  if (details?.cover_file_id || capabilities.hasCover) {
+    extras.push({ text: '🖼 کاور', callback_data: `tcv:${sessionId}` });
+  }
+  if (extras.length) rows.push(extras);
+
+  const infoRow = [];
+  const hasInfo = Boolean(
+    details?.release_date || details?.release_date_raw || details?.duration_seconds ||
+    details?.popularity_count || details?.popularity_text || details?.albumInfo ||
+    capabilities.hasMetadata
+  );
+  if (hasInfo) infoRow.push({ text: '📋 مشخصات', callback_data: `tif:${sessionId}` });
+  if (track?.artist && (capabilities.hasArtistPage || track?.source === 'melobot')) {
+    infoRow.push({ text: '🗣 صفحه‌ی خواننده', callback_data: `tar:${sessionId}` });
+  }
+  if (infoRow.length) rows.push(infoRow);
+
+  if (details?.albumInfo?.album_key) {
+    rows.push([{
+      text: truncate(`💿 آلبوم: ${details.albumInfo.title}`, 47),
+      callback_data: `tal:${sessionId}`,
+    }]);
+  }
+
+  rows.push([{ text: '🔙 برگشت', callback_data: `tbk:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
 
@@ -95,6 +157,15 @@ export function albumsKeyboard(sessionId, albums, page) {
   if (start + ALBUMS_PER_PAGE < albums.length) nav.push({ text: '›', callback_data: `alb:${sessionId}:${page + 1}` });
   if (nav.length) rows.push(nav);
   rows.push([{ text: '‹ خواننده', callback_data: `arh:${sessionId}` }]);
+  return { inline_keyboard: rows };
+}
+
+export function trackAlbumKeyboard(sessionId, album, tracks) {
+  const rows = (tracks || []).slice(0, 20).map((track,index) => ([{
+    text: trackButtonLabel(track,index),
+    callback_data: `alt:${sessionId}:${index}`,
+  }]));
+  rows.push([{ text: '🔙 آهنگ', callback_data: `tret:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
 
