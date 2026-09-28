@@ -178,9 +178,18 @@ export class CatalogStore {
   }
 
   async searchAlbums(query, limit = 4) {
-    const tokens = normalize(query)
-      .split(' ')
-      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    const allTokens = normalize(query).split(' ').filter(Boolean);
+    const albumWords = new Set([
+      'album', 'albums',
+      'آلبوم', 'آلبومها', 'آلبومهای',
+      'البوم', 'البومها', 'البومهای',
+    ]);
+    const hasAlbumIntent = allTokens.some(token => albumWords.has(token));
+    const tokens = allTokens.filter(token =>
+      token.length >= 2
+      && !albumWords.has(token)
+      && !(hasAlbumIntent && ['ها','های'].includes(token))
+    );
     if (!tokens.length) return [];
 
     const clauses = tokens.map((_, index) =>
