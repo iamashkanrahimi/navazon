@@ -431,7 +431,7 @@ export class DeepCatalog {
     await db.query(`
       DELETE FROM crawl_tasks
       WHERE status = 'done'
-        AND kind IN ('feed','home_discovery','artist_profile','artist_bulk_media')
+        AND kind IN ('feed','home_discovery','playlist_discovery','artist_profile','artist_bulk_media')
         AND completed_at < NOW() - INTERVAL '21 days'
     `);
   }
@@ -588,6 +588,13 @@ export class DeepCatalog {
     await this.enqueueTask('home_discovery', { maxSections: 8 }, {
       priority: 94,
       taskKey: `home_discovery:${homeBucket}`,
+    });
+
+    const playlistEveryMs = 24 * 60 * 60 * 1000;
+    const playlistBucket = Math.floor(now / playlistEveryMs);
+    await this.enqueueTask('playlist_discovery', { maxPlaylists: 6 }, {
+      priority: 92,
+      taskKey: `playlist_discovery:${playlistBucket}`,
     });
   }
 
