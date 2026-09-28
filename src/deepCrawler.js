@@ -267,7 +267,17 @@ async function runArtistBulkMedia(task) {
     ? (mode === 'recent' ? context.recentBulkHighButton : context.bulkHighButton)
     : (mode === 'recent' ? context.recentBulkNormalButton : context.bulkNormalButton);
 
-  if (!button) throw new Error(`MeloBot artist bulk ${quality} button was not found.`);
+  if (!button) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 114 : 72);
+    return {
+      artist,
+      mode,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'bulk_button_missing_deferred_to_individual',
+    };
+  }
 
   const bulk = await downloadMeloBotBulkTracks(tg, {
     button,
@@ -307,7 +317,17 @@ async function runAlbumBulkMedia(task) {
   }
 
   const button = quality === 'hq' ? context.bulkHighButton : context.bulkNormalButton;
-  if (!button) throw new Error(`MeloBot album bulk ${quality} button was not found.`);
+  if (!button) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 110 : 70);
+    return {
+      artist,
+      album: albumTitle,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'bulk_button_missing_deferred_to_individual',
+    };
+  }
 
   const bulk = await downloadMeloBotBulkTracks(tg, {
     button,
