@@ -18,6 +18,13 @@ function trackIdentity(track = {}) {
   return [normalize(track.artist), normalize(track.title), normalize(track.rawText || track.cmd || '')].join('|');
 }
 
+function looksLikeAlbumRowButton(value = '') {
+  const text = clean(value)
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .trim();
+  return /^.+?\s*\([۰-۹٠-٩0-9]+\)\s*$/u.test(text);
+}
+
 function freshEnough(iso, maxAgeMs) {
   if (!iso || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return false;
   const t = Date.parse(iso);
@@ -147,7 +154,9 @@ export class CatalogStore {
       tracks: topTracks.length ? topTracks : recentTracks,
       topTracks,
       recentTracks,
-      albumButton: node.albumButton || null,
+      albumButton: node.albumButton && !looksLikeAlbumRowButton(node.albumButton)
+        ? node.albumButton
+        : null,
       albumsAvailable: Array.isArray(node.albumList) && node.albumList.length > 0,
       fromCatalog: true,
     };
@@ -265,6 +274,7 @@ export class CatalogStore {
     }));
     node.albumsUpdatedAt = now;
     node.albumsEmptyConfirmedAt = !albums.length && emptyConfirmed ? now : null;
+    node.albumButton = null;
     node.albums ||= {};
 
     for (const album of albums) {
