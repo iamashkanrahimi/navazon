@@ -94,21 +94,30 @@ function chooseAhangifyMatch(results, track) {
     const parsed = sourceCandidateToTrack({ ...candidate, source: 'ahangify' });
     const artist = normalizeMatch(parsed.artist || '');
     const title = normalizeMatch(parsed.title || '');
-    let score = 0;
 
-    if (wantedTitle && title === wantedTitle) score += 10;
-    else if (wantedTitle && title && (title.includes(wantedTitle) || wantedTitle.includes(title))) score += 5;
+    const titleScore = !wantedTitle
+      ? 0
+      : title === wantedTitle
+        ? 2
+        : (title && (title.includes(wantedTitle) || wantedTitle.includes(title)) ? 1 : 0);
 
-    if (wantedArtist && artist === wantedArtist) score += 8;
-    else if (wantedArtist && artist && (artist.includes(wantedArtist) || wantedArtist.includes(artist))) score += 3;
+    const artistScore = !wantedArtist
+      ? 0
+      : artist === wantedArtist
+        ? 2
+        : (artist && (artist.includes(wantedArtist) || wantedArtist.includes(artist)) ? 1 : 0);
 
+    if (wantedTitle && titleScore === 0) continue;
+    if (wantedArtist && artistScore === 0) continue;
+
+    const score = titleScore * 10 + artistScore * 8;
     if (score > bestScore) {
       bestScore = score;
       best = { candidate, parsed };
     }
   }
 
-  return bestScore >= 10 ? best : null;
+  return best;
 }
 
 export async function downloadTrackWithSources(track, originalQuery) {
