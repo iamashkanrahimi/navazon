@@ -867,11 +867,14 @@ export async function downloadMeloBotBulkTracks(client, {
   button,
   label = 'bulk',
   expectedCount = 0,
+  timeoutMs = null,
 } = {}) {
-  if (!button) throw new Error(`MeloBot ${label} bulk HQ button not found.`);
+  if (!button) throw new Error(`MeloBot ${label} bulk button not found.`);
 
   const download = await sendAndCollect(client, button, {
-    timeoutMs: Math.max(config.downloadTimeoutMs, 180000),
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : Math.max(config.downloadTimeoutMs, 180000),
     quietMs: expectedCount > 20 ? 7000 : 4500,
     stopWhenBatch: expectedCount > 0
       ? messages => messages.filter(isAudioMessage).length >= expectedCount
