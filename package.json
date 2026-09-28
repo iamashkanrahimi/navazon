@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "check": "node --check src/index.js",
+    "test": "node --test",
     "login": "node src/login.js"
   },
   "engines": {
