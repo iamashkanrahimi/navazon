@@ -18,7 +18,7 @@ const {
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const { trackCacheKey } = await import('../src/cache.js');
-const { resultsKeyboard } = await import('../src/ui.js');
+const { resultsKeyboard, albumTracksKeyboard } = await import('../src/ui.js');
 
 test('MeloBot parser extracts artist, title and popularity', () => {
   const track = parseTrackButton('🎵 Shadmehr, Taghdir x 1.6M');
@@ -93,4 +93,19 @@ test('artist shortcut callback points at the dominant artist result', () => {
   const keyboard = resultsKeyboard('abc123', session);
   const artistButton = keyboard.inline_keyboard.at(-1)[0];
   assert.equal(artistButton.callback_data, 'ar:abc123:1');
+});
+
+
+test('album tracklists paginate without hiding later songs', () => {
+  const tracks = Array.from({ length: 12 }, (_, index) => ({
+    artist: 'Artist',
+    title: `Track ${index + 1}`,
+  }));
+
+  const first = albumTracksKeyboard('sess', tracks, 0, 0);
+  const firstCallbacks = first.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(firstCallbacks.includes('apg:sess:1'));
+
+  const second = albumTracksKeyboard('sess', tracks, 0, 1);
+  assert.equal(second.inline_keyboard[0][0].callback_data, 'alt:sess:10');
 });
