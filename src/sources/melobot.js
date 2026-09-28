@@ -805,27 +805,6 @@ function audioMeta(message) {
   };
 }
 
-export async function downloadMeloBotTopTracks(client, artistContext) {
-  const button = artistContext.bulkHighButton;
-  if (!button) throw new Error('MeloBot bulk HQ button not found on the sorted artist page.');
-
-  const download = await sendAndCollect(client, button, {
-    timeoutMs: Math.max(config.downloadTimeoutMs, 120000),
-    quietMs: 8500,
-  });
-
-  const audios = download.messages.filter(isAudioMessage).map(audioMeta);
-  if (!audios.length) {
-    const response = download.messages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot bulk HQ did not deliver audio. ${response.slice(0, 350)}`);
-  }
-
-  return {
-    source: 'melobot',
-    audioItems: audios,
-  };
-}
-
 export function matchBulkAudioToTracks(tracks, audioItems) {
   const unused = audioItems.map((item, index) => ({ ...item, index }));
   const matches = [];
