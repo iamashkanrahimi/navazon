@@ -71,13 +71,20 @@ function randomLong() {
 }
 
 export async function forwardHiddenToOurBot(client, sourcePeer, messageId) {
+  return forwardHiddenManyToOurBot(client, sourcePeer, [messageId]);
+}
+
+export async function forwardHiddenManyToOurBot(client, sourcePeer, messageIds = []) {
+  const ids = (messageIds || []).map(Number).filter(Number.isFinite);
+  if (!ids.length) return null;
+
   const fromPeer = await client.getInputEntity(sourcePeer);
   const toPeer = await client.getInputEntity(config.botUsername);
 
   return client.invoke(new Api.messages.ForwardMessages({
     fromPeer,
-    id: [messageId],
-    randomId: [randomLong()],
+    id: ids,
+    randomId: ids.map(() => randomLong()),
     toPeer,
     dropAuthor: true,
     dropMediaCaptions: true,
