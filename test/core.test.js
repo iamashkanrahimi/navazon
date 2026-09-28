@@ -116,3 +116,28 @@ test('MeloBot parser also accepts dash-separated search labels', () => {
   assert.equal(track.artist, 'Shadmehr');
   assert.equal(track.title, 'Taghdir');
 });
+
+
+test('search results can include album rows', () => {
+  const session = {
+    options: [{ source: 'melobot', artist: 'Shadmehr', title: 'Track', rawText: 'x' }],
+    albumOptions: [{ artist: 'Shadmehr', title: 'Taghdir', trackCount: 8 }],
+  };
+  const keyboard = resultsKeyboard('sess', session);
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(callbacks.includes('sal:sess:0'));
+});
+
+test('artist page always exposes Albums', async () => {
+  const { artistHomeKeyboard } = await import('../src/ui.js');
+  const keyboard = artistHomeKeyboard('sess', { artist: 'Shadmehr', tracks: [] }, false);
+  const labels = keyboard.inline_keyboard.flat().map(button => button.text);
+  assert.ok(labels.includes('💿 آلبوم‌ها'));
+});
+
+test('search-opened album returns to search results', () => {
+  const tracks = [{ artist: 'A', title: 'One' }];
+  const keyboard = albumTracksKeyboard('sess', tracks, 0, 0, { backAction: 'results' });
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(callbacks.includes('rs:sess'));
+});
