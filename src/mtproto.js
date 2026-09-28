@@ -30,7 +30,7 @@ export async function collectNewMessages(client, peer, afterId, {
   let lastNewAt = Date.now();
 
   while (Date.now() < deadline) {
-    const batch = await client.getMessages(peer, { limit: 30 });
+    const batch = await client.getMessages(peer, { limit: 100 });
     for (const m of batch) {
       if (m?.out) continue;
       if (m.id > afterId && !seen.has(m.id)) {
