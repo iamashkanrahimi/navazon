@@ -21,6 +21,7 @@ async function queueCrawler() {
   if (idleForMs < config.discoveryIdleMs) return { queued: false, reason: 'user_active', idleForMs };
 
   await deepCatalog.enqueueFeedSweep();
+  await deepCatalog.compactQueue();
   const deepTask = await deepCatalog.claimNextTask();
   if (deepTask) {
     sourceQueue.push({ type: 'deep_crawl', task: deepTask });
