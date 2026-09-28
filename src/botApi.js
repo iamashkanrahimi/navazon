@@ -38,6 +38,10 @@ export class BotApi {
     return this.call('sendDocument', { chat_id: chatId, document: fileId, ...extra });
   }
 
+  sendPhoto(chatId, fileId, extra = {}) {
+    return this.call('sendPhoto', { chat_id: chatId, photo: fileId, ...extra });
+  }
+
   setWebhook(url, secretToken) {
     return this.call('setWebhook', {
       url,
