@@ -140,6 +140,22 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
     };
   }
 
+  const dashed = value.match(/^(.+?)\s+[–—-]\s+(.+)$/u);
+  if (dashed) {
+    const artist = clean(dashed[1]);
+    const title = stripMetricSuffix(dashed[2]);
+    if (artist && title) {
+      return {
+        type: 'track',
+        rawText: original,
+        artist,
+        title,
+        sourcePopularityText: popularity.text,
+        sourcePopularityCount: popularity.count,
+      };
+    }
+  }
+
   if (fallbackArtist) {
     const title = stripMetricSuffix(stripLeadingEmoji(original));
     if (title) {
