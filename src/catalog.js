@@ -118,12 +118,12 @@ export class CatalogStore {
       }
     }
 
-    for (const { name, seedTracks, discoveredFrom: source } of names.values()) {
+    await Promise.all([...names.values()].map(async ({ name, seedTracks, discoveredFrom: source }) => {
       const { key, node } = await this.readArtist(name);
       if (!node.discoveredFrom) node.discoveredFrom = source;
       if (seedTracks.length) this.addTracksToNode(node, seedTracks);
       await this.writeArtist(key, node);
-    }
+    }));
   }
 
   async ensureArtist(name, { seedTrack = null, discoveredFrom = null } = {}) {
@@ -162,6 +162,21 @@ export class CatalogStore {
     const album = node?.albums?.[normalize(albumTitle)];
     if (!album || !freshEnough(album.updatedAt, maxAgeMs)) return null;
     return Array.isArray(album.tracks) && album.tracks.length ? album.tracks : null;
+  }
+
+  async getSearch(query, maxAgeMs) {
+    const key = normalize(query);
+    if (!key || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return null;
+    const result = await db.query(`
+      SELECT tracks, updated_at
+      FROM searches
+      WHERE query_key = $1
+        AND updated_at >= NOW() - ($2 * INTERVAL '1 millisecond')
+      LIMIT 1
+    `, [key, Math.max(0, maxAgeMs)]);
+    if (!result.rowCount) return null;
+    const tracks = result.rows[0].tracks;
+    return Array.isArray(tracks) && tracks.length ? tracks : null;
   }
 
   async recordSearch(query, tracks = []) {
