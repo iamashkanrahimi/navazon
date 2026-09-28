@@ -92,19 +92,19 @@ export class DeepCatalog {
     const artistKey = deepNormalize(artist);
     if (!artistKey) return;
     await db.query('DELETE FROM deep_artist_tracks WHERE artist_key = $1 AND list_type = $2', [artistKey, listType]);
-    let rank = 0;
-    for (const track of tracks) {
-      rank += 1;
+
+    const rows = await Promise.all((tracks || []).map(async (track, index) => {
       const trackKey = await this.upsertTrack(track, { discoveredFrom: `artist:${listType}` });
-      if (!trackKey) continue;
-      await db.query(`
-        INSERT INTO deep_artist_tracks (artist_key, artist_name, list_type, track_key, rank, observed_at)
-        VALUES ($1,$2,$3,$4,$5,NOW())
-        ON CONFLICT (artist_key, list_type, track_key) DO UPDATE SET
-          rank = EXCLUDED.rank,
-          observed_at = NOW()
-      `, [artistKey, clean(artist), listType, trackKey, rank]);
-    }
+      return trackKey ? { trackKey, rank: index + 1 } : null;
+    }));
+
+    await Promise.all(rows.filter(Boolean).map(row => db.query(`
+      INSERT INTO deep_artist_tracks (artist_key, artist_name, list_type, track_key, rank, observed_at)
+      VALUES ($1,$2,$3,$4,$5,NOW())
+      ON CONFLICT (artist_key, list_type, track_key) DO UPDATE SET
+        rank = EXCLUDED.rank,
+        observed_at = NOW()
+    `, [artistKey, clean(artist), listType, row.trackKey, row.rank])));
   }
 
   async upsertAlbum(artist, album = {}) {
@@ -131,20 +131,20 @@ export class DeepCatalog {
     const albumKey = await this.upsertAlbum(artist, album);
     if (!albumKey) return;
     await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
-    let position = 0;
-    for (const track of tracks) {
-      position += 1;
+
+    const rows = await Promise.all((tracks || []).map(async (track, index) => {
       const trackKey = await this.upsertTrack(track, {
         album: album.title,
         discoveredFrom: 'album',
       });
-      if (!trackKey) continue;
-      await db.query(`
-        INSERT INTO deep_album_tracks (album_key, track_key, position)
-        VALUES ($1,$2,$3)
-        ON CONFLICT (album_key, track_key) DO UPDATE SET position = EXCLUDED.position
-      `, [albumKey, trackKey, position]);
-    }
+      return trackKey ? { trackKey, position: index + 1 } : null;
+    }));
+
+    await Promise.all(rows.filter(Boolean).map(row => db.query(`
+      INSERT INTO deep_album_tracks (album_key, track_key, position)
+      VALUES ($1,$2,$3)
+      ON CONFLICT (album_key, track_key) DO UPDATE SET position = EXCLUDED.position
+    `, [albumKey, row.trackKey, row.position])));
   }
 
   async setMedia(track, quality, media = {}, extra = {}) {
@@ -420,9 +420,19 @@ export class DeepCatalog {
         AND EXISTS (
           SELECT 1
           FROM crawl_tasks bundle
-          WHERE bundle.task_key = 'track_enrich:' || split_part(legacy.task_key, ':', 2)
+          WHERE bundle.task_key =
+            'track_enrich:' || substring(legacy.task_key from position(':' in legacy.task_key) + 1)
             AND bundle.status IN ('queued','running','done')
         )
+    `);
+
+    -- Recurring bucketed tasks have new keys on future runs, so old completed
+    -- rows can be removed without losing one-time completion memory.
+    await db.query(`
+      DELETE FROM crawl_tasks
+      WHERE status = 'done'
+        AND kind IN ('feed','home_discovery','artist_profile','artist_bulk_media')
+        AND completed_at < NOW() - INTERVAL '21 days'
     `);
   }
 
@@ -447,11 +457,12 @@ export class DeepCatalog {
           ELSE crawl_tasks.status
         END,
         updated_at = NOW()
+      WHERE crawl_tasks.status <> 'done' OR $6::boolean
     `, [key, kind, safeJson(payload), priority, availableAt, reviveDone]);
     return key;
   }
 
-  async seedTrackTasks(track, { priority = 70, preferBulk = false } = {}) {
+  async seedTrackTasks(track, { priority = 70, preferBulk = false, includeMedia = true } = {}) {
     const trackKey = await this.upsertTrack(track);
     if (!trackKey) return;
     const payload = { track: { ...track, trackKey }, trackKey };
@@ -462,18 +473,20 @@ export class DeepCatalog {
       taskKey: `track_enrich:${trackKey}`,
     });
 
-    // Individual media tasks remain as a low-priority safety net. Native bulk
-    // artist/album tasks will satisfy and auto-complete these when possible.
-    const hqPriority = preferBulk ? priority - 18 : priority + 20;
-    const normalPriority = preferBulk ? priority - 24 : priority + 10;
-    await this.enqueueTask('track_hq', payload, {
-      priority: hqPriority,
-      taskKey: `track_hq:${trackKey}`,
-    });
-    await this.enqueueTask('track_normal', payload, {
-      priority: normalPriority,
-      taskKey: `track_normal:${trackKey}`,
-    });
+    if (includeMedia) {
+      // Individual media tasks remain as a low-priority safety net. Native bulk
+      // artist/album tasks will satisfy and auto-complete these when possible.
+      const hqPriority = preferBulk ? priority - 18 : priority + 20;
+      const normalPriority = preferBulk ? priority - 24 : priority + 10;
+      await this.enqueueTask('track_hq', payload, {
+        priority: hqPriority,
+        taskKey: `track_hq:${trackKey}`,
+      });
+      await this.enqueueTask('track_normal', payload, {
+        priority: normalPriority,
+        taskKey: `track_normal:${trackKey}`,
+      });
+    }
   }
 
   async claimNextTask() {
@@ -563,13 +576,13 @@ export class DeepCatalog {
       { feed: '/arabic', priority: 102, everyMs: 8 * 60 * 60 * 1000, origin: 'foreign' },
     ];
     const now = Date.now();
-    for (const item of feeds) {
+    await Promise.all(feeds.map(item => {
       const bucket = Math.floor(now / item.everyMs);
-      await this.enqueueTask('feed', item, {
+      return this.enqueueTask('feed', item, {
         priority: item.priority,
         taskKey: `feed:${item.feed}:${bucket}`,
       });
-    }
+    }));
 
     const homeEveryMs = 12 * 60 * 60 * 1000;
     const homeBucket = Math.floor(now / homeEveryMs);
