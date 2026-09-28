@@ -783,7 +783,7 @@ export async function prepareMeloBotBulkRecentTracks(client, artist, preferredSe
   return context;
 }
 
-async function openMeloBotAlbumContext(client, artist, album) {
+export async function openMeloBotAlbumContext(client, artist, album) {
   const page = await sendAndCollect(client, album.rawText, {
     timeoutMs: config.searchTimeoutMs,
     quietMs: 2200,
