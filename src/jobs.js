@@ -339,9 +339,11 @@ async function deliverAvailableBulkCache(session, tracks) {
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
   const prompt = session.resultsPrompt || (
-    session.albumOptions?.length
-      ? 'یک آهنگ یا آلبوم رو انتخاب کن:'
-      : 'یک نسخه رو انتخاب کن:'
+    session.albumFirst && !(session.options || []).length
+      ? 'یک آلبوم رو انتخاب کن:'
+      : session.albumOptions?.length
+        ? 'یک آهنگ یا آلبوم رو انتخاب کن:'
+        : 'یک نسخه رو انتخاب کن:'
   );
   const title = session.resultsTitle || `نتیجه‌ها برای «${session.query}»`;
   await bot.editMessageText(session.chatId,messageId,`${title}\n${prompt}`,{
@@ -398,7 +400,7 @@ export const sourceQueue = new SerialQueue(async job => {
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
           messageId: job.statusMessageId, options, albumOptions, albumFirst, artistContext: null,
-          artistSeed: null, isFollowing: false, albums: null,
+          artistSeed: null, isFollowing: false, albums: null, albumsEmptyConfirmed: false,
           currentAlbum: null, currentAlbumView: null, albumsPage: 0, albumTrackPage: 0,
           currentTrack: null, trackBack: null, artistBack: 'rs', busy: false,
           expiresAt: Date.now() + SESSION_TTL_MS,
