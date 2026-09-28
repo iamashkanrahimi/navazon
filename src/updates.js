@@ -191,6 +191,12 @@ export async function handleUpdate(update) {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
         sourceQueue.push({ type: 'track_page', sessionId, messageId });
+      } else if (action === 'ala') {
+        if (!session.currentAlbum?.tracks?.length) return;
+        session.busy = true;
+        const count = session.currentAlbum.tracks.length;
+        await bot.editMessageText(session.chatId,messageId,`در حال دریافت یکجای آلبوم (${count} آهنگ)…`);
+        sourceQueue.push({ type: 'download_album', sessionId, messageId });
       }
     } finally {
       session.expiresAt = Date.now() + SESSION_TTL_MS;
