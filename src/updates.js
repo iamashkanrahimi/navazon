@@ -16,6 +16,11 @@ async function noteUserActivity() {
 }
 
 export async function handleUpdate(update) {
+  // Crawler/user-account bridge messages can arrive in bursts. Consume them
+  // before touching the sessions table so batch media warming stays fast.
+  const bridgeMessage = update.message;
+  if (bridgeMessage && bridge.consumeBotMessage(bridgeMessage)) return;
+
   await sessions.cleanup();
   const callback = update.callback_query;
   if (callback) {
@@ -207,7 +212,6 @@ export async function handleUpdate(update) {
 
   const msg = update.message;
   if (!msg) return;
-  if (bridge.consumeBotMessage(msg)) return;
 
   const chatId = msg.chat?.id;
   const userId = msg.from?.id;
