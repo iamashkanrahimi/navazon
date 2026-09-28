@@ -15,7 +15,7 @@ import {
   prepareMeloBotBulkRecentTracks,
   prepareMeloBotBulkTopTracks,
 } from './sources/melobot.js';
-import { deepNormalize } from './deepCatalog.js';
+import { deepNormalize, deepTrackKey } from './deepCatalog.js';
 import { recordCrawlerFinish, recordCrawlerStart } from './state.js';
 
 function clean(value = '') {
@@ -108,7 +108,7 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
     await deepCatalog.enqueueTask(
       'artist_bulk_media',
       { artist, seedTrack, mode: 'recent', quality: 'normal' },
-      { priority: 111, taskKey: `artist_bulk:recent:normal:${artistKey}:${bucket}` }
+      { priority: 76, taskKey: `artist_bulk:recent:normal:${artistKey}:${bucket}` }
     );
   }
 
@@ -121,7 +121,7 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
     await deepCatalog.enqueueTask(
       'artist_bulk_media',
       { artist, seedTrack, mode: 'top', quality: 'normal' },
-      { priority: 109, taskKey: `artist_bulk:top:normal:${artistKey}:${bucket}` }
+      { priority: 74, taskKey: `artist_bulk:top:normal:${artistKey}:${bucket}` }
     );
   }
 }
@@ -168,6 +168,29 @@ async function cacheBulkMedia(tracks, bulk, quality, label) {
   };
 }
 
+async function enqueueSparseMediaFallback(tracks, quality, priority = 104) {
+  for (const track of tracks || []) {
+    const trackKey = deepTrackKey(track);
+    if (!trackKey || trackKey === '|') continue;
+    await deepCatalog.enqueueTask(
+      quality === 'hq' ? 'track_hq' : 'track_normal',
+      { track: { ...track, trackKey }, trackKey },
+      {
+        priority,
+        taskKey: `track_${quality}:${trackKey}`,
+      }
+    );
+  }
+}
+
+function shouldUseBulk(total, missing) {
+  const count = Math.max(0, Number(missing || 0));
+  const all = Math.max(0, Number(total || 0));
+  if (!count || !all) return false;
+  if (count <= 2) return false;
+  return count / all >= 0.35;
+}
+
 async function runArtistBulkMedia(task) {
   const { artist, seedTrack = null, mode = 'top', quality = 'hq' } = task.payload || {};
   if (!artist) throw new Error('Artist bulk task is missing artist.');
@@ -176,6 +199,17 @@ async function runArtistBulkMedia(task) {
   const missing = await deepCatalog.missingMediaTracks(storedTracks, quality);
   if (!missing.length) {
     return { artist, mode, quality, cached: 0, skipped: 'already_complete' };
+  }
+  if (!shouldUseBulk(storedTracks.length, missing.length)) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 114 : 72);
+    return {
+      artist,
+      mode,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'sparse_holes_deferred_to_individual',
+    };
   }
 
   const context = mode === 'recent'
@@ -216,6 +250,17 @@ async function runAlbumBulkMedia(task) {
   const missing = await deepCatalog.missingMediaTracks(context.tracks, quality);
   if (!missing.length) {
     return { artist, album: albumTitle, quality, cached: 0, skipped: 'already_complete' };
+  }
+  if (!shouldUseBulk(context.tracks.length, missing.length)) {
+    await enqueueSparseMediaFallback(missing, quality, quality === 'hq' ? 110 : 70);
+    return {
+      artist,
+      album: albumTitle,
+      quality,
+      cached: 0,
+      missingBefore: missing.length,
+      skipped: 'sparse_holes_deferred_to_individual',
+    };
   }
 
   const button = quality === 'hq' ? context.bulkHighButton : context.bulkNormalButton;
@@ -451,7 +496,7 @@ async function runAlbumDetail(task) {
   await deepCatalog.enqueueTask(
     'album_bulk_media',
     { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
-    { priority: 82, taskKey: `album_bulk:normal:${albumKey}` }
+    { priority: 68, taskKey: `album_bulk:normal:${albumKey}` }
   );
 
   return { artist: live.artist, album: target.title, tracks: tracks.length };
