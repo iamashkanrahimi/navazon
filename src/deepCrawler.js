@@ -48,6 +48,10 @@ function dayBucket() {
   return Math.floor(Date.now() / (24 * 60 * 60 * 1000));
 }
 
+function albumRefreshBucket() {
+  return Math.floor(Date.now() / (30 * 24 * 60 * 60 * 1000));
+}
+
 async function enqueueArtistProfile(artist, seedTrack, priority = 100) {
   const name = clean(artist);
   if (!name) return;
@@ -584,7 +588,7 @@ async function runAlbumIndex(task) {
       { artist: live.artist, album, seedTrack: seedTrack || live.recentTracks?.[0] || live.topTracks?.[0] || null },
       {
         priority: 76,
-        taskKey: `album_detail:${deepNormalize(live.artist)}:${deepNormalize(album.title)}`,
+        taskKey: `album_detail:${deepNormalize(live.artist)}:${deepNormalize(album.title)}:${albumRefreshBucket()}`,
       }
     );
   }));
@@ -641,7 +645,7 @@ async function runAlbumDetail(task) {
       await deepCatalog.enqueueTask(
         'album_bulk_media',
         { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
-        { priority: 92, taskKey: `album_bulk:hq:${albumKey}` }
+        { priority: 92, taskKey: `album_bulk:hq:${albumKey}`, reviveDone: true }
       );
     } else if (missingHq.length) {
       await enqueueSparseMediaFallback(missingHq, 'hq', 110);
@@ -653,7 +657,7 @@ async function runAlbumDetail(task) {
     await deepCatalog.enqueueTask(
       'album_bulk_media',
       { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
-      { priority: 68, taskKey: `album_bulk:normal:${albumKey}` }
+      { priority: 68, taskKey: `album_bulk:normal:${albumKey}`, reviveDone: true }
     );
   } else if (missingNormal.length) {
     await enqueueSparseMediaFallback(missingNormal, 'normal', 70);
