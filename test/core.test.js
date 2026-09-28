@@ -307,3 +307,15 @@ test('specific explicit album search filters the requested title once artist is 
   );
   assert.deepEqual(matches.map(album => album.title), ['In Roozha']);
 });
+
+
+test('Persian album intent variants are treated as album searches', () => {
+  assert.equal(
+    albumQueryMatches('آلبوم‌های Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'In Roozha'),
+    true
+  );
+  assert.equal(
+    albumQueryMatches('البوم Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'Paeiz Tanhaei'),
+    true
+  );
+});
