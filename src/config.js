@@ -32,6 +32,7 @@ export const config = {
   ahangifyUsername: (process.env.AHANGIFY_USERNAME || 'ahangifybot').replace(/^@/, ''),
   brandCaption: process.env.BRAND_CAPTION || `@${required('BOT_USERNAME').replace(/^@/, '')}`,
 
+  catalogSearchTtlMs: Number(process.env.CATALOG_SEARCH_TTL_MINUTES || 15) * 60 * 1000,
   catalogArtistTtlMs: Number(process.env.CATALOG_ARTIST_TTL_HOURS || 72) * 60 * 60 * 1000,
   catalogAlbumsTtlMs: Number(process.env.CATALOG_ALBUMS_TTL_HOURS || 168) * 60 * 60 * 1000,
   catalogAlbumTracksTtlMs: Number(process.env.CATALOG_ALBUM_TRACKS_TTL_HOURS || 720) * 60 * 60 * 1000,
