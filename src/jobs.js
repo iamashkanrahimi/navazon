@@ -22,7 +22,7 @@ import {
   matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums,
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
-  openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
+  openMeloBotAlbum, openMeloBotAlbumContext, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
@@ -580,6 +580,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         let liveAlbum = album;
+        let resolvedArtistName = album.artist;
         if (!tracks.length) {
           const seed = session.options?.find(track =>
             track.source === 'melobot' &&
@@ -634,12 +635,13 @@ export const sourceQueue = new SerialQueue(async job => {
 
           tracks = await openMeloBotAlbum(tg, liveArtistName, liveAlbum);
           await syncAlbumTracks(liveArtistName, liveAlbum, tracks);
+          resolvedArtistName = liveArtistName;
         }
 
         session.currentAlbum = {
-          ...liveAlbum,
           ...album,
-          artist: album.artist,
+          ...liveAlbum,
+          artist: resolvedArtistName,
           tracks,
         };
         session.currentAlbumView = 'search';
@@ -1011,8 +1013,8 @@ export const sourceQueue = new SerialQueue(async job => {
               (!artist || normalize(x.artist) === normalize(artist))
             );
 
-          if (!artist || !albumTitle || !seed) {
-            throw new Error('Album artist/seed missing for native bulk HQ.');
+          if (!artist || !albumTitle) {
+            throw new Error('Album identity missing for native bulk HQ.');
           }
 
           let albumContext;
@@ -1020,7 +1022,28 @@ export const sourceQueue = new SerialQueue(async job => {
           let lastError;
           for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-              albumContext = await prepareMeloBotBulkAlbum(tg, artist, albumTitle, seed);
+              if (seed) {
+                albumContext = await prepareMeloBotBulkAlbum(tg, artist, albumTitle, seed);
+              } else {
+                const direct = await discoverMeloBotAlbumsByArtistQuery(
+                  tg,
+                  `album ${artist}`,
+                  { maxAlbums: 30 }
+                );
+                const target = (direct.albums || []).find(item =>
+                  normalize(item.title) === normalize(albumTitle)
+                );
+                if (!target) throw new Error(`MeloBot album was not found: ${albumTitle}`);
+                albumContext = await openMeloBotAlbumContext(
+                  tg,
+                  direct.artist || artist,
+                  target
+                );
+                if (!albumContext.bulkHighButton) {
+                  throw new Error('MeloBot bulk HQ button was not found on the album page.');
+                }
+              }
+
               bulk = await downloadMeloBotAlbumTracks(tg, albumContext);
               lastError = null;
               break;
