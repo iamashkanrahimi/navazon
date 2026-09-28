@@ -188,6 +188,7 @@ async function sendAndCollect(client, text, {
   timeoutMs = config.searchTimeoutMs,
   quietMs = 1600,
   stopWhen,
+  stopWhenBatch,
 } = {}) {
   const peer = config.melobotUsername;
   const afterId = await latestMessageId(client, peer);
@@ -196,6 +197,7 @@ async function sendAndCollect(client, text, {
     timeoutMs,
     quietMs,
     stopWhen,
+    stopWhenBatch,
   });
 }
 
@@ -847,7 +849,10 @@ export async function downloadMeloBotBulkTracks(client, {
 
   const download = await sendAndCollect(client, button, {
     timeoutMs: Math.max(config.downloadTimeoutMs, 180000),
-    quietMs: expectedCount > 20 ? 18000 : 12000,
+    quietMs: expectedCount > 20 ? 7000 : 4500,
+    stopWhenBatch: expectedCount > 0
+      ? messages => messages.filter(isAudioMessage).length >= expectedCount
+      : undefined,
   });
 
   const audios = download.messages.filter(isAudioMessage).map(audioMeta);
