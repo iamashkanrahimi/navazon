@@ -461,6 +461,99 @@ export async function getMeloBotCover(client, candidate) {
   return photo ? { source: 'melobot', photoMessage: photo } : null;
 }
 
+export async function enrichMeloBotTrack(client, candidate) {
+  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
+  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+
+  const selected = await sendAndCollect(client, liveCandidate.rawText, {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 1500,
+    stopWhen: message => replyButtons(message).some(text =>
+      text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
+    ),
+  });
+
+  const menuMessages = selected.messages;
+  const menuButtons = buttonsFromMessages(menuMessages);
+  const result = {
+    candidate: liveCandidate,
+    metadata: {
+      raw: '',
+      ...parsePopularityValue(liveCandidate.rawText || candidate?.rawText || ''),
+    },
+    lyrics: { available: false, text: '' },
+    cover: null,
+    errors: [],
+  };
+
+  const lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+  if (lyricsButton) {
+    try {
+      const lyricsResult = await sendAndCollect(client, lyricsButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 1800,
+      });
+      const raw = lyricsResult.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+      const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
+      result.lyrics = {
+        available: Boolean(text),
+        text,
+        rawText: raw,
+      };
+    } catch (err) {
+      result.errors.push(`lyrics: ${err.message}`);
+    }
+  }
+
+  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
+  if (moreButton) {
+    try {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 1500,
+      });
+      const moreButtons = buttonsFromMessages(more.messages);
+
+      const detailsButton = moreButtons.find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
+      if (detailsButton) {
+        try {
+          const details = await sendAndCollect(client, detailsButton, {
+            timeoutMs: config.searchTimeoutMs,
+            quietMs: 1600,
+          });
+          const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+          result.metadata = {
+            raw,
+            ...parseReleaseDate(raw),
+            ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
+          };
+        } catch (err) {
+          result.errors.push(`metadata: ${err.message}`);
+        }
+      }
+
+      const coverButton = moreButtons.find(text => /کاور/u.test(clean(text))) || null;
+      if (coverButton) {
+        try {
+          const coverResult = await sendAndCollect(client, coverButton, {
+            timeoutMs: config.searchTimeoutMs,
+            quietMs: 1600,
+            stopWhen: photoMessage,
+          });
+          const photo = coverResult.messages.find(photoMessage);
+          if (photo) result.cover = { source: 'melobot', photoMessage: photo };
+        } catch (err) {
+          result.errors.push(`cover: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      result.errors.push(`more: ${err.message}`);
+    }
+  }
+
+  return result;
+}
+
 export async function discoverMeloBotFeed(client, command, { contentOrigin = 'unknown' } = {}) {
   const result = await sendAndCollect(client, command, {
     timeoutMs: config.searchTimeoutMs,
