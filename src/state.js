@@ -29,7 +29,7 @@ export async function recordCrawlerFinish(id, { ok, summary = null, error = null
 }
 
 export async function getStats() {
-  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists, productivity] = await Promise.all([
+  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists, productivity, queueKinds, runKinds] = await Promise.all([
     db.query(`SELECT COUNT(*)::bigint AS artists,
       COALESCE(SUM(jsonb_object_length(COALESCE(data->'tracks','{}'::jsonb))),0)::bigint AS tracks,
       COALESCE(SUM(jsonb_array_length(COALESCE(data->'albumList','[]'::jsonb))),0)::bigint AS albums
@@ -74,6 +74,43 @@ export async function getStats() {
         (SELECT COUNT(*) FROM crawler_runs WHERE finished_at >= NOW() - INTERVAL '24 hours' AND ok = true)::bigint AS successful_runs_24h,
         (SELECT COUNT(*) FROM crawler_runs WHERE finished_at >= NOW() - INTERVAL '24 hours' AND ok = false)::bigint AS failed_runs_24h
     `),
+    db.query(`
+      SELECT COALESCE(
+        jsonb_object_agg(kind, jsonb_build_object(
+          'queued', queued,
+          'running', running,
+          'done', done,
+          'failed', failed
+        )),
+        '{}'::jsonb
+      ) AS by_kind
+      FROM (
+        SELECT kind,
+          COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
+          COUNT(*) FILTER (WHERE status = 'running')::int AS running,
+          COUNT(*) FILTER (WHERE status = 'done')::int AS done,
+          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+        FROM crawl_tasks
+        GROUP BY kind
+      ) grouped
+    `),
+    db.query(`
+      SELECT COALESCE(
+        jsonb_object_agg(kind, jsonb_build_object(
+          'successful', successful,
+          'failed', failed
+        )),
+        '{}'::jsonb
+      ) AS by_kind
+      FROM (
+        SELECT COALESCE(summary->>'kind', artist, 'unknown') AS kind,
+          COUNT(*) FILTER (WHERE ok = true)::int AS successful,
+          COUNT(*) FILTER (WHERE ok = false)::int AS failed
+        FROM crawler_runs
+        WHERE finished_at >= NOW() - INTERVAL '24 hours'
+        GROUP BY COALESCE(summary->>'kind', artist, 'unknown')
+      ) grouped
+    `),
   ]);
   const toNum = row => Object.fromEntries(Object.entries(row).map(([k,v]) => [k, typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v]));
   return {
@@ -88,7 +125,11 @@ export async function getStats() {
       tasks: toNum(deepTasks.rows[0]),
       albums: toNum(deepAlbums.rows[0]),
       artistLists: toNum(deepLists.rows[0]),
-      productivity24h: toNum(productivity.rows[0]),
+      productivity24h: {
+        ...toNum(productivity.rows[0]),
+        runsByKind: runKinds.rows[0]?.by_kind || {},
+      },
+      queueByKind: queueKinds.rows[0]?.by_kind || {},
     },
   };
 }
