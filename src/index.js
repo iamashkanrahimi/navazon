@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { config } from './config.js';
-import { bot, catalog, db, tg } from './runtime.js';
+import { bot, catalog, db, deepCatalog, tg } from './runtime.js';
 import { handleUpdate } from './updates.js';
 import { sourceQueue } from './jobs.js';
 import { getState, setState, getStats } from './state.js';
@@ -20,6 +20,19 @@ async function queueCrawler() {
   const idleForMs = Date.now() - lastAt;
   if (idleForMs < config.discoveryIdleMs) return { queued: false, reason: 'user_active', idleForMs };
 
+  await deepCatalog.enqueueFeedSweep();
+  const deepTask = await deepCatalog.claimNextTask();
+  if (deepTask) {
+    sourceQueue.push({ type: 'deep_crawl', task: deepTask });
+    return {
+      queued: true,
+      type: 'deep',
+      taskKind: deepTask.kind,
+      taskId: deepTask.id,
+    };
+  }
+
+  // Legacy discovery remains as a low-priority safety net if the deep queue is empty.
   const candidate = await catalog.nextDiscoveryCandidate(config.discoveryArtistMinAgeMs);
   if (candidate) {
     sourceQueue.push({ type: 'discover', candidate });
