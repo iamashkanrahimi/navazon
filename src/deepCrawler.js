@@ -138,6 +138,7 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
 function pairBridgedMedia(matches, received = []) {
   const unused = (received || []).map((media, index) => ({ media, index, used: false }));
   const pairs = [];
+  const allowPositionalFallback = matches.length === received.length;
 
   for (const match of matches || []) {
     const track = match.track || {};
@@ -161,8 +162,13 @@ function pairBridgedMedia(matches, received = []) {
       }
     }
 
-    if (!best || bestScore <= 0) best = unused.find(item => !item.used) || null;
-    if (!best) break;
+    if (!best || bestScore < 5) {
+      best = allowPositionalFallback
+        ? (unused.find(item => !item.used) || null)
+        : null;
+    }
+    if (!best) continue;
+
     best.used = true;
     pairs.push({ track, media: best.media });
   }
