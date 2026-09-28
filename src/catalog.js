@@ -49,6 +49,7 @@ export class CatalogStore {
       artist: clean(policy.artist),
       title: clean(policy.title),
       rawText: clean(policy.rawText),
+      cmd: clean(policy.cmd),
       source: policy.source || undefined,
       duration: policy.duration || undefined,
       bitrate: policy.bitrate || undefined,
