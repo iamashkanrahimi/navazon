@@ -25,6 +25,11 @@ const CONTROL_WORDS = [
   'تبلیغ',
   'بیشتر',
   'بازگشت',
+  'بعدی',
+  'قبلی',
+  'صفحه بعد',
+  'صفحه قبل',
+  'ادامه',
 ];
 
 function clean(value = '') {
@@ -971,6 +976,61 @@ export async function openMeloBotAlbum(client, artist, album) {
   const context = await openMeloBotAlbumContext(client, artist, album);
   console.log(`[melobot] album ${album.title}: ${context.tracks.length} tracks`);
   return context.tracks;
+}
+
+export async function discoverMeloBotPlaylists(client, { maxPlaylists = 6 } = {}) {
+  const openIndex = async () => sendAndCollect(client, '/playlists', {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 2000,
+  });
+
+  const index = await openIndex();
+  const candidates = buttonsFromMessages(index.messages)
+    .filter(raw => {
+      const text = clean(raw);
+      if (!text || isControl(text)) return false;
+      if (parseTrackButton(text)) return false;
+      if (/^[🗣🎤🎙]/u.test(text)) return false;
+      return true;
+    })
+    .slice(0, Math.max(0, maxPlaylists));
+
+  const tracks = [];
+  const artists = [];
+  const seenTracks = new Set();
+  const seenArtists = new Set();
+
+  for (const playlistButton of candidates) {
+    try {
+      await openIndex();
+      const page = await sendAndCollect(client, playlistButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 2200,
+        stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
+      });
+
+      for (const track of parseTracksFromMessages(page.messages)) {
+        const key = `${normalize(track.artist)}|${normalize(track.title)}`;
+        if (seenTracks.has(key)) continue;
+        seenTracks.add(key);
+        tracks.push({ ...track, source: 'melobot' });
+
+        const artistKey = normalize(track.artist);
+        if (artistKey && !seenArtists.has(artistKey)) {
+          seenArtists.add(artistKey);
+          artists.push(track.artist);
+        }
+      }
+    } catch (err) {
+      console.warn('[melobot playlist discovery]', playlistButton, err.message);
+    }
+  }
+
+  return {
+    playlists: candidates,
+    tracks,
+    artists,
+  };
 }
 
 export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
