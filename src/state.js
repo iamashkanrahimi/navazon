@@ -1,5 +1,9 @@
 import { db } from './db.js';
 
+let recentUserActivityAt = 0;
+let lastUserActivityPersistAt = 0;
+const USER_ACTIVITY_PERSIST_MS = 15_000;
+
 export async function setState(key, value) {
   await db.query(`
     INSERT INTO app_state (key, value) VALUES ($1, $2::jsonb)
@@ -10,6 +14,22 @@ export async function setState(key, value) {
 export async function getState(key, fallback = null) {
   const result = await db.query('SELECT value FROM app_state WHERE key = $1', [key]);
   return result.rowCount ? result.rows[0].value : fallback;
+}
+
+export async function noteUserActivity() {
+  const now = Date.now();
+  recentUserActivityAt = now;
+  if (now - lastUserActivityPersistAt < USER_ACTIVITY_PERSIST_MS) return;
+  lastUserActivityPersistAt = now;
+  await setState('last_user_activity_at', { at: now });
+}
+
+export async function getLastUserActivity(fallbackAt = 0) {
+  if (recentUserActivityAt > 0) return recentUserActivityAt;
+  const saved = await getState('last_user_activity_at', { at: fallbackAt });
+  const at = Number(saved?.at || fallbackAt);
+  recentUserActivityAt = at;
+  return at;
 }
 
 export async function recordCrawlerStart(artist = null) {
