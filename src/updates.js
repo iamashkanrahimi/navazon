@@ -86,8 +86,18 @@ export async function handleUpdate(update) {
         } else if (back.type === 'album' && session.currentAlbum) {
           const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
           const keyboard = session.currentAlbumView === 'track'
-            ? trackAlbumKeyboard(sessionId,session.currentAlbum,session.currentAlbum.tracks)
-            : albumTracksKeyboard(sessionId,session.currentAlbum.tracks,session.albumsPage || 0);
+            ? trackAlbumKeyboard(
+                sessionId,
+                session.currentAlbum,
+                session.currentAlbum.tracks,
+                session.albumTrackPage || 0
+              )
+            : albumTracksKeyboard(
+                sessionId,
+                session.currentAlbum.tracks,
+                session.albumsPage || 0,
+                session.albumTrackPage || 0
+              );
           await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
         } else {
           await showResults(sessionId,session,messageId);
@@ -194,6 +204,24 @@ export async function handleUpdate(update) {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
         sourceQueue.push({ type: 'album', sessionId, index: Number(parts[2]), messageId });
+      } else if (action === 'apg') {
+        if (!session.currentAlbum?.tracks?.length) return;
+        session.albumTrackPage = Math.max(0, Number(parts[2] || 0));
+        const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
+        const keyboard = session.currentAlbumView === 'track'
+          ? trackAlbumKeyboard(
+              sessionId,
+              session.currentAlbum,
+              session.currentAlbum.tracks,
+              session.albumTrackPage
+            )
+          : albumTracksKeyboard(
+              sessionId,
+              session.currentAlbum.tracks,
+              session.albumsPage || 0,
+              session.albumTrackPage
+            );
+        await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
       } else if (action === 'alt') {
         const track = session.currentAlbum?.tracks?.[Number(parts[2])]; if (!track) return;
         session.currentTrack = { ...track, source: track.source || 'melobot' };
