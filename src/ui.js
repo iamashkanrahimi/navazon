@@ -166,6 +166,14 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
   return { inline_keyboard: rows };
 }
 
+export function noAlbumsKeyboard(sessionId) {
+  return {
+    inline_keyboard: [[
+      { text: '🔙 صفحه‌ی خواننده', callback_data: `arh:${sessionId}` },
+    ]],
+  };
+}
+
 export function albumsKeyboard(sessionId, albums, page) {
   const start = page * ALBUMS_PER_PAGE;
   const visible = (albums || []).slice(start,start + ALBUMS_PER_PAGE);
