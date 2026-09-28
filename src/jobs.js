@@ -34,6 +34,53 @@ import {
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
+async function syncArtistContext(artistContext) {
+  if (!artistContext?.artist) return;
+  const topTracks = artistContext.topTracks || artistContext.tracks || [];
+  const recentTracks = artistContext.recentTracks || [];
+
+  const results = await Promise.allSettled([
+    catalog.recordArtist(artistContext.artist, {
+      topTracks,
+      recentTracks,
+      albumButton: artistContext.albumButton || null,
+    }),
+    deepCatalog.setArtistList(artistContext.artist, 'top', topTracks),
+    deepCatalog.setArtistList(artistContext.artist, 'recent', recentTracks),
+  ]);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('[artist sync]', artistContext.artist, result.reason?.message || result.reason);
+    }
+  }
+}
+
+async function syncAlbumIndex(artist, albums = []) {
+  if (!artist || !albums.length) return;
+  const results = await Promise.allSettled([
+    catalog.recordAlbums(artist, albums),
+    ...albums.map(album => deepCatalog.upsertAlbum(artist, album)),
+  ]);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('[album index sync]', artist, result.reason?.message || result.reason);
+    }
+  }
+}
+
+async function syncAlbumTracks(artist, album, tracks = []) {
+  if (!artist || !album?.title || !tracks.length) return;
+  const results = await Promise.allSettled([
+    catalog.recordAlbumTracks(artist, album, tracks),
+    deepCatalog.setAlbumTracks(artist, album, tracks),
+  ]);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('[album track sync]', artist, album.title, result.reason?.message || result.reason);
+    }
+  }
+}
+
 function bulkTrackKey(track = {}) {
   return track.rawText || `${normalize(track.artist)}|${normalize(track.title)}`;
 }
@@ -285,13 +332,7 @@ export const sourceQueue = new SerialQueue(async job => {
         session.artistSeed = seed.source === 'melobot'
           ? seed
           : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null);
-        if (!cachedArtist) {
-          await catalog.recordArtist(session.artistContext.artist, {
-            topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
-            recentTracks: session.artistContext.recentTracks || [],
-            albumButton: session.artistContext.albumButton || null,
-          });
-        }
+        await syncArtistContext(session.artistContext);
         session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
         session.artistBack = 'trt';
         session.albums = null;
@@ -384,10 +425,11 @@ export const sourceQueue = new SerialQueue(async job => {
             ...liveArtist,
             tracks: session.artistContext.topTracks || session.artistContext.tracks || [],
           };
-          await catalog.recordArtist(liveArtist.artist,{
-            topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
+          await syncArtistContext({
+            ...session.artistContext,
+            artist: liveArtist.artist,
             recentTracks: liveArtist.recentTracks || [],
-            albumButton: liveArtist.albumButton || null,
+            albumButton: liveArtist.albumButton || session.artistContext.albumButton || null,
           });
 
           const liveTracks = (liveArtist.recentTracks || requestedTracks).slice(0, TOP_TRACKS_LIMIT);
@@ -491,11 +533,7 @@ export const sourceQueue = new SerialQueue(async job => {
           if (lastError || !liveArtist || !bulk) throw lastError || new Error('Top native bulk failed.');
 
           session.artistContext = { ...session.artistContext, ...liveArtist };
-          await catalog.recordArtist(liveArtist.artist,{
-            topTracks: liveArtist.topTracks || liveArtist.tracks || [],
-            recentTracks: liveArtist.recentTracks || [],
-            albumButton: liveArtist.albumButton || null,
-          });
+          await syncArtistContext(liveArtist);
 
           const liveTracks = (liveArtist.topTracks || liveArtist.tracks || requestedTracks)
             .slice(0, TOP_TRACKS_LIMIT);
@@ -582,20 +620,11 @@ export const sourceQueue = new SerialQueue(async job => {
             tracks: albumContext.tracks,
           };
 
-          try {
-            await catalog.recordAlbumTracks(
-              albumContext.artist,
-              albumContext.album,
-              albumContext.tracks
-            );
-            await deepCatalog.setAlbumTracks(
-              albumContext.artist,
-              albumContext.album,
-              albumContext.tracks
-            );
-          } catch (err) {
-            console.warn('[native bulk album catalog]', err.message);
-          }
+          await syncAlbumTracks(
+            albumContext.artist,
+            albumContext.album,
+            albumContext.tracks
+          );
 
           const delivered = await deliverNativeBulkHq(
             session,
@@ -762,12 +791,8 @@ export const sourceQueue = new SerialQueue(async job => {
         session.artistSeed = seed;
         const cachedArtist = await catalog.getArtistContext(seed.artist,config.catalogArtistTtlMs);
         session.artistContext = cachedArtist || await openMeloBotArtist(tg,seed);
+        await syncArtistContext(session.artistContext);
         if (!cachedArtist) {
-          await catalog.recordArtist(session.artistContext.artist,{
-            topTracks: session.artistContext.topTracks || session.artistContext.tracks || [],
-            recentTracks: session.artistContext.recentTracks || [],
-            albumButton: session.artistContext.albumButton || null,
-          });
           for (const relatedArtist of session.artistContext.relatedArtists || []) {
             if (normalize(relatedArtist) !== normalize(session.artistContext.artist)) {
               await catalog.ensureArtist(relatedArtist,{ discoveredFrom: `artist-picker:${session.artistContext.artist}` });
@@ -800,7 +825,7 @@ export const sourceQueue = new SerialQueue(async job => {
             const liveArtist = await openMeloBotArtist(tg,seed);
             session.artistContext = { ...session.artistContext, albumButton: liveArtist.albumButton || null };
             session.albums = await listMeloBotAlbums(tg,session.artistContext);
-            await catalog.recordAlbums(session.artistContext.artist,session.albums);
+            await syncAlbumIndex(session.artistContext.artist, session.albums);
           }
         }
         session.busy = false;
@@ -830,8 +855,8 @@ export const sourceQueue = new SerialQueue(async job => {
           const liveAlbums = await listMeloBotAlbums(tg,liveArtist);
           const liveAlbum = liveAlbums.find(x => normalize(x.title) === normalize(album.title)) || album;
           tracks = await openMeloBotAlbum(tg,session.artistContext.artist,liveAlbum);
-          await catalog.recordAlbums(session.artistContext.artist,liveAlbums);
-          await catalog.recordAlbumTracks(session.artistContext.artist,liveAlbum,tracks);
+          await syncAlbumIndex(session.artistContext.artist, liveAlbums);
+          await syncAlbumTracks(session.artistContext.artist, liveAlbum, tracks);
         }
         session.currentAlbum = { ...album, tracks };
         session.currentAlbumView = 'artist';
