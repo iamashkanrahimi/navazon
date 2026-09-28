@@ -13,6 +13,7 @@ import {
   listMeloBotAlbums,
   matchBulkAudioToTracks,
   openMeloBotAlbum,
+  openMeloBotAlbumContext,
   openMeloBotArtistFresh,
   prepareMeloBotBulkAlbum,
   prepareMeloBotBulkRecentTracks,
@@ -98,6 +99,7 @@ function uniqueTracks(tracks = []) {
 async function enqueueArtistBulkTasks(artist, seedTrack, {
   hasTop = true,
   hasRecent = true,
+  skipTopHq = false,
 } = {}) {
   const artistKey = deepNormalize(artist);
   const bucket = dayBucket();
@@ -116,11 +118,13 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
   }
 
   if (hasTop) {
-    await deepCatalog.enqueueTask(
-      'artist_bulk_media',
-      { artist, seedTrack, mode: 'top', quality: 'hq' },
-      { priority: 120, taskKey: `artist_bulk:top:hq:${artistKey}:${bucket}` }
-    );
+    if (!skipTopHq) {
+      await deepCatalog.enqueueTask(
+        'artist_bulk_media',
+        { artist, seedTrack, mode: 'top', quality: 'hq' },
+        { priority: 120, taskKey: `artist_bulk:top:hq:${artistKey}:${bucket}` }
+      );
+    }
     await deepCatalog.enqueueTask(
       'artist_bulk_media',
       { artist, seedTrack, mode: 'top', quality: 'normal' },
@@ -454,9 +458,30 @@ async function runArtistProfile(task) {
   });
 
   const bulkSeed = seedTrack || recent[0] || top[0] || null;
+  let topHqComplete = false;
+  if (top.length && live.bulkHighButton) {
+    try {
+      const missingTopHq = await deepCatalog.missingMediaTracks(top, 'hq');
+      if (shouldUseBulk(top.length, missingTopHq.length)) {
+        const bulk = await downloadMeloBotBulkTracks(tg, {
+          button: live.bulkHighButton,
+          label: `${live.artist} top hq inline`,
+          expectedCount: top.length,
+        });
+        await cacheBulkMedia(top, bulk, 'hq', 'artist_profile_top_hq');
+      } else if (missingTopHq.length) {
+        await enqueueSparseMediaFallback(missingTopHq, 'hq', 114);
+      }
+      topHqComplete = (await deepCatalog.missingMediaTracks(top, 'hq')).length === 0;
+    } catch (err) {
+      console.warn('[artist profile inline HQ]', live.artist, err.message);
+    }
+  }
+
   await enqueueArtistBulkTasks(live.artist, bulkSeed, {
     hasTop: top.length > 0,
     hasRecent: recent.length > 0,
+    skipTopHq: topHqComplete,
   });
 
   for (const related of live.relatedArtists || []) {
@@ -514,7 +539,8 @@ async function runAlbumDetail(task) {
   const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
   const albums = await listMeloBotAlbums(tg, live);
   const target = albums.find(item => deepNormalize(item.title) === deepNormalize(album.title)) || album;
-  const tracks = await openMeloBotAlbum(tg, live.artist, target);
+  const albumContext = await openMeloBotAlbumContext(tg, live.artist, target);
+  const tracks = albumContext.tracks;
 
   await catalog.recordAlbums(live.artist, albums);
   await catalog.recordAlbumTracks(live.artist, target, tracks);
@@ -527,18 +553,46 @@ async function runAlbumDetail(task) {
 
   const albumSeed = seedTrack || tracks[0] || live.recentTracks?.[0] || live.topTracks?.[0] || null;
   const albumKey = `${deepNormalize(live.artist)}:${deepNormalize(target.title)}`;
-  await deepCatalog.enqueueTask(
-    'album_bulk_media',
-    { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
-    { priority: 92, taskKey: `album_bulk:hq:${albumKey}` }
-  );
+
+  let albumHqComplete = false;
+  if (albumContext.bulkHighButton && tracks.length) {
+    try {
+      const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
+      if (shouldUseBulk(tracks.length, missingHq.length)) {
+        const bulk = await downloadMeloBotBulkTracks(tg, {
+          button: albumContext.bulkHighButton,
+          label: `album ${target.title} hq inline`,
+          expectedCount: tracks.length,
+        });
+        await cacheBulkMedia(tracks, bulk, 'hq', 'album_detail_hq');
+      } else if (missingHq.length) {
+        await enqueueSparseMediaFallback(missingHq, 'hq', 110);
+      }
+      albumHqComplete = (await deepCatalog.missingMediaTracks(tracks, 'hq')).length === 0;
+    } catch (err) {
+      console.warn('[album detail inline HQ]', live.artist, target.title, err.message);
+    }
+  }
+
+  if (!albumHqComplete) {
+    await deepCatalog.enqueueTask(
+      'album_bulk_media',
+      { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
+      { priority: 92, taskKey: `album_bulk:hq:${albumKey}` }
+    );
+  }
   await deepCatalog.enqueueTask(
     'album_bulk_media',
     { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
     { priority: 68, taskKey: `album_bulk:normal:${albumKey}` }
   );
 
-  return { artist: live.artist, album: target.title, tracks: tracks.length };
+  return {
+    artist: live.artist,
+    album: target.title,
+    tracks: tracks.length,
+    hqComplete: albumHqComplete,
+  };
 }
 
 async function runTrackHq(task) {
