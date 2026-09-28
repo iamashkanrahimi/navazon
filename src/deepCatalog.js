@@ -175,6 +175,10 @@ export class DeepCatalog {
       Number(media.duration || extra.duration || 0) || null,
       extra.source || track.source || 'melobot',
     ]);
+    await this.completeTaskByKey(`track_${quality}:${trackKey}`, {
+      satisfiedBy: extra.satisfiedBy || 'media_cache',
+      quality,
+    });
   }
 
   async setCover(track, media = {}) {
@@ -197,6 +201,7 @@ export class DeepCatalog {
         fileSize: media.fileSize || undefined,
       }),
     ]);
+    await this.completeTaskByKey(`track_cover:${trackKey}`, { satisfiedBy: 'track_enrich' });
   }
 
   async setLyrics(track, lyricsText, source = 'melobot') {
@@ -211,6 +216,7 @@ export class DeepCatalog {
           updated_at = NOW()
       WHERE track_key = $1
     `, [trackKey, String(lyricsText || '').trim(), source]);
+    await this.completeTaskByKey(`track_lyrics:${trackKey}`, { satisfiedBy: 'track_enrich' });
   }
 
   async markNoLyrics(track, source = 'melobot') {
@@ -224,6 +230,7 @@ export class DeepCatalog {
           updated_at = NOW()
       WHERE track_key = $1
     `, [trackKey, source]);
+    await this.completeTaskByKey(`track_lyrics:${trackKey}`, { satisfiedBy: 'track_enrich', available: false });
   }
 
   async setMetadata(track, patch = {}) {
@@ -247,8 +254,12 @@ export class DeepCatalog {
       releaseDateRaw,
       popularityCount,
       patch.popularityText || null,
-      safeJson(patch.raw || patch),
+      safeJson({
+        ...(patch.raw || patch),
+        metadataCheckedAt: new Date().toISOString(),
+      }),
     ]);
+    await this.completeTaskByKey(`track_metadata:${trackKey}`, { satisfiedBy: 'track_enrich' });
   }
 
   async getTrackDetails(track = {}) {
@@ -367,6 +378,53 @@ export class DeepCatalog {
     }));
   }
 
+  async completeTaskByKey(taskKey, summary = {}) {
+    if (!taskKey) return;
+    await db.query(`
+      UPDATE crawl_tasks
+      SET status = 'done',
+          completed_at = COALESCE(completed_at, NOW()),
+          updated_at = NOW(),
+          last_error = NULL,
+          result = result || $2::jsonb
+      WHERE task_key = $1 AND status <> 'running'
+    `, [taskKey, safeJson(summary)]);
+  }
+
+  async missingMediaTracks(tracks = [], quality = 'hq') {
+    const keyed = (tracks || [])
+      .map(track => ({ track, key: deepTrackKey(track) }))
+      .filter(item => item.key && item.key !== '|');
+    if (!keyed.length) return [];
+
+    const keys = keyed.map(item => item.key);
+    const result = await db.query(`
+      SELECT track_key
+      FROM deep_track_media
+      WHERE quality = $1 AND track_key = ANY($2::text[])
+    `, [quality, keys]);
+    const present = new Set(result.rows.map(row => row.track_key));
+    return keyed.filter(item => !present.has(item.key)).map(item => item.track);
+  }
+
+  async compactQueue() {
+    await db.query(`
+      UPDATE crawl_tasks legacy
+      SET status = 'done',
+          completed_at = COALESCE(completed_at, NOW()),
+          updated_at = NOW(),
+          result = legacy.result || '{"supersededBy":"track_enrich"}'::jsonb
+      WHERE legacy.status = 'queued'
+        AND legacy.kind IN ('track_metadata','track_cover','track_lyrics')
+        AND EXISTS (
+          SELECT 1
+          FROM crawl_tasks bundle
+          WHERE bundle.task_key = 'track_enrich:' || split_part(legacy.task_key, ':', 2)
+            AND bundle.status IN ('queued','running','done')
+        )
+    `);
+  }
+
   async enqueueTask(kind, payload = {}, {
     priority = 50,
     delayMs = 0,
@@ -392,15 +450,29 @@ export class DeepCatalog {
     return key;
   }
 
-  async seedTrackTasks(track, { priority = 70 } = {}) {
+  async seedTrackTasks(track, { priority = 70, preferBulk = false } = {}) {
     const trackKey = await this.upsertTrack(track);
     if (!trackKey) return;
     const payload = { track: { ...track, trackKey }, trackKey };
-    await this.enqueueTask('track_hq', payload, { priority: priority + 20, taskKey: `track_hq:${trackKey}` });
-    await this.enqueueTask('track_normal', payload, { priority: priority + 10, taskKey: `track_normal:${trackKey}` });
-    await this.enqueueTask('track_metadata', payload, { priority: priority + 5, taskKey: `track_metadata:${trackKey}` });
-    await this.enqueueTask('track_cover', payload, { priority, taskKey: `track_cover:${trackKey}` });
-    await this.enqueueTask('track_lyrics', payload, { priority: priority - 5, taskKey: `track_lyrics:${trackKey}` });
+
+    // One bundled enrichment task replaces three separate 2-minute crawler turns.
+    await this.enqueueTask('track_enrich', payload, {
+      priority: priority + 5,
+      taskKey: `track_enrich:${trackKey}`,
+    });
+
+    // Individual media tasks remain as a low-priority safety net. Native bulk
+    // artist/album tasks will satisfy and auto-complete these when possible.
+    const hqPriority = preferBulk ? priority - 18 : priority + 20;
+    const normalPriority = preferBulk ? priority - 24 : priority + 10;
+    await this.enqueueTask('track_hq', payload, {
+      priority: hqPriority,
+      taskKey: `track_hq:${trackKey}`,
+    });
+    await this.enqueueTask('track_normal', payload, {
+      priority: normalPriority,
+      taskKey: `track_normal:${trackKey}`,
+    });
   }
 
   async claimNextTask() {
@@ -473,12 +545,12 @@ export class DeepCatalog {
 
   async enqueueFeedSweep() {
     const feeds = [
-      { feed: '/new', priority: 120, everyMs: 30 * 60 * 1000, origin: 'unknown' },
-      { feed: '/topday', priority: 118, everyMs: 60 * 60 * 1000, origin: 'unknown' },
-      { feed: '/topweek', priority: 116, everyMs: 6 * 60 * 60 * 1000, origin: 'unknown' },
-      { feed: '/foreign', priority: 114, everyMs: 2 * 60 * 60 * 1000, origin: 'foreign' },
-      { feed: '/turkish', priority: 112, everyMs: 6 * 60 * 60 * 1000, origin: 'foreign' },
-      { feed: '/arabic', priority: 110, everyMs: 6 * 60 * 60 * 1000, origin: 'foreign' },
+      { feed: '/new', priority: 130, everyMs: 20 * 60 * 1000, origin: 'unknown' },
+      { feed: '/topday', priority: 126, everyMs: 45 * 60 * 1000, origin: 'unknown' },
+      { feed: '/foreign', priority: 116, everyMs: 2 * 60 * 60 * 1000, origin: 'foreign' },
+      { feed: '/topweek', priority: 108, everyMs: 6 * 60 * 60 * 1000, origin: 'unknown' },
+      { feed: '/turkish', priority: 102, everyMs: 8 * 60 * 60 * 1000, origin: 'foreign' },
+      { feed: '/arabic', priority: 102, everyMs: 8 * 60 * 60 * 1000, origin: 'foreign' },
     ];
     const now = Date.now();
     for (const item of feeds) {
@@ -488,6 +560,13 @@ export class DeepCatalog {
         taskKey: `feed:${item.feed}:${bucket}`,
       });
     }
+
+    const homeEveryMs = 12 * 60 * 60 * 1000;
+    const homeBucket = Math.floor(now / homeEveryMs);
+    await this.enqueueTask('home_discovery', { maxSections: 8 }, {
+      priority: 94,
+      taskKey: `home_discovery:${homeBucket}`,
+    });
   }
 
   async stats() {
