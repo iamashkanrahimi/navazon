@@ -218,11 +218,22 @@ function albumListingDeclaration(messages = []) {
 export function inspectMeloBotAlbumListing(messages = []) {
   const albums = parseAlbumButtons(messages);
   const declaration = albumListingDeclaration(messages);
+  const confirmed = albums.length > 0
+    || declaration.declaredCount !== null
+    || declaration.explicitEmpty;
+  const confirmedEmpty = albums.length === 0 && declaration.explicitEmpty;
+  const complete = confirmedEmpty
+    || (albums.length > 0 && (
+      declaration.declaredCount === null
+      || albums.length >= declaration.declaredCount
+    ));
+
   return {
     albums,
     declaredCount: declaration.declaredCount,
-    confirmed: albums.length > 0 || declaration.declaredCount !== null || declaration.explicitEmpty,
-    confirmedEmpty: albums.length === 0 && declaration.explicitEmpty,
+    confirmed,
+    confirmedEmpty,
+    complete,
   };
 }
 
@@ -1115,7 +1126,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     return {
       artist,
       albums: listing.albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
-      complete: true,
+      complete: listing.complete,
       confirmedEmpty: listing.confirmedEmpty,
     };
   }
@@ -1154,12 +1165,12 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
 
   if (seed) {
     const artistContext = await openMeloBotArtistBase(client, seed);
-    const albums = await listMeloBotAlbums(client, artistContext, { allowEmpty: true });
+    const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty: true });
     return {
       artist: artistContext.artist,
-      albums: albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
-      complete: true,
-      confirmedEmpty: albums.length === 0,
+      albums: resolved.albums.slice(0, Math.max(1, Number(maxAlbums || 12))),
+      complete: resolved.complete,
+      confirmedEmpty: resolved.confirmedEmpty,
     };
   }
 
@@ -1215,18 +1226,32 @@ export async function discoverMeloBotAlbumsForQuery(client, query, seedTracks = 
   return albums;
 }
 
-export async function listMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
+export async function resolveMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
   const embeddedAlbums = Array.isArray(artistContext?.albumList)
     ? artistContext.albumList
     : [];
   const embeddedConfirmed = Boolean(artistContext?.albumListingConfirmed);
 
   if (embeddedConfirmed) {
+    const declaredCount = artistContext?.albumDeclaredCount ?? null;
+    const confirmedEmpty = Boolean(artistContext?.albumListingConfirmedEmpty);
+    const complete = confirmedEmpty
+      || (embeddedAlbums.length > 0 && (
+        declaredCount === null || embeddedAlbums.length >= declaredCount
+      ));
+
     if (!embeddedAlbums.length && !allowEmpty) {
       throw new Error('MeloBot confirmed this artist has no albums.');
     }
-    console.log(`[melobot] albums for ${artistContext.artist}: ${embeddedAlbums.length} (embedded)`);
-    return embeddedAlbums;
+
+    return {
+      albums: embeddedAlbums,
+      confirmed: true,
+      confirmedEmpty,
+      declaredCount,
+      complete,
+      source: 'embedded',
+    };
   }
 
   const albumControl = clean(artistContext?.albumButton || '');
@@ -1253,8 +1278,19 @@ export async function listMeloBotAlbums(client, artistContext, { allowEmpty = fa
     throw new Error('MeloBot confirmed this artist has no albums.');
   }
 
-  console.log(`[melobot] albums for ${artistContext.artist}: ${listing.albums.length}`);
-  return listing.albums;
+  return {
+    ...listing,
+    source: 'navigation',
+  };
+}
+
+export async function listMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
+  const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty });
+  console.log(
+    `[melobot] albums for ${artistContext.artist}: ${resolved.albums.length}`
+    + (resolved.complete ? '' : ' (partial)')
+  );
+  return resolved.albums;
 }
 
 export async function openMeloBotAlbum(client, artist, album) {
