@@ -358,6 +358,34 @@ async function openMoreMenu(client, candidate) {
   return more.messages;
 }
 
+export function sanitizeMeloBotLyricsText(raw = '', candidate = {}) {
+  const artistNorm = normalize(candidate.artist || '');
+  const titleNorm = normalize(candidate.title || '');
+
+  const lines = String(raw || '')
+    .split(/\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const kept = lines.filter(line => {
+    const n = normalize(line);
+    if (!n) return false;
+
+    // Remove MeloBot branding/footer regardless of emoji or ID prefix.
+    if (/@melobot\b/iu.test(line)) return false;
+    if (/\bmelobot\b/iu.test(n)) return false;
+
+    if (artistNorm && n === artistNorm) return false;
+    if (titleNorm && n === titleNorm) return false;
+    if (line.startsWith('#')) return false;
+    if (/دانلود\s*آهنگ/u.test(line)) return false;
+
+    return true;
+  });
+
+  return kept.join('\n').trim();
+}
+
 export async function getMeloBotLyrics(client, candidate) {
   const menuMessages = await openTrackMenu(client, candidate);
   const lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
@@ -371,21 +399,7 @@ export async function getMeloBotLyrics(client, candidate) {
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
   if (!raw) return { available: false, text: '' };
 
-  const artistNorm = normalize(candidate.artist);
-  const titleNorm = normalize(candidate.title);
-  const lines = raw.split(/\n/).map(line => line.trim()).filter(Boolean);
-  const kept = lines.filter(line => {
-    const n = normalize(line);
-    if (!n) return false;
-    if (n === artistNorm || n === titleNorm) return false;
-    if (line.startsWith('#')) return false;
-    if (/^@?melobot$/iu.test(line)) return false;
-    if (/^ID\s*@?melobot$/iu.test(line)) return false;
-    if (/دانلود\s*آهنگ/u.test(line)) return false;
-    return true;
-  });
-
-  const text = kept.join('\n').trim();
+  const text = sanitizeMeloBotLyricsText(raw, candidate);
   return { available: Boolean(text), text, rawText: raw };
 }
 

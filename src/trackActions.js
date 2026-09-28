@@ -9,6 +9,7 @@ import {
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
   inspectMeloBotTrack,
+  sanitizeMeloBotLyricsText,
 } from './sources/melobot.js';
 
 function clean(value = '') {
@@ -136,6 +137,18 @@ function chunks(text, max = 3800) {
 export async function sendTrackLyrics(chatId, track) {
   let details = await deepCatalog.getTrackDetails(track);
   let lyrics = details?.lyrics_text || '';
+
+  // Old cached rows may still contain the MeloBot footer. Clean them on read
+  // and write the sanitized copy back so the database self-heals.
+  if (lyrics) {
+    const cleaned = sanitizeMeloBotLyricsText(lyrics, track);
+    if (cleaned !== lyrics) {
+      lyrics = cleaned;
+      if (lyrics) {
+        try { await deepCatalog.setLyrics(track, lyrics, details?.lyrics_source || 'melobot'); } catch {}
+      }
+    }
+  }
 
   if (!lyrics && track?.source === 'melobot' && track?.rawText) {
     const result = await getMeloBotLyrics(tg, track);
