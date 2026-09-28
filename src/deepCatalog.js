@@ -380,9 +380,18 @@ export class DeepCatalog {
   }
 
   async searchAlbums(query, limit = 4) {
-    const tokens = deepNormalize(query)
-      .split(' ')
-      .filter(token => token.length >= 2 && !['album','آلبوم'].includes(token));
+    const allTokens = deepNormalize(query).split(' ').filter(Boolean);
+    const albumWords = new Set([
+      'album', 'albums',
+      'آلبوم', 'آلبومها', 'آلبومهای',
+      'البوم', 'البومها', 'البومهای',
+    ]);
+    const hasAlbumIntent = allTokens.some(token => albumWords.has(token));
+    const tokens = allTokens.filter(token =>
+      token.length >= 2
+      && !albumWords.has(token)
+      && !(hasAlbumIntent && ['ها','های'].includes(token))
+    );
     if (!tokens.length) return [];
 
     const clauses = tokens.map((_, index) =>
