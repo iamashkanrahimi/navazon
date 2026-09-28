@@ -129,6 +129,41 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
   }
 }
 
+function pairBridgedMedia(matches, received = []) {
+  const unused = (received || []).map((media, index) => ({ media, index, used: false }));
+  const pairs = [];
+
+  for (const match of matches || []) {
+    const track = match.track || {};
+    const nt = deepNormalize(track.title);
+    const na = deepNormalize(track.artist);
+    let best = null;
+    let bestScore = -1;
+
+    for (const item of unused) {
+      if (item.used) continue;
+      const mt = deepNormalize(item.media?.title || item.media?.fileName || '');
+      const ma = deepNormalize(item.media?.performer || '');
+      let score = 0;
+      if (nt && mt === nt) score += 8;
+      else if (nt && mt && (mt.includes(nt) || nt.includes(mt))) score += 5;
+      if (na && ma === na) score += 4;
+      else if (na && ma && (ma.includes(na) || na.includes(ma))) score += 2;
+      if (score > bestScore) {
+        best = item;
+        bestScore = score;
+      }
+    }
+
+    if (!best || bestScore <= 0) best = unused.find(item => !item.used) || null;
+    if (!best) break;
+    best.used = true;
+    pairs.push({ track, media: best.media });
+  }
+
+  return pairs;
+}
+
 async function cacheBulkMedia(tracks, bulk, quality, label) {
   const sourceTracks = uniqueTracks(tracks);
   const matches = matchBulkAudioToTracks(sourceTracks, bulk?.audioItems || []);
@@ -144,10 +179,10 @@ async function cacheBulkMedia(tracks, bulk, quality, label) {
 
   let cached = 0;
   const received = bridged.items || [];
-  const usable = Math.min(received.length, matches.length);
-  for (let index = 0; index < usable; index += 1) {
-    const track = { ...matches[index].track, source: 'melobot' };
-    const media = received[index];
+  const pairs = pairBridgedMedia(matches, received);
+  for (const pair of pairs) {
+    const track = { ...pair.track, source: 'melobot' };
+    const media = pair.media;
     try {
       await deepCatalog.setMedia(track, quality, media, {
         source: 'melobot',
@@ -168,6 +203,7 @@ async function cacheBulkMedia(tracks, bulk, quality, label) {
     expected: sourceTracks.length,
     bridgeComplete: Boolean(bridged.complete),
     forwarded: received.length,
+    paired: pairs.length,
   };
 }
 
