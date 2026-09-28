@@ -451,6 +451,13 @@ async function runPlaylistDiscovery(task) {
     preferBulk: true,
   });
 
+  await Promise.all((discovered.entries || []).map(entry =>
+    catalog.recordSearch(
+      `browse:playlist:${entry.playlist.key}`,
+      entry.tracks || []
+    ).catch(err => console.warn('[playlist browse cache]', entry.playlist.label, err.message))
+  ));
+
   const byArtist = new Map();
   for (const track of discovered.tracks || []) {
     const key = deepNormalize(track.artist);
@@ -473,6 +480,9 @@ async function runFeed(task) {
   if (!feed) throw new Error('Feed task is missing feed name.');
 
   const result = await discoverMeloBotFeed(tg, feed, { contentOrigin: origin });
+  try { await catalog.recordSearch(`browse:${feed}`, result.tracks); } catch (err) {
+    console.warn('[feed browse cache]', feed, err.message);
+  }
   await seedTracks(result.tracks, feed === '/new' ? 108 : 96, {
     discoveredFrom: `feed:${feed}`,
     feed,
