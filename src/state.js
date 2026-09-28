@@ -29,7 +29,7 @@ export async function recordCrawlerFinish(id, { ok, summary = null, error = null
 }
 
 export async function getStats() {
-  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists] = await Promise.all([
+  const [artists, cache, follows, crawler, sessions, deepTracks, deepMedia, deepTasks, deepAlbums, deepLists, productivity] = await Promise.all([
     db.query(`SELECT COUNT(*)::bigint AS artists,
       COALESCE(SUM(jsonb_object_length(COALESCE(data->'tracks','{}'::jsonb))),0)::bigint AS tracks,
       COALESCE(SUM(jsonb_array_length(COALESCE(data->'albumList','[]'::jsonb))),0)::bigint AS albums
@@ -66,6 +66,14 @@ export async function getStats() {
       COUNT(*) FILTER (WHERE list_type = 'recent')::bigint AS recent_rows,
       COUNT(*) FILTER (WHERE list_type = 'top')::bigint AS top_rows
       FROM deep_artist_tracks`),
+    db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM deep_tracks WHERE discovered_at >= NOW() - INTERVAL '24 hours')::bigint AS tracks_24h,
+        (SELECT COUNT(*) FROM deep_track_media WHERE updated_at >= NOW() - INTERVAL '24 hours')::bigint AS media_24h,
+        (SELECT COUNT(*) FROM crawl_tasks WHERE completed_at >= NOW() - INTERVAL '24 hours' AND status = 'done')::bigint AS tasks_done_24h,
+        (SELECT COUNT(*) FROM crawler_runs WHERE finished_at >= NOW() - INTERVAL '24 hours' AND ok = true)::bigint AS successful_runs_24h,
+        (SELECT COUNT(*) FROM crawler_runs WHERE finished_at >= NOW() - INTERVAL '24 hours' AND ok = false)::bigint AS failed_runs_24h
+    `),
   ]);
   const toNum = row => Object.fromEntries(Object.entries(row).map(([k,v]) => [k, typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v]));
   return {
@@ -80,6 +88,7 @@ export async function getStats() {
       tasks: toNum(deepTasks.rows[0]),
       albums: toNum(deepAlbums.rows[0]),
       artistLists: toNum(deepLists.rows[0]),
+      productivity24h: toNum(productivity.rows[0]),
     },
   };
 }
