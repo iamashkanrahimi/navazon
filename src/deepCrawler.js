@@ -285,6 +285,7 @@ async function runArtistBulkMedia(task) {
     button,
     label: `${artist} ${mode} ${quality}`,
     expectedCount: tracks.length,
+    timeoutMs: 75_000,
   });
 
   const saved = await cacheBulkMedia(tracks, bulk, quality, `artist_bulk_${mode}_${quality}`);
@@ -519,6 +520,7 @@ async function runArtistProfile(task) {
           button: live.bulkHighButton,
           label: `${live.artist} top hq inline`,
           expectedCount: top.length,
+          timeoutMs: 75_000,
         });
         await cacheBulkMedia(top, bulk, 'hq', 'artist_profile_top_hq');
       } else if (missingTopHq.length) {
@@ -615,6 +617,7 @@ async function runAlbumDetail(task) {
           button: albumContext.bulkHighButton,
           label: `album ${target.title} hq inline`,
           expectedCount: tracks.length,
+          timeoutMs: 75_000,
         });
         await cacheBulkMedia(tracks, bulk, 'hq', 'album_detail_hq');
       } else if (missingHq.length) {
