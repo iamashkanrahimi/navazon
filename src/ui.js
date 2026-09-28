@@ -29,6 +29,12 @@ export function trackButtonLabel(track, index, { numbered = false } = {}) {
   return truncate(`${prefix}${body}`);
 }
 
+export function albumButtonLabel(album) {
+  const body = album.artist ? `${album.artist} — ${album.title}` : album.title;
+  const suffix = album.trackCount ? ` · ${album.trackCount} آهنگ` : '';
+  return truncate(`💿 ${body}${suffix}`);
+}
+
 function dominantArtist(tracks) {
   const counts = new Map();
   for (const track of tracks || []) {
@@ -49,6 +55,14 @@ export function resultsKeyboard(sessionId, session) {
     text: trackButtonLabel(track,index,{ numbered: true }),
     callback_data: `t:${sessionId}:${index}`,
   }]));
+
+  for (const [index, album] of (session.albumOptions || []).entries()) {
+    rows.push([{
+      text: albumButtonLabel(album),
+      callback_data: `sal:${sessionId}:${index}`,
+    }]);
+  }
+
   const artistSeedIndex = artist
     ? session.options.findIndex(t =>
         t.source === 'melobot' && normalize(t.artist || '') === normalize(artist)
@@ -67,16 +81,15 @@ export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false
   const rows = [];
   const hasTop = Boolean(artistContext.topTracks?.length || artistContext.tracks?.length);
   const hasRecent = Boolean(artistContext.recentTracks?.length);
-  const hasAlbums = Boolean(artistContext.albumButton || artistContext.albumsAvailable);
-
   const firstRow = [];
   if (hasTop) firstRow.push({ text: '🎵 پربازدیدترین‌ها', callback_data: `ars:${sessionId}` });
   if (hasRecent) firstRow.push({ text: '🆕 جدیدترین‌ها', callback_data: `arn:${sessionId}` });
   if (firstRow.length) rows.push(firstRow);
 
-  const secondRow = [];
-  if (hasAlbums) secondRow.push({ text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` });
-  secondRow.push({ text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` });
+  const secondRow = [
+    { text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` },
+    { text: isFollowing ? '🔕 آنفالو' : '🔔 فالو', callback_data: `fol:${sessionId}` },
+  ];
   rows.push(secondRow);
 
   rows.push([{ text: '🔙 برگشت', callback_data: `${backAction}:${sessionId}` }]);
