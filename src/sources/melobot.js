@@ -1047,8 +1047,15 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
 export function albumQueryMatches(query, artist, albumTitle) {
   const normalizedQuery = normalize(query);
   const allTokens = normalizedQuery.split(' ').filter(Boolean);
-  const hasAlbumIntent = allTokens.includes('album') || allTokens.includes('آلبوم');
-  const queryTokens = allTokens.filter(token => !['album','آلبوم'].includes(token));
+  const albumWords = new Set([
+    'album', 'albums',
+    'آلبوم', 'آلبومها', 'آلبومهای',
+    'البوم', 'البومها', 'البومهای',
+  ]);
+  const hasAlbumIntent = allTokens.some(token => albumWords.has(token));
+  const queryTokens = allTokens.filter(token =>
+    !albumWords.has(token) && !(hasAlbumIntent && ['ها','های'].includes(token))
+  );
   const artistTokens = new Set(normalize(artist).split(' ').filter(Boolean));
   const albumTokens = queryTokens.filter(token => !artistTokens.has(token));
 
@@ -1062,7 +1069,10 @@ export function albumQueryMatches(query, artist, albumTitle) {
 
 function stripAlbumIntent(query = '') {
   return clean(query)
-    .replace(/(^|\s)(?:album|آلبوم)(?=\s|$)/giu, ' ')
+    .replace(
+      /(^|\s)(?:albums?|آلبوم(?:[‌\s]?(?:ها|های))?|البوم(?:[‌\s]?(?:ها|های))?)(?=\s|$)/giu,
+      ' '
+    )
     .replace(/\s+/g, ' ')
     .trim();
 }
