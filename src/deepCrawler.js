@@ -1,14 +1,12 @@
 import { config } from './config.js';
 import { bridge, cache, catalog, deepCatalog, tg } from './runtime.js';
-import { forwardHiddenToOurBot } from './mtproto.js';
+import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import {
   discoverMeloBotFeed,
   discoverMeloBotHome,
   downloadMeloBotTrackQuality,
   downloadMeloBotBulkTracks,
-  getMeloBotCover,
-  getMeloBotLyrics,
-  getMeloBotTrackMetadata,
+  enrichMeloBotTrack,
   listMeloBotAlbums,
   matchBulkAudioToTracks,
   openMeloBotAlbum,
@@ -28,6 +26,16 @@ async function captureForwardedMedia(message) {
   if (!message?.id) throw new Error('Source media message is missing.');
   const wait = bridge.expectMedia(25_000);
   await forwardHiddenToOurBot(tg, config.melobotUsername, message.id);
+  return wait;
+}
+
+async function captureForwardedMediaBatch(messages = []) {
+  const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
+  if (!ids.length) return { items: [], complete: true, expected: 0 };
+
+  const timeoutMs = Math.max(35_000, Math.min(120_000, 12_000 + ids.length * 4_000));
+  const wait = bridge.expectManyMedia(ids.length, timeoutMs);
+  await forwardHiddenManyToOurBot(tg, config.melobotUsername, ids);
   return wait;
 }
 
@@ -121,12 +129,23 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
 async function cacheBulkMedia(tracks, bulk, quality, label) {
   const sourceTracks = uniqueTracks(tracks);
   const matches = matchBulkAudioToTracks(sourceTracks, bulk?.audioItems || []);
-  let cached = 0;
+  if (!matches.length) return { cached: 0, matched: 0, expected: sourceTracks.length };
 
-  for (const { track: sourceTrack, audioItem } of matches) {
-    const track = { ...sourceTrack, source: 'melobot' };
+  let bridged;
+  try {
+    bridged = await captureForwardedMediaBatch(matches.map(item => item.audioItem.message));
+  } catch (err) {
+    console.warn(`[${label} batch bridge]`, err.message);
+    return { cached: 0, matched: matches.length, expected: sourceTracks.length, bridgeError: err.message };
+  }
+
+  let cached = 0;
+  const received = bridged.items || [];
+  const usable = Math.min(received.length, matches.length);
+  for (let index = 0; index < usable; index += 1) {
+    const track = { ...matches[index].track, source: 'melobot' };
+    const media = received[index];
     try {
-      const media = await captureForwardedMedia(audioItem.message);
       await deepCatalog.setMedia(track, quality, media, {
         source: 'melobot',
         satisfiedBy: label,
@@ -140,7 +159,13 @@ async function cacheBulkMedia(tracks, bulk, quality, label) {
     }
   }
 
-  return { cached, matched: matches.length, expected: sourceTracks.length };
+  return {
+    cached,
+    matched: matches.length,
+    expected: sourceTracks.length,
+    bridgeComplete: Boolean(bridged.complete),
+    forwarded: received.length,
+  };
 }
 
 async function runArtistBulkMedia(task) {
@@ -215,51 +240,52 @@ async function runTrackEnrich(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Track enrichment task has no live MeloBot track reference.');
 
+  const bundle = await enrichMeloBotTrack(tg, track);
+  const liveTrack = { ...track, ...(bundle.candidate || {}), source: 'melobot' };
   const summary = {
-    track: `${track.artist} — ${track.title}`,
+    track: `${liveTrack.artist} — ${liveTrack.title}`,
     metadata: false,
     cover: false,
     lyrics: false,
-    errors: [],
+    errors: [...(bundle.errors || [])],
   };
 
-  try {
-    const metadata = await getMeloBotTrackMetadata(tg, track);
-    await deepCatalog.setMetadata(track, metadata);
-    summary.metadata = true;
-    summary.releaseDate = metadata.releaseDate || metadata.releaseDateRaw || null;
-    summary.popularity = metadata.popularityCount || metadata.popularityText || null;
-  } catch (err) {
-    summary.errors.push(`metadata: ${err.message}`);
+  if (bundle.metadata) {
+    try {
+      await deepCatalog.setMetadata(liveTrack, bundle.metadata);
+      summary.metadata = true;
+      summary.releaseDate = bundle.metadata.releaseDate || bundle.metadata.releaseDateRaw || null;
+      summary.popularity = bundle.metadata.popularityCount || bundle.metadata.popularityText || null;
+    } catch (err) {
+      summary.errors.push(`metadata-save: ${err.message}`);
+    }
   }
 
-  try {
-    const cover = await getMeloBotCover(tg, track);
-    if (cover?.photoMessage) {
-      const media = await captureForwardedMedia(cover.photoMessage);
+  if (bundle.cover?.photoMessage) {
+    try {
+      const media = await captureForwardedMedia(bundle.cover.photoMessage);
       if (media.kind === 'photo') {
-        await deepCatalog.setCover(track, media);
+        await deepCatalog.setCover(liveTrack, media);
         summary.cover = true;
       }
+    } catch (err) {
+      summary.errors.push(`cover-save: ${err.message}`);
     }
-  } catch (err) {
-    summary.errors.push(`cover: ${err.message}`);
   }
 
-  try {
-    const lyrics = await getMeloBotLyrics(tg, track);
-    if (lyrics.available && lyrics.text) {
-      await deepCatalog.setLyrics(track, lyrics.text, 'melobot');
+  if (bundle.lyrics?.available && bundle.lyrics.text) {
+    try {
+      await deepCatalog.setLyrics(liveTrack, bundle.lyrics.text, 'melobot');
       summary.lyrics = true;
-      summary.lyricsChars = lyrics.text.length;
-    } else {
-      await deepCatalog.markNoLyrics(track, 'melobot');
+      summary.lyricsChars = bundle.lyrics.text.length;
+    } catch (err) {
+      summary.errors.push(`lyrics-save: ${err.message}`);
     }
-  } catch (err) {
-    summary.errors.push(`lyrics: ${err.message}`);
+  } else {
+    try { await deepCatalog.markNoLyrics(liveTrack, 'melobot'); } catch {}
   }
 
-  if (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length >= 3) {
+  if (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length) {
     throw new Error(`Track enrichment failed: ${summary.errors.join(' | ')}`);
   }
   return summary;
