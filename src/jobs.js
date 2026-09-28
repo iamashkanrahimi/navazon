@@ -106,6 +106,28 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
 }
 
 
+
+async function deliverAvailableBulkCache(session, tracks) {
+  let sent = 0;
+  let missing = 0;
+  for (const sourceTrack of tracks || []) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    try {
+      assertDeliveryAllowed(track, session.userRegion || 'unknown');
+      const cached = await cache.get(track);
+      if (!cached) {
+        missing += 1;
+        continue;
+      }
+      await deliverCached(session.chatId, track, cached);
+      sent += 1;
+    } catch {
+      missing += 1;
+    }
+  }
+  return { sent, missing };
+}
+
 export async function showResults(sessionId, session, messageId = session.messageId) {
   await bot.editMessageText(session.chatId,messageId,`نتیجه‌ها برای «${session.query}»\nیک نسخه رو انتخاب کن:`,{
     reply_markup: resultsKeyboard(sessionId,session),
