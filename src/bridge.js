@@ -35,6 +35,7 @@ export class BridgeInbox {
         title: message.audio.title || undefined,
         performer: message.audio.performer || undefined,
         duration: message.audio.duration || undefined,
+        fileSize: message.audio.file_size || undefined,
       });
       return true;
     }
