@@ -3,6 +3,7 @@ import { config } from './config.js';
 export const SESSION_TTL_MS = 12 * 60 * 1000;
 export const MAX_RESULTS = 5;
 export const ALBUMS_PER_PAGE = 7;
+export const ALBUM_TRACKS_PER_PAGE = 10;
 export const TOP_TRACKS_LIMIT = 10;
 
 export function clean(value = '') {
@@ -167,11 +168,27 @@ export function albumsKeyboard(sessionId, albums, page) {
   return { inline_keyboard: rows };
 }
 
-export function trackAlbumKeyboard(sessionId, album, tracks) {
-  const rows = (tracks || []).slice(0, 20).map((track,index) => ([{
-    text: trackButtonLabel(track,index),
-    callback_data: `alt:${sessionId}:${index}`,
+function pagedAlbumTrackRows(sessionId, tracks, page = 0) {
+  const list = tracks || [];
+  const safePage = Math.max(0, Number(page || 0));
+  const start = safePage * ALBUM_TRACKS_PER_PAGE;
+  const visible = list.slice(start, start + ALBUM_TRACKS_PER_PAGE);
+  const rows = visible.map((track, offset) => ([{
+    text: trackButtonLabel(track, start + offset),
+    callback_data: `alt:${sessionId}:${start + offset}`,
   }]));
+
+  const nav = [];
+  if (safePage > 0) nav.push({ text: '‹', callback_data: `apg:${sessionId}:${safePage - 1}` });
+  if (start + ALBUM_TRACKS_PER_PAGE < list.length) {
+    nav.push({ text: '›', callback_data: `apg:${sessionId}:${safePage + 1}` });
+  }
+  if (nav.length) rows.push(nav);
+  return rows;
+}
+
+export function trackAlbumKeyboard(sessionId, album, tracks, page = 0) {
+  const rows = pagedAlbumTrackRows(sessionId, tracks, page);
   if ((tracks || []).length) {
     rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
   }
@@ -179,11 +196,8 @@ export function trackAlbumKeyboard(sessionId, album, tracks) {
   return { inline_keyboard: rows };
 }
 
-export function albumTracksKeyboard(sessionId, tracks, backPage = 0) {
-  const rows = (tracks || []).slice(0,12).map((track,index) => ([{
-    text: trackButtonLabel(track,index),
-    callback_data: `alt:${sessionId}:${index}`,
-  }]));
+export function albumTracksKeyboard(sessionId, tracks, backPage = 0, page = 0) {
+  const rows = pagedAlbumTrackRows(sessionId, tracks, page);
   if ((tracks || []).length) {
     rows.push([{ text: '📥 دانلود یکجای آلبوم', callback_data: `ala:${sessionId}` }]);
   }
