@@ -14,6 +14,9 @@ process.env.ADMIN_TOKEN ||= 'test-admin';
 
 const {
   parseTrackButton,
+  parseAlbumButton,
+  inspectMeloBotAlbumListing,
+  albumQueryMatches,
   matchBulkAudioToTracks,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
@@ -185,4 +188,69 @@ test('home feed shortcuts map to the stable MeloBot commands', () => {
   assert.equal(HOME_FEEDS.ar.command, '/arabic');
   assert.equal(HOME_FEEDS.day.command, '/topday');
   assert.equal(HOME_FEEDS.week.command, '/topweek');
+});
+
+
+test('MeloBot album-list page is detected without treating an album as navigation', () => {
+  const messages = [{
+    message: 'آلبوم های خواننده (10) :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: '💿 In Roozha (8)' }] },
+        { buttons: [{ text: '💿 Shahre Divooneh (3)' }] },
+        { buttons: [{ text: '💿 Yek Khatereh Az Farda (12)' }] },
+      ],
+    },
+  }];
+
+  const listing = inspectMeloBotAlbumListing(messages);
+  assert.equal(listing.confirmed, true);
+  assert.equal(listing.confirmedEmpty, false);
+  assert.equal(listing.declaredCount, 10);
+  assert.deepEqual(listing.albums.map(album => album.title), [
+    'In Roozha',
+    'Shahre Divooneh',
+    'Yek Khatereh Az Farda',
+  ]);
+  assert.equal(parseAlbumButton('💿 In Roozha (8)').trackCount, 8);
+});
+
+test('album + artist query matches every album by that artist', () => {
+  assert.equal(
+    albumQueryMatches('آلبوم Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'In Roozha'),
+    true
+  );
+  assert.equal(
+    albumQueryMatches('album Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'Paeiz Tanhaei'),
+    true
+  );
+});
+
+test('specific album query still filters by album title', () => {
+  assert.equal(
+    albumQueryMatches(
+      'Ehsan Khajeamiri In Roozha',
+      'Ehsan Khajeamiri',
+      'In Roozha'
+    ),
+    true
+  );
+  assert.equal(
+    albumQueryMatches(
+      'Ehsan Khajeamiri In Roozha',
+      'Ehsan Khajeamiri',
+      'Paeiz Tanhaei'
+    ),
+    false
+  );
+});
+
+test('explicit album searches render albums before track rows', () => {
+  const session = {
+    albumFirst: true,
+    options: [{ source: 'melobot', artist: 'Ehsan', title: 'Track', rawText: 'x' }],
+    albumOptions: [{ artist: 'Ehsan', title: 'In Roozha', trackCount: 8 }],
+  };
+  const keyboard = resultsKeyboard('sess', session);
+  assert.equal(keyboard.inline_keyboard[0][0].callback_data, 'sal:sess:0');
 });
