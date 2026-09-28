@@ -235,9 +235,13 @@ export const sourceQueue = new SerialQueue(async job => {
         }
         for (const artist of discovered.artists || []) await catalog.ensureArtist(artist,{ discoveredFrom: 'crawl:melobot-home' });
         await setState('last_bootstrap_at',{ at: Date.now() });
-        await recordCrawlerFinish(runId,{ ok: true, summary: {
-          tracks: discovered.tracks?.length || 0, artists: discovered.artists?.length || 0,
-        }});
+        const bootstrapSummary = {
+          tracks: discovered.tracks?.length || 0,
+          artists: discovered.artists?.length || 0,
+          sections: discovered.sections?.length || 0,
+        };
+        await recordCrawlerFinish(runId,{ ok: true, summary: bootstrapSummary });
+        console.log(`[crawler bootstrap] sections=${bootstrapSummary.sections}, tracks=${bootstrapSummary.tracks}, artists=${bootstrapSummary.artists}`);
       } catch (err) {
         await recordCrawlerFinish(runId,{ ok: false, error: err.message });
         console.warn('[crawler bootstrap]',err.message);
@@ -280,7 +284,7 @@ export const sourceQueue = new SerialQueue(async job => {
               x.source === 'melobot' && normalize(x.artist) === normalize(session.artistContext.artist));
             if (!seed) throw new Error('Artist seed missing for album navigation.');
             const liveArtist = await openMeloBotArtist(tg,seed);
-            session.artistContext = { ...session.artistContext, albumButton: liveArtist.albumButton || '💿' };
+            session.artistContext = { ...session.artistContext, albumButton: liveArtist.albumButton || null };
             session.albums = await listMeloBotAlbums(tg,session.artistContext);
             await catalog.recordAlbums(session.artistContext.artist,session.albums);
           }
