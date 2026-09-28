@@ -63,6 +63,16 @@ export async function handleUpdate(update) {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
         sourceQueue.push({ type: 'track_page', sessionId, messageId });
+      } else if (action === 'sal') {
+        const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
+        session.busy = true;
+        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
+        sourceQueue.push({
+          type: 'search_album',
+          sessionId,
+          messageId,
+          index: Number(parts[2]),
+        });
       } else if (action === 'ar') {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
@@ -111,7 +121,8 @@ export async function handleUpdate(update) {
                 sessionId,
                 session.currentAlbum.tracks,
                 session.albumsPage || 0,
-                session.albumTrackPage || 0
+                session.albumTrackPage || 0,
+                { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
               );
           await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
         } else {
@@ -234,7 +245,8 @@ export async function handleUpdate(update) {
               sessionId,
               session.currentAlbum.tracks,
               session.albumsPage || 0,
-              session.albumTrackPage
+              session.albumTrackPage,
+              { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
             );
         await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
       } else if (action === 'alt') {
