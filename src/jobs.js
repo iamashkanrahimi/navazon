@@ -56,7 +56,7 @@ async function syncArtistContext(artistContext) {
 }
 
 async function syncAlbumIndex(artist, albums = []) {
-  if (!artist || !albums.length) return;
+  if (!artist) return;
   const results = await Promise.allSettled([
     catalog.recordAlbums(artist, albums),
     ...albums.map(album => deepCatalog.upsertAlbum(artist, album)),
