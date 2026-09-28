@@ -20,6 +20,7 @@ import {
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
   matchBulkAudioToTracks, listMeloBotAlbums, discoverMeloBotAlbumsForQuery,
+  discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
@@ -59,10 +60,15 @@ async function syncArtistContext(artistContext) {
   }
 }
 
-async function syncAlbumIndex(artist, albums = []) {
+async function syncAlbumIndex(artist, albums = [], {
+  complete = true,
+  emptyConfirmed = false,
+} = {}) {
   if (!artist) return;
   const results = await Promise.allSettled([
-    catalog.recordAlbums(artist, albums),
+    complete
+      ? catalog.recordAlbums(artist, albums, { emptyConfirmed })
+      : catalog.mergeAlbums(artist, albums),
     ...albums.map(album => deepCatalog.upsertAlbum(artist, album)),
   ]);
   for (const result of results) {
@@ -85,7 +91,12 @@ async function syncAlbumTracks(artist, album, tracks = []) {
   }
 }
 
-function mergeAlbumResults(...groups) {
+function isAlbumIntentQuery(query = '') {
+  const tokens = normalize(query).split(/\s+/).filter(Boolean);
+  return tokens.includes('album') || tokens.includes('آلبوم');
+}
+
+function mergeAlbumResults(limit, ...groups) {
   const out = [];
   const seen = new Set();
   for (const group of groups) {
@@ -95,19 +106,54 @@ function mergeAlbumResults(...groups) {
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(album);
-      if (out.length >= 4) return out;
+      if (out.length >= limit) return out;
     }
   }
   return out;
 }
 
 async function searchAlbumOptions(query, tracks = []) {
+  const albumIntent = isAlbumIntentQuery(query);
+  const limit = albumIntent ? 12 : 4;
+
   const [deepAlbums, legacyAlbums] = await Promise.all([
-    deepCatalog.searchAlbums(query, 4).catch(() => []),
-    catalog.searchAlbums(query, 4).catch(() => []),
+    deepCatalog.searchAlbums(query, limit).catch(err => {
+      console.warn('[deep album search]', err.message);
+      return [];
+    }),
+    catalog.searchAlbums(query, limit).catch(err => {
+      console.warn('[catalog album search]', err.message);
+      return [];
+    }),
   ]);
-  let albums = mergeAlbumResults(deepAlbums, legacyAlbums);
-  if (albums.length >= 4) return albums;
+  let albums = mergeAlbumResults(limit, deepAlbums, legacyAlbums);
+
+  // Explicit "album + artist" queries should work even when track search
+  // returns no usable MeloBot seed. Resolve the artist picker directly.
+  if (albumIntent) {
+    try {
+      const direct = await discoverMeloBotAlbumsByArtistQuery(tg, query, {
+        maxAlbums: limit,
+      });
+      if (direct.artist && direct.complete) {
+        await syncAlbumIndex(direct.artist, direct.albums, {
+          complete: true,
+          emptyConfirmed: Boolean(direct.confirmedEmpty),
+        });
+        albums = mergeAlbumResults(
+          limit,
+          direct.albums.map(album => ({ ...album, artist: direct.artist, source: 'melobot' })),
+          albums
+        );
+      }
+    } catch (err) {
+      console.warn('[direct album search]', err.message);
+    }
+
+    return albums;
+  }
+
+  if (albums.length >= limit) return albums;
 
   const q = normalize(query);
   const melobotSeeds = (tracks || []).filter(track =>
@@ -126,7 +172,7 @@ async function searchAlbumOptions(query, tracks = []) {
         tg,
         query,
         melobotSeeds,
-        { maxArtists: 2, maxAlbums: 4 }
+        { maxArtists: 2, maxAlbums: limit }
       );
 
       const grouped = new Map();
@@ -137,10 +183,10 @@ async function searchAlbumOptions(query, tracks = []) {
         grouped.set(key, group);
       }
       await Promise.all([...grouped.values()].map(group =>
-        syncAlbumIndex(group.artist, group.albums)
+        syncAlbumIndex(group.artist, group.albums, { complete: false })
       ));
 
-      albums = mergeAlbumResults(albums, liveAlbums);
+      albums = mergeAlbumResults(limit, albums, liveAlbums);
     } catch (err) {
       console.warn('[album search discovery]', err.message);
     }
@@ -312,10 +358,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const albumOptions = await searchAlbumOptions(job.query, options);
         if (!options.length && !albumOptions.length) throw new Error('No results');
 
+        const albumFirst = isAlbumIntentQuery(job.query) && albumOptions.length > 0;
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
-          messageId: job.statusMessageId, options, albumOptions, artistContext: null,
+          messageId: job.statusMessageId, options, albumOptions, albumFirst, artistContext: null,
           artistSeed: null, isFollowing: false, albums: null,
           currentAlbum: null, currentAlbumView: null, albumsPage: 0, albumTrackPage: 0,
           currentTrack: null, trackBack: null, artistBack: 'rs', busy: false,
@@ -1136,14 +1183,22 @@ export const sourceQueue = new SerialQueue(async job => {
             const liveArtist = await openMeloBotArtist(tg,seed);
             session.artistContext = {
               ...session.artistContext,
-              albumButton: liveArtist.albumButton || null,
+              ...liveArtist,
             };
 
-            session.albums = liveArtist.albumButton
-              ? await listMeloBotAlbums(tg, session.artistContext, { allowEmpty: true })
-              : [];
+            // listMeloBotAlbums can consume an album list already embedded in
+            // the artist page. An empty array is returned only when MeloBot
+            // explicitly confirms zero albums.
+            session.albums = await listMeloBotAlbums(
+              tg,
+              session.artistContext,
+              { allowEmpty: true }
+            );
 
-            await syncAlbumIndex(session.artistContext.artist, session.albums);
+            await syncAlbumIndex(session.artistContext.artist, session.albums, {
+              complete: true,
+              emptyConfirmed: session.albums.length === 0,
+            });
           }
         }
 
@@ -1155,7 +1210,7 @@ export const sourceQueue = new SerialQueue(async job => {
           await bot.editMessageText(
             session.chatId,
             job.messageId,
-            `${session.artistContext.artist}\n💿 آلبوم‌ها\n\nاین خواننده هنوز آلبومی منتشر نکرده.`,
+            `${session.artistContext.artist}\n💿 آلبوم‌ها\n\nبرای این خواننده آلبومی در منبع پیدا نشد.`,
             { reply_markup: noAlbumsKeyboard(job.sessionId) }
           );
           return;
