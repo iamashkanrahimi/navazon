@@ -386,17 +386,18 @@ export class DeepCatalog {
     if (!tokens.length) return [];
 
     const clauses = tokens.map((_, index) =>
-      `LOWER(artist || ' ' || title) LIKE ${index + 1}`
+      "LOWER(artist || ' ' || title) LIKE $" + (index + 1)
     );
     const params = tokens.map(token => `%${token}%`);
     params.push(Math.max(1, Number(limit || 4)));
+    const limitParam = '$' + params.length;
 
     const result = await db.query(`
       SELECT album_key, artist, title, track_count, metadata, updated_at
       FROM deep_albums
       WHERE ${clauses.join(' AND ')}
       ORDER BY updated_at DESC
-      LIMIT ${params.length}
+      LIMIT ${limitParam}
     `, params);
 
     return result.rows.map(row => ({
