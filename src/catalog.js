@@ -304,6 +304,9 @@ export class CatalogStore {
     const { key, node } = await this.readArtist(name);
     if (!node) return false;
 
+    topTracks = (topTracks || []).filter(track => !track?.artistInferred);
+    recentTracks = (recentTracks || []).filter(track => !track?.artistInferred);
+
     const hasTop = Array.isArray(topTracks) && topTracks.length > 0;
     const hasRecent = Array.isArray(recentTracks) && recentTracks.length > 0;
 
