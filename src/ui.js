@@ -236,6 +236,15 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
   return { inline_keyboard: rows };
 }
 
+export function albumsErrorKeyboard(sessionId) {
+  return {
+    inline_keyboard: [
+      [{ text: '🔄 تلاش دوباره', callback_data: `alb:${sessionId}:0` }],
+      [{ text: '🔙 صفحه‌ی خواننده', callback_data: `arh:${sessionId}` }],
+    ],
+  };
+}
+
 export function noAlbumsKeyboard(sessionId) {
   return {
     inline_keyboard: [[
