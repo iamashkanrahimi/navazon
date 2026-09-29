@@ -12,7 +12,7 @@ import {
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
-  deliverCached, downloadTrackWithSources, searchPrimary, searchPrimaryTyped, sendMedia,
+  deliverCached, downloadTrackWithSources, searchPrimaryTyped, sendMedia,
   sourceCandidateToTrack,
 } from './media.js';
 import {
@@ -441,6 +441,7 @@ export const sourceQueue = new SerialQueue(async job => {
         let options = cachedOptions || [];
         let sourceAlbumOptions = [];
         let primarySource = cachedOptions ? 'catalog' : 'none';
+        let primaryProbe = cachedOptions ? 'cache' : 'not_run';
         searchCacheHit = Boolean(cachedOptions);
 
         if (!albumIntent && !cachedOptions) {
@@ -452,6 +453,7 @@ export const sourceQueue = new SerialQueue(async job => {
               album?.artist && album?.title
             );
             primarySource = primary.source || 'unknown';
+            primaryProbe = primary.exactProbe || 'not_needed';
 
             for (const album of sourceAlbumOptions) {
               await syncAlbumIndex(album.artist, [album], { complete: false });
@@ -507,7 +509,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
         console.log(
           `[perf.search] query=${JSON.stringify(job.query)} cache_hit=${searchCacheHit} `
-          + `source=${primarySource} tracks=${options.length} albums=${albumOptions.length} `
+          + `source=${primarySource} exact_probe=${primaryProbe} tracks=${options.length} albums=${albumOptions.length} `
           + `primary_ms=${primaryMs} album_options_ms=${albumOptionsMs} `
           + `phase_total_ms=${Date.now() - searchPhaseStartedAt}`
         );
