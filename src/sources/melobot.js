@@ -2468,7 +2468,7 @@ export async function openMeloBotAlbumRobustByTitle(
     }
   }
 
-  const artistParts = normalize(artist)
+  const artistParts = clean(artist)
     .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
     .map(part => clean(part))
     .filter(Boolean);
