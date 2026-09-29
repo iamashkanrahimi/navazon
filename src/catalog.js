@@ -166,17 +166,21 @@ export class CatalogStore {
 
   async getArtistContext(name, maxAgeMs) {
     const { node } = await this.readArtist(name);
-    if (
-      !node
-      || Number(node.artistListVersion || 0) < 1
-      || !freshEnough(node.artistUpdatedAt, maxAgeMs)
-    ) return null;
-    const topTracks = Array.isArray(node.topTracks)
+    if (!node || !freshEnough(node.artistUpdatedAt, maxAgeMs)) return null;
+
+    const topTracks = (
+      Number(node.topTracksVersion || 0) >= 1
+      && Array.isArray(node.topTracks)
+    )
       ? node.topTracks.map(markLegacyInferredArtist)
       : [];
-    const recentTracks = Array.isArray(node.recentTracks)
+    const recentTracks = (
+      Number(node.recentTracksVersion || 0) >= 1
+      && Array.isArray(node.recentTracks)
+    )
       ? node.recentTracks.map(markLegacyInferredArtist)
       : [];
+
     if (!topTracks.length && !recentTracks.length) return null;
     return {
       artist: node.name || clean(name),
@@ -323,8 +327,14 @@ export class CatalogStore {
     // erasing it when a transient artist layout returns only one mode.
     if (!hasTop && !hasRecent) return false;
 
-    if (hasTop) node.topTracks = topTracks.map(track => this.compactTrack(track));
-    if (hasRecent) node.recentTracks = recentTracks.map(track => this.compactTrack(track));
+    if (hasTop) {
+      node.topTracks = topTracks.map(track => this.compactTrack(track));
+      node.topTracksVersion = 1;
+    }
+    if (hasRecent) {
+      node.recentTracks = recentTracks.map(track => this.compactTrack(track));
+      node.recentTracksVersion = 1;
+    }
     node.albumButton = clean(albumButton || node.albumButton || '') || null;
     node.artistListVersion = 1;
     node.artistUpdatedAt = new Date().toISOString();
