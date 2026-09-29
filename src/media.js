@@ -121,9 +121,15 @@ function chooseAhangifyMatch(results, track) {
   return best;
 }
 
-export async function downloadTrackWithSources(track, originalQuery) {
-  const cached = await cache.get(track);
-  if (cached) return { cached, track };
+export async function downloadTrackWithSources(
+  track,
+  originalQuery,
+  { allowLegacyCache = true } = {}
+) {
+  if (allowLegacyCache) {
+    const cached = await cache.get(track);
+    if (cached) return { cached, track };
+  }
 
   if (track.source === 'ahangify' && track.cmd) {
     const result = await downloadAhangifyResult(tg, track);
