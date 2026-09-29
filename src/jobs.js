@@ -335,7 +335,8 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     try {
       const bridged = await bridgeSourceMessages(
         config.melobotUsername,
-        sourceMatches.map(item => item.audioItem.message)
+        sourceMatches.map(item => item.audioItem.message),
+        { timeoutMs: 6000 }
       );
 
       const bridgedMatches = matchBulkAudioToTracks(
