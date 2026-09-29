@@ -17,6 +17,7 @@ const {
   parseAlbumButton,
   inspectMeloBotAlbumListing,
   albumQueryMatches,
+  resolveMeloBotArtistAlbums,
   matchBulkAudioToTracks,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
@@ -327,4 +328,9 @@ test('album source failures stay recoverable instead of silently returning to ar
   const buttons = keyboard.inline_keyboard.flat();
   assert.equal(buttons[0].callback_data, 'alb:sess:2');
   assert.equal(buttons[1].callback_data, 'arh:sess');
+});
+
+
+test('state-safe artist album resolver is exported for all album flows', () => {
+  assert.equal(typeof resolveMeloBotArtistAlbums, 'function');
 });
