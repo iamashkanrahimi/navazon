@@ -1685,7 +1685,10 @@ export async function downloadMeloBotBulkTracks(client, {
   const download = await sendAndCollect(client, button, {
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0
       ? timeoutMs
-      : Math.max(config.downloadTimeoutMs, 180000),
+      : Math.min(
+          Math.max(Number(config.downloadTimeoutMs || 30000), 1000),
+          30000
+        ),
     quietMs: expectedCount > 20 ? 12000 : 8000,
     stopWhenBatch: expectedCount > 0
       ? messages => messages.filter(isAudioMessage).length >= expectedCount
@@ -1704,27 +1707,42 @@ export async function downloadMeloBotBulkTracks(client, {
   };
 }
 
-export async function downloadMeloBotTopTracks(client, artistContext) {
+export async function downloadMeloBotTopTracks(
+  client,
+  artistContext,
+  { timeoutMs = 12000 } = {}
+) {
   return downloadMeloBotBulkTracks(client, {
     button: artistContext.bulkHighButton,
     label: 'top tracks',
     expectedCount: artistContext.topTracks?.length || artistContext.tracks?.length || 0,
+    timeoutMs,
   });
 }
 
-export async function downloadMeloBotRecentTracks(client, artistContext) {
+export async function downloadMeloBotRecentTracks(
+  client,
+  artistContext,
+  { timeoutMs = 12000 } = {}
+) {
   return downloadMeloBotBulkTracks(client, {
     button: artistContext.recentBulkHighButton,
     label: 'recent tracks',
     expectedCount: artistContext.recentTracks?.length || artistContext.tracks?.length || 0,
+    timeoutMs,
   });
 }
 
-export async function downloadMeloBotAlbumTracks(client, albumContext) {
+export async function downloadMeloBotAlbumTracks(
+  client,
+  albumContext,
+  { timeoutMs = 12000 } = {}
+) {
   return downloadMeloBotBulkTracks(client, {
     button: albumContext.bulkHighButton,
     label: `album ${albumContext.album?.title || ''}`,
     expectedCount: albumContext.tracks?.length || 0,
+    timeoutMs,
   });
 }
 

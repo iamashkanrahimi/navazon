@@ -79,11 +79,21 @@ function isUsableArtistContext(context = {}) {
   return Boolean(context?.artist && artistContextTracks(context).length);
 }
 
+const BULK_JOB_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
+
 function sourceJobPriority(job = {}) {
   if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
-  if (job.type === 'download' || job.type?.startsWith('download_')) return 120;
+  if (BULK_JOB_TYPES.has(job.type)) return 80;
+  if (job.type === 'download') return 115;
   if (['album','albums','artist','artist_from_album'].includes(job.type)) return 110;
   return 100;
+}
+
+function hasPendingForegroundSourceWork() {
+  return sourceQueue.hasPending(item =>
+    !BACKGROUND_JOB_TYPES.has(item?.type)
+    && !BULK_JOB_TYPES.has(item?.type)
+  );
 }
 
 async function syncArtistContext(artistContext) {
@@ -721,7 +731,12 @@ export const sourceQueue = new SerialQueue(async job => {
             }
           );
 
-          liveAlbum = opened.album;
+          liveAlbum = {
+            ...opened.album,
+            bulkHighButton: opened.bulkHighButton || null,
+            bulkNormalButton: opened.bulkNormalButton || null,
+            sourceStateVersion: opened.sourceStateVersion ?? getMeloBotStateVersion(),
+          };
           tracks = opened.tracks;
           resolvedArtistName = opened.artist || album.artist;
           session.artistSeed = opened.seed || session.artistSeed || seed || null;
@@ -962,12 +977,20 @@ export const sourceQueue = new SerialQueue(async job => {
                 session.artistContext.artist,
                 seed
               );
-              bulk = await downloadMeloBotRecentTracks(tg, liveArtist);
+              bulk = await downloadMeloBotRecentTracks(
+                tg,
+                liveArtist,
+                { timeoutMs: attempt === 0 ? 12000 : 18000 }
+              );
               lastError = null;
               break;
             } catch (err) {
               lastError = err;
               console.warn('[native bulk recent retry]', attempt + 1, err.message);
+              if (attempt === 0 && hasPendingForegroundSourceWork()) {
+                console.warn('[bulk guard] recent retry skipped: foreground work is waiting');
+                break;
+              }
             }
           }
           if (lastError || !liveArtist || !bulk) throw lastError || new Error('Newest native bulk failed.');
@@ -1074,12 +1097,20 @@ export const sourceQueue = new SerialQueue(async job => {
                 session.artistContext.artist,
                 seed
               );
-              bulk = await downloadMeloBotTopTracks(tg, liveArtist);
+              bulk = await downloadMeloBotTopTracks(
+                tg,
+                liveArtist,
+                { timeoutMs: attempt === 0 ? 12000 : 18000 }
+              );
               lastError = null;
               break;
             } catch (err) {
               lastError = err;
               console.warn('[native bulk top retry]', attempt + 1, err.message);
+              if (attempt === 0 && hasPendingForegroundSourceWork()) {
+                console.warn('[bulk guard] top retry skipped: foreground work is waiting');
+                break;
+              }
             }
           }
           if (lastError || !liveArtist || !bulk) throw lastError || new Error('Top native bulk failed.');
@@ -1168,11 +1199,15 @@ export const sourceQueue = new SerialQueue(async job => {
                 };
                 console.log('[fastpath] album_bulk=current_album_page');
               } else {
-                albumContext = await openMeloBotAlbumByTitle(
+                albumContext = await openMeloBotAlbumDirectByTitle(
                   tg,
                   artist,
                   albumTitle,
-                  preferredSeed
+                  {
+                    timeoutMs: 6000,
+                    maxPages: 12,
+                    allowSeedFallback: true,
+                  }
                 );
                 session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
               }
@@ -1181,12 +1216,20 @@ export const sourceQueue = new SerialQueue(async job => {
                 throw new Error('MeloBot bulk HQ button was not found on the album page.');
               }
 
-              bulk = await downloadMeloBotAlbumTracks(tg, albumContext);
+              bulk = await downloadMeloBotAlbumTracks(
+                tg,
+                albumContext,
+                { timeoutMs: attempt === 0 ? 12000 : 18000 }
+              );
               lastError = null;
               break;
             } catch (err) {
               lastError = err;
               console.warn('[native bulk album retry]', attempt + 1, err.message);
+              if (attempt === 0 && hasPendingForegroundSourceWork()) {
+                console.warn('[bulk guard] album retry skipped: foreground work is waiting');
+                break;
+              }
             }
           }
           if (lastError || !albumContext || !bulk) throw lastError || new Error('Album native bulk failed.');

@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.4 — Search Hardening & HQ Cache
+# Navazon Cloud v1.5.5 — Bulk Fail-Fast & Queue Guard
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -188,3 +188,14 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Explicit single-track HQ requests also bypass untyped legacy cache, so the “quality عالی” label is quality-strict.
 - Batched HQ cache lookup fetches all requested media in one database query to keep cached bulk delivery fast.
 - Regression coverage includes mixed track+album queries, real low-confidence tracks, single-row Artist shortcuts, multi-row Artist recovery, Persian/Latin query shapes, counted albums, and quality-aware media lookup.
+
+
+## Bulk Fail-Fast & Queue Guard v1.5.5
+
+- Fixes a production queue stall where a failed native album bulk download could occupy the single MeloBot source lane for about six minutes.
+- Interactive bulk waits are capped to 12s on the first attempt and 18s on the optional retry; the generic bulk collector is capped at 30s instead of 180s.
+- Bulk album/top/recent jobs now have lower queue priority than search/navigation work, so queued searches jump ahead before a batch starts.
+- If a bulk attempt fails while foreground source work is waiting, Navazon skips the retry and immediately falls back to verified HQ cache instead of holding the queue.
+- Album retries use the direct-by-title path rather than the slower primary Artist → Albums route.
+- Search-result albums now preserve their live HQ bulk button and source-state token, allowing Download All to reuse the page that is already open instead of reopening the album.
+- Adds a regression ensuring interactive album bulk honors caller-provided short timeouts.
