@@ -172,8 +172,10 @@ export class CatalogStore {
     if (node.albumList.length) {
       if (!freshEnough(node.albumsUpdatedAt, maxAgeMs)) return null;
       const trusted = node.albumList.filter(trustedStoredAlbum);
-      // If every stored row came from the old loose "(count)" parser, force a
-      // live refresh rather than presenting a fake empty discography.
+      // Any row dropped by the stricter parser means this legacy list may have
+      // mixed real albums with artist/category rows. Force one live refresh so
+      // the catalog self-heals instead of presenting a partial discography.
+      if (trusted.length !== node.albumList.length) return null;
       return trusted.length ? trusted : null;
     }
 
