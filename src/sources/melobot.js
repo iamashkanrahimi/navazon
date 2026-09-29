@@ -628,8 +628,14 @@ export async function searchMeloBotTyped(client, query, {
 
     const surface = parseMeloBotSearchSurface(result.messages, fallbackArtist);
     if (surface.tracks.length || surface.albums.length) {
+      const albums = surface.albums.map(album =>
+        album.artist || !fallbackArtist
+          ? album
+          : { ...album, artist: fallbackArtist }
+      );
       return {
         ...surface,
+        albums,
         messages: result.messages || [],
         sourceStateVersion,
         steps: step + 1,
