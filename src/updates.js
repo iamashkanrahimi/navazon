@@ -304,7 +304,12 @@ export async function handleUpdate(update) {
         if (!session.currentTrack) return;
         session.busy = true;
         const quality = action === 'tqh' ? 'hq' : 'normal';
-        await bot.editMessageText(session.chatId,messageId,quality === 'hq' ? 'در حال دریافت کیفیت عالی…' : 'در حال دریافت کیفیت معمولی…');
+        const statusText = quality === 'hq'
+          ? (session.currentTrack?.source === 'ahangify'
+              ? 'در حال دریافت بهترین کیفیت موجود…'
+              : 'در حال دریافت کیفیت عالی…')
+          : 'در حال دریافت کیفیت معمولی…';
+        await bot.editMessageText(session.chatId,messageId,statusText);
         sourceQueue.push({ type: 'track_quality', sessionId, quality, messageId });
       } else if (action === 'tly') {
         if (!session.currentTrack) return;
