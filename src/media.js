@@ -7,7 +7,7 @@ import { normalizeText } from './text.js';
 import {
   searchMeloBot,
   searchMeloBotTyped,
-  probeMeloBotCandidateSurface,
+  classifyMeloBotTypedSearchExact,
   downloadMeloBotTrack,
 } from './sources/melobot.js';
 import { searchAhangify, downloadAhangifyResult } from './sources/ahangify.js';
@@ -155,53 +155,20 @@ export async function downloadTrackWithSources(track, originalQuery) {
   };
 }
 
-function exactQueryTrackMatch(query, tracks = []) {
-  const wanted = normalizeText(query);
-  if (!wanted) return null;
-
-  return (tracks || []).find(track => {
-    const forward = normalizeText(
-      [track?.artist, track?.title].filter(Boolean).join(' ')
-    );
-    const reverse = normalizeText(
-      [track?.title, track?.artist].filter(Boolean).join(' ')
-    );
-    return wanted === forward || wanted === reverse;
-  }) || null;
-}
-
 export async function searchPrimaryTyped(query) {
   try {
-    const typed = await searchMeloBotTyped(tg, query);
-    let tracks = (typed.tracks || []).slice(0, MAX_RESULTS).map(track =>
+    const typed = await classifyMeloBotTypedSearchExact(
+      tg,
+      query,
+      await searchMeloBotTyped(tg, query)
+    );
+    const tracks = (typed.tracks || []).slice(0, MAX_RESULTS).map(track =>
       applyPolicyDefaults({ ...track, source: 'melobot' })
     );
-    let albums = (typed.albums || [])
+    const albums = (typed.albums || [])
       .filter(album => album?.title)
       .slice(0, MAX_RESULTS)
       .map(album => ({ ...album, source: 'melobot' }));
-
-    // MeloBot occasionally labels an album search hit like a track. Probe only
-    // an exact "artist + title" hit while that reply-keyboard row is still
-    // live. This adds one short round-trip only for ambiguous exact queries.
-    if (!albums.length) {
-      const exact = exactQueryTrackMatch(query, tracks);
-      if (exact?.rawText) {
-        try {
-          const probed = await probeMeloBotCandidateSurface(tg, exact);
-          if (probed.kind === 'album' && probed.album?.title) {
-            tracks = tracks.filter(track => track !== exact);
-            albums = [{
-              ...probed.album,
-              artist: probed.album.artist || exact.artist,
-              source: 'melobot',
-            }];
-          }
-        } catch (err) {
-          console.warn('[melobot exact candidate probe]', err.message);
-        }
-      }
-    }
 
     if (tracks.length || albums.length) {
       return {
@@ -209,6 +176,7 @@ export async function searchPrimaryTyped(query) {
         albums,
         source: 'melobot',
         typed: true,
+        exactProbe: typed.exactProbe || 'not_needed',
       };
     }
 
