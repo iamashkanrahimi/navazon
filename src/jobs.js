@@ -1094,6 +1094,9 @@ export const sourceQueue = new SerialQueue(async job => {
         session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         const seed = session.currentTrack;
         if (!seed?.artist) throw new Error('Track artist is missing.');
+        if (seed.artistInferred) {
+          throw new Error('Track primary artist could not be confirmed.');
+        }
 
         const cachedArtist = await catalog.getArtistContext(
           seed.artist,
