@@ -1320,6 +1320,7 @@ export const sourceQueue = new SerialQueue(async job => {
       let albumsRoute = 'unknown';
       let cacheMs = 0;
       let sourceMs = 0;
+      let sourceStartedAt = 0;
 
       try {
         if (!session.artistContext?.artist) throw new Error('Artist context missing');
@@ -1349,7 +1350,7 @@ export const sourceQueue = new SerialQueue(async job => {
               x.source === 'melobot' && normalize(x.artist) === normalize(artist)
             ) || null;
 
-            const sourceStartedAt = Date.now();
+            sourceStartedAt = Date.now();
             let resolved = null;
 
             const canUseLiveArtistSurface = Boolean(
@@ -1451,6 +1452,9 @@ export const sourceQueue = new SerialQueue(async job => {
           + `total_ms=${Date.now() - albumsStartedAt} count=${session.albums.length}`
         );
       } catch (err) {
+        if (sourceStartedAt && !sourceMs) {
+          sourceMs = Date.now() - sourceStartedAt;
+        }
         console.error('[albums direct]', session.artistContext?.artist, err.message);
         console.log(
           `[perf.albums] artist=${JSON.stringify(session.artistContext?.artist || '')} `
