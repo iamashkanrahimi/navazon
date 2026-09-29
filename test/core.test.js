@@ -818,3 +818,43 @@ test('parsed MeloBot rows carry the current live source-state token', () => {
     current
   );
 });
+
+
+test('matching preferred artist seed skips a redundant artist search before navigation', async () => {
+  const seed = {
+    ...parseTrackButton('🎵 Fast Artist, Seed Song'),
+    source: 'melobot',
+  };
+  const client = new FakeTelegramClient({
+    '🎵 Fast Artist, Seed Song': [[
+      fakeBotMessage('صفحه آهنگ', ['📥 کیفیت عالی', '🎤 خواننده']),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'آهنگ های Fast Artist',
+        ['Seed Song', '💿 آلبوم‌ها']
+      ),
+    ]],
+    '💿 آلبوم‌ها': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (1) :',
+        ['💿 Fast Album (4)']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistAlbums(
+    client,
+    'Fast Artist',
+    seed,
+    { allowEmpty: true, maxAlbums: 10 }
+  );
+
+  assert.deepEqual(resolved.albums.map(album => album.title), ['Fast Album']);
+  assert.equal(client.sent.includes('Fast Artist'), false);
+  assert.deepEqual(client.sent, [
+    '🎵 Fast Artist, Seed Song',
+    '🎤 خواننده',
+    '💿 آلبوم‌ها',
+  ]);
+});
