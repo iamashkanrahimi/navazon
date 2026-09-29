@@ -2449,6 +2449,7 @@ test('legacy JSON Artist lists are ignored until rewritten with current semantic
     node: {
       name: 'Haamim',
       artistListVersion: 1,
+      topTracksVersion: 1,
       artistUpdatedAt: now,
       topTracks: [canonicalTrack],
       recentTracks: [],
@@ -2667,4 +2668,42 @@ test('missing Lyrics button is a confirmed unavailable result', async () => {
   );
   assert.equal(result.available, false);
   assert.equal(result.checked, true);
+});
+
+
+test('refreshing only recent Artist tracks never blesses a legacy top list', async () => {
+  const store = new CatalogStore();
+  const writes = [];
+  store.readArtist = async () => ({
+    key: 'haamim',
+    node: {
+      name: 'Haamim',
+      topTracks: [{ artist: 'Wrong Artist', title: 'Legacy Wrong' }],
+      recentTracks: [],
+    },
+  });
+  store.writeArtist = async (_key, node) => {
+    writes.push(structuredClone(node));
+  };
+  store.seedArtistsFromTracks = async () => {};
+
+  await store.recordArtist('Haamim', {
+    topTracks: [],
+    recentTracks: [{ artist: 'Haamim', title: 'Fresh Recent', source: 'melobot' }],
+  });
+
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].topTracksVersion, undefined);
+  assert.equal(writes[0].recentTracksVersion, 1);
+
+  store.readArtist = async () => ({
+    key: 'haamim',
+    node: {
+      ...writes[0],
+      artistUpdatedAt: new Date().toISOString(),
+    },
+  });
+  const context = await store.getArtistContext('Haamim', 60_000);
+  assert.deepEqual(context.topTracks, []);
+  assert.deepEqual(context.recentTracks.map(track => track.title), ['Fresh Recent']);
 });
