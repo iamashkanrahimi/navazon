@@ -25,6 +25,7 @@ const {
   resultsKeyboard,
   albumTracksKeyboard,
   noAlbumsKeyboard,
+  albumsErrorKeyboard,
   homeKeyboard,
   curatedPlaylistsKeyboard,
 } = await import('../src/ui.js');
@@ -318,4 +319,12 @@ test('Persian album intent variants are treated as album searches', () => {
     albumQueryMatches('البوم Ehsan Khajeamiri', 'Ehsan Khajeamiri', 'Paeiz Tanhaei'),
     true
   );
+});
+
+
+test('album loading errors remain actionable instead of silently bouncing back', () => {
+  const keyboard = albumsErrorKeyboard('sess');
+  const buttons = keyboard.inline_keyboard.flat();
+  assert.equal(buttons[0].callback_data, 'alb:sess:0');
+  assert.equal(buttons[1].callback_data, 'arh:sess');
 });
