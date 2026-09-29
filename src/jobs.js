@@ -385,7 +385,10 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     }
   }
 
-  const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
+  const hqCache = await deepCatalog.getMediaMap(
+    sourceTracks.filter(track => !track?.artistInferred),
+    'hq'
+  );
 
   let sent = 0;
   let missing = 0;
@@ -429,8 +432,11 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
   const sourceTracks = (tracks || []).slice();
   if (!sourceTracks.length) return { complete: false, sent: 0, quality: 'hq' };
 
-  const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
-  const complete = sourceTracks.every(track => hqCache.has(deepTrackKey(track)));
+  const canonicalTracks = sourceTracks.filter(track => !track?.artistInferred);
+  const hqCache = await deepCatalog.getMediaMap(canonicalTracks, 'hq');
+  const complete = sourceTracks.every(track =>
+    !track?.artistInferred && hqCache.has(deepTrackKey(track))
+  );
   if (!complete) return { complete: false, sent: 0, quality: 'hq' };
 
   let sent = 0;
