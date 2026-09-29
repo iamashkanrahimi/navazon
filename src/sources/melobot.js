@@ -1830,8 +1830,17 @@ export async function openMeloBotArtistFastFresh(
   );
 }
 
-export async function openMeloBotArtist(client, seedTrack) {
-  const base = await openMeloBotArtistBase(client, seedTrack);
+export async function openMeloBotArtist(
+  client,
+  seedTrack,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
   let topTracks = [];
   let bulkHighButton = null;
   let bulkNormalButton = null;
@@ -1860,7 +1869,7 @@ export async function openMeloBotArtist(client, seedTrack) {
 
     try {
       let ordered = await sendAndCollect(client, base.orderButton, {
-        timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+        timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
         quietMs: 650,
         stopWhen: message => {
           const buttons = replyButtons(message);
@@ -1876,9 +1885,9 @@ export async function openMeloBotArtist(client, seedTrack) {
         const popularityButton = findButton(ordered.messages, text =>
           /بازدید|محبوب|برتر|پر.?دانلود/u.test(clean(text))
         );
-        if (popularityButton) {
+        if (popularityButton && !remaining.expired()) {
           ordered = await sendAndCollect(client, popularityButton, {
-            timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+            timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
             quietMs: 650,
             stopWhen: message => replyButtons(message)
               .some(text => parseTrackButton(text, base.artist)),
@@ -1909,11 +1918,11 @@ export async function openMeloBotArtist(client, seedTrack) {
     }
   }
 
-  if (!topTracks.length && !base.recentTracks.length) {
+  if (!topTracks.length && !base.recentTracks.length && !remaining.expired()) {
     try {
       const fallback = await searchMeloBot(client, base.artist, {
         maxRefinements: 2,
-        timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+        timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       });
       const target = normalize(base.artist);
       const exactArtistTracks = fallback.filter(track =>
@@ -1970,21 +1979,32 @@ export async function resolveMeloBotArtistTrackList(
   client,
   artist,
   mode = 'top',
-  preferredSeed = null
+  preferredSeed = null,
+  { timeoutMs = 8000 } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, 8000);
   const wantedMode = mode === 'recent' ? 'recent' : 'top';
-  const seed = await findArtistSeed(client, artist, preferredSeed);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
 
   if (wantedMode === 'top') {
-    const context = await openMeloBotArtist(client, seed);
+    const context = await openMeloBotArtist(
+      client,
+      seed,
+      { timeoutMs: remaining() }
+    );
     let tracks = (context.topTracks || []).slice(0, 10);
     let route = 'artist_top';
 
-    if (!tracks.length) {
+    if (!tracks.length && !remaining.expired()) {
       try {
         const searched = await searchMeloBot(client, context.artist || artist, {
           maxRefinements: 2,
-          timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+          timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
         });
         const target = normalize(context.artist || artist);
         tracks = searched
@@ -2019,16 +2039,20 @@ export async function resolveMeloBotArtistTrackList(
     };
   }
 
-  const base = await openMeloBotArtistBase(client, seed);
+  const base = await openMeloBotArtistBase(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
   let tracks = (base.recentTracks || []).slice(0, 10);
   let recentBulkHighButton = base.recentBulkHighButton || null;
   let recentBulkNormalButton = base.recentBulkNormalButton || null;
   let route = tracks.length ? 'artist_base_recent' : 'artist_sort_recent';
 
-  if (!tracks.length && base.orderButton) {
+  if (!tracks.length && base.orderButton && !remaining.expired()) {
     try {
       const sorted = await sendAndCollect(client, base.orderButton, {
-        timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+        timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
         quietMs: 650,
       });
       const directTracks = parseTracksFromMessages(sorted.messages, base.artist);
@@ -2052,9 +2076,9 @@ export async function resolveMeloBotArtistTrackList(
           return /جدید|تازه|تاریخ|انتشار|new|recent/iu.test(value);
         });
 
-        if (recentButton) {
+        if (recentButton && !remaining.expired()) {
           const recentPage = await sendAndCollect(client, recentButton, {
-            timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+            timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
             quietMs: 650,
             stopWhen: message => replyButtons(message)
               .some(text => Boolean(parseTrackButton(text, base.artist))),
@@ -2093,18 +2117,48 @@ export async function resolveMeloBotArtistTrackList(
   };
 }
 
-export async function prepareMeloBotBulkTopTracks(client, artist, preferredSeed = null) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  const context = await openMeloBotArtist(client, seed);
+export async function prepareMeloBotBulkTopTracks(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 7000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 7000);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  const context = await openMeloBotArtist(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
   if (!context.bulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the sorted artist page.');
   }
   return context;
 }
 
-export async function prepareMeloBotBulkRecentTracks(client, artist, preferredSeed = null) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  const context = await openMeloBotArtistBase(client, seed);
+export async function prepareMeloBotBulkRecentTracks(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 6500 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 6500);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  const context = await openMeloBotArtistBase(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
   if (!context.recentBulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the newest artist page.');
   }
