@@ -4,7 +4,7 @@ import { bot, cache, catalog, deepCatalog, follows, sessions, tg } from './runti
 import { SerialQueue } from './queue.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
-  SESSION_TTL_MS, TOP_TRACKS_LIMIT, ALBUMS_PER_PAGE, normalize,
+  SESSION_TTL_MS, BUSY_SESSION_TTL_MS, TOP_TRACKS_LIMIT, ALBUMS_PER_PAGE, normalize,
   homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
@@ -36,6 +36,7 @@ import {
   getTrackInfoText,
   getTrackAlbum,
 } from './trackActions.js';
+import { hasAlbumIntent, hasSpecificAlbumTitle } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
@@ -117,16 +118,6 @@ async function resolveArtistAlbumsDirect(artist, { maxAlbums = 30 } = {}) {
 }
 
 
-function isAlbumIntentQuery(query = '') {
-  const tokens = normalize(query).split(/\s+/).filter(Boolean);
-  const albumWords = new Set([
-    'album', 'albums',
-    'آلبوم', 'آلبومها', 'آلبومهای',
-    'البوم', 'البومها', 'البومهای',
-  ]);
-  return tokens.some(token => albumWords.has(token));
-}
-
 function mergeAlbumResults(limit, ...groups) {
   const out = [];
   const seen = new Set();
@@ -144,7 +135,7 @@ function mergeAlbumResults(limit, ...groups) {
 }
 
 async function searchAlbumOptions(query, tracks = []) {
-  const albumIntent = isAlbumIntentQuery(query);
+  const albumIntent = hasAlbumIntent(query);
   const limit = albumIntent ? 20 : 4;
 
   const [deepAlbums, legacyAlbums] = await Promise.all([
@@ -195,7 +186,8 @@ async function searchAlbumOptions(query, tracks = []) {
         const matched = direct.albums.filter(album =>
           albumQueryMatches(query, direct.artist, album.title)
         );
-        const visible = matched.length ? matched : direct.albums;
+        const specificAlbum = hasSpecificAlbumTitle(query, direct.artist);
+        const visible = specificAlbum ? matched : direct.albums;
 
         albums = mergeAlbumResults(
           limit,
@@ -403,7 +395,7 @@ export const sourceQueue = new SerialQueue(async job => {
   try {
     if (job.type === 'search') {
       try {
-        const albumIntent = isAlbumIntentQuery(job.query);
+        const albumIntent = hasAlbumIntent(job.query);
         const cachedOptions = albumIntent
           ? null
           : await catalog.getSearch(job.query, config.catalogSearchTtlMs);
@@ -595,7 +587,7 @@ export const sourceQueue = new SerialQueue(async job => {
     }
 
     if (!session && !['discover','discover_bootstrap'].includes(job.type)) return;
-    if (session) session.expiresAt = Date.now() + SESSION_TTL_MS;
+    if (session) session.expiresAt = Date.now() + BUSY_SESSION_TTL_MS;
 
     if (job.type === 'search_album') {
       try {
@@ -1469,6 +1461,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
   } finally {
     if (job.sessionId && session && !session._deleted) {
+      session.expiresAt = Date.now() + (session.busy ? BUSY_SESSION_TTL_MS : SESSION_TTL_MS);
       try { await sessions.set(job.sessionId,session); } catch (err) { console.warn('[session save]',err.message); }
     }
   }
