@@ -1487,6 +1487,7 @@ test('quality-aware media lookup returns only the requested HQ rows in one query
     assert.equal(calls.length, 1);
     assert.equal(calls[0].params[0], 'hq');
     assert.deepEqual(calls[0].params[1].sort(), ['a|one', 'a|two']);
+    assert.match(calls[0].sql, /verified_quality\s*=\s*TRUE/i);
   } finally {
     db.query = originalQuery;
   }
@@ -1543,4 +1544,36 @@ test('query-shape regression matrix keeps track album and artist-only cases dist
     assert.equal(typed.tracks.length, item.expectedTracks, item.name);
     assert.equal(typed.albums.length, item.expectedAlbums, item.name);
   }
+});
+
+
+test('deep media details query ignores pre-v1.5.4 unverified quality rows', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('FROM deep_track_media')) return { rows: [] };
+    if (text.includes('FROM deep_tracks')) return {
+      rows: [{
+        track_key: 'a|one',
+        artist: 'A',
+        title: 'One',
+        metadata: {},
+      }],
+    };
+    if (text.includes('FROM deep_album_tracks')) return { rows: [] };
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const details = await catalog.getTrackDetails({ artist: 'A', title: 'One' });
+    assert.deepEqual(details.media, {});
+  } finally {
+    db.query = originalQuery;
+  }
+
+  const mediaSql = calls.find(call => call.sql.includes('FROM deep_track_media'))?.sql || '';
+  assert.match(mediaSql, /verified_quality\s*=\s*TRUE/i);
 });
