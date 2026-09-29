@@ -41,14 +41,18 @@ export function albumButtonLabel(album) {
 function dominantArtist(tracks) {
   const counts = new Map();
   for (const track of tracks || []) {
-    if (!track.artist) continue;
+    if (!track.artist || track.source !== 'melobot') continue;
     const key = normalize(track.artist);
     const current = counts.get(key) || { artist: track.artist, count: 0 };
     current.count += 1;
     counts.set(key, current);
   }
   const best = [...counts.values()].sort((a,b) => b.count - a.count)[0];
-  if (!best || best.count < Math.min(2, tracks.length)) return null;
+
+  // A single search row is not strong enough evidence for a direct Artist-page
+  // shortcut: ambiguous album-like hits have historically surfaced as one
+  // pseudo-track. Require at least two independent MeloBot track rows.
+  if (!best || best.count < 2) return null;
   return best.artist;
 }
 
