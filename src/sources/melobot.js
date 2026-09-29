@@ -1594,9 +1594,16 @@ export async function enrichMeloBotTrack(
   return result;
 }
 
-export async function discoverMeloBotFeed(client, command, { contentOrigin = 'unknown' } = {}) {
+export async function discoverMeloBotFeed(
+  client,
+  command,
+  {
+    contentOrigin = 'unknown',
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
+) {
   const result = await sendAndCollect(client, command, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 650,
     stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
   });
@@ -3389,9 +3396,13 @@ export async function openMeloBotAlbum(client, artist, album) {
   return context.tracks;
 }
 
-async function openMeloBotDailyPlaylists(client) {
+async function openMeloBotDailyPlaylists(
+  client,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 9000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
   const index = await sendAndCollect(client, '/playlists', {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
   });
 
@@ -3400,14 +3411,23 @@ async function openMeloBotDailyPlaylists(client) {
   );
   if (!dailyButton) throw new Error('MeloBot daily playlists button was not found.');
 
+  if (remaining.expired()) {
+    throw new Error('MeloBot playlist-index budget exhausted.');
+  }
   return sendAndCollect(client, dailyButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 700,
   });
 }
 
-export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } = {}) {
-  const page = await openMeloBotDailyPlaylists(client);
+export async function listCuratedMeloBotPlaylists(
+  client,
+  {
+    maxPlaylists = 5,
+    timeoutMs = Math.min(config.searchTimeoutMs, 9000),
+  } = {}
+) {
+  const page = await openMeloBotDailyPlaylists(client, { timeoutMs });
   const buttons = buttonsFromMessages(page.messages);
   const out = [];
   const seen = new Set();
@@ -3431,17 +3451,28 @@ export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } =
   return out;
 }
 
-export async function openMeloBotCuratedPlaylist(client, playlist) {
+export async function openMeloBotCuratedPlaylist(
+  client,
+  playlist,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 9000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
   if (!playlist?.key) throw new Error('Curated playlist key is missing.');
   const rule = curatedPlaylistByKey(playlist.key);
   if (!rule) throw new Error(`Unknown curated playlist: ${playlist.key}`);
 
-  const page = await openMeloBotDailyPlaylists(client);
+  const page = await openMeloBotDailyPlaylists(
+    client,
+    { timeoutMs: remaining() }
+  );
   const liveButton = buttonsFromMessages(page.messages).find(text => rule.pattern.test(clean(text)));
   if (!liveButton) throw new Error(`MeloBot playlist is not available: ${playlist.label || playlist.key}`);
 
+  if (remaining.expired()) {
+    throw new Error(`MeloBot playlist budget exhausted: ${playlist.label || playlist.key}`);
+  }
   const result = await sendAndCollect(client, liveButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 2300,
     stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
   });
@@ -3462,8 +3493,21 @@ export async function openMeloBotCuratedPlaylist(client, playlist) {
   };
 }
 
-export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}) {
-  const playlists = await listCuratedMeloBotPlaylists(client, { maxPlaylists });
+export async function discoverMeloBotPlaylists(
+  client,
+  {
+    maxPlaylists = 5,
+    timeoutMs = 12000,
+  } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 12000);
+  const playlists = await listCuratedMeloBotPlaylists(
+    client,
+    {
+      maxPlaylists,
+      timeoutMs: remaining(),
+    }
+  );
   const entries = [];
   const tracks = [];
   const artists = [];
@@ -3471,8 +3515,13 @@ export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}
   const seenArtists = new Set();
 
   for (const playlist of playlists) {
+    if (remaining.expired()) break;
     try {
-      const opened = await openMeloBotCuratedPlaylist(client, playlist);
+      const opened = await openMeloBotCuratedPlaylist(
+        client,
+        playlist,
+        { timeoutMs: remaining() }
+      );
       entries.push({ playlist: opened.playlist, tracks: opened.tracks });
 
       for (const track of opened.tracks) {
