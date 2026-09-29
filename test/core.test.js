@@ -629,3 +629,53 @@ test('album rows are not mistaken for album-navigation controls', () => {
   }];
   assert.equal(albumNavigationButton(messages), null);
 });
+
+
+test('Arman-shaped multi-step source flow reaches the live album listing end-to-end', async () => {
+  const exactTrack = '🎵 Arman Garshasbi, Hezar Omid';
+  const client = new FakeTelegramClient({
+    'Arman Garshasbi': [[
+      fakeBotMessage(
+        'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن :',
+        ['Arman Garshasbi Hezar Omid', 'آهنگ در لیست نیست']
+      ),
+    ]],
+    'Arman Garshasbi Hezar Omid': [
+      [fakeBotMessage('انتخاب آهنگ', [exactTrack])],
+      [fakeBotMessage('انتخاب آهنگ', [exactTrack])],
+    ],
+    [exactTrack]: [[
+      fakeBotMessage(
+        'صفحه آهنگ',
+        ['📥 کیفیت عالی', '📥 کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'آهنگ های (1 - 10) : Arman Garshasbi',
+        ['Hezar Omid', 'نمایش به ترتیب تاریخ انتشار', '💿 آلبوم‌ها']
+      ),
+    ]],
+    '💿 آلبوم‌ها': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Album One (8)', '💿 Album Two (3)']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistAlbums(
+    client,
+    'Arman Garshasbi',
+    null,
+    { allowEmpty: true, maxAlbums: 20 }
+  );
+
+  assert.equal(resolved.artist, 'Arman Garshasbi');
+  assert.equal(resolved.complete, true);
+  assert.deepEqual(
+    resolved.albums.map(album => [album.title, album.trackCount]),
+    [['Album One', 8], ['Album Two', 3]]
+  );
+  assert.ok(client.sent.includes('💿 آلبوم‌ها'));
+});
