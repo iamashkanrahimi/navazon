@@ -143,6 +143,24 @@ export function resultsKeyboard(sessionId, session) {
       text: `صفحه‌ی 🗣 ${truncate(artist,30)}`,
       callback_data: `ar:${sessionId}:${artistSeedIndex}`,
     }]);
+  } else {
+    const albumArtists = new Map();
+    (session.albumOptions || []).forEach((album, index) => {
+      if (!album?.artist) return;
+      const key = normalize(album.artist);
+      if (!key) return;
+      if (!albumArtists.has(key)) {
+        albumArtists.set(key, { artist: album.artist, index });
+      }
+    });
+
+    if (albumArtists.size === 1) {
+      const only = [...albumArtists.values()][0];
+      rows.push([{
+        text: `صفحه‌ی 🗣 ${truncate(only.artist,30)}`,
+        callback_data: `aar:${sessionId}:${only.index}`,
+      }]);
+    }
   }
   if (session.resultsBackAction) {
     rows.push([{
