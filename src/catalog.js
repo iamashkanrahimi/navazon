@@ -341,7 +341,7 @@ export class CatalogStore {
       verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
     }));
     node.albumsUpdatedAt = now;
-    node.albumsEmptyConfirmedAt = !trustedAlbums.length && emptyConfirmed ? now : null;
+    node.albumsEmptyConfirmedAt = !(albums || []).length && emptyConfirmed ? now : null;
     node.albumButton = null;
     node.albums ||= {};
 
