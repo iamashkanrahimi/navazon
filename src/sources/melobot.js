@@ -3501,20 +3501,33 @@ export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}
   };
 }
 
-export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
-  // Bootstrap only through buttons that actually exist on MeloBot's live keyboard.
-  // Never invent a button label such as "💿".
+export async function discoverMeloBotHome(
+  client,
+  {
+    maxSections = 3,
+    timeoutMs = 12000,
+  } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 12000);
+
+  // Bootstrap only through buttons that actually exist on MeloBot's live
+  // keyboard. One shared budget prevents an idle crawler that started just
+  // before a user returns from holding the source lane for many sections.
   const openHome = async () => {
+    if (remaining.expired()) {
+      throw new Error('MeloBot home discovery budget exhausted.');
+    }
+
     let page = await sendAndCollect(client, '/start', {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 650,
     });
 
     const homeButton = findButton(page.messages, text => /صفحه\s*اصلی/u.test(clean(text)));
-    if (homeButton) {
+    if (homeButton && !remaining.expired()) {
       try {
         page = await sendAndCollect(client, homeButton, {
-          timeoutMs: config.searchTimeoutMs,
+          timeoutMs: remaining(),
           quietMs: 650,
         });
       } catch {}
@@ -3529,7 +3542,6 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
     const text = clean(raw);
     if (!text || isControl(text)) return false;
     if (parseTrackButton(text) || parseAlbumButton(text)) return false;
-    // Buttons shown on MeloBot home commonly represent playlists/categories.
     return true;
   }).slice(0, Math.max(0, maxSections));
 
@@ -3564,20 +3576,23 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
 
   absorb(home.messages);
 
+  const openedSections = [];
   for (const sectionButton of sectionButtons) {
+    if (remaining.expired()) break;
     try {
-      // Reset to a known keyboard state before every click.
       await openHome();
+      if (remaining.expired()) break;
       const section = await sendAndCollect(client, sectionButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 650,
         stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
       });
+      openedSections.push(sectionButton);
       absorb(section.messages);
     } catch (err) {
       console.warn('[melobot bootstrap section]', sectionButton, err.message);
     }
   }
 
-  return { tracks, artists, sections: sectionButtons };
+  return { tracks, artists, sections: openedSections };
 }
