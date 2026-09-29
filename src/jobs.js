@@ -50,7 +50,7 @@ import {
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
 const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
-const SEARCH_CACHE_NAMESPACE = 'v153';
+const SEARCH_CACHE_NAMESPACE = 'v154';
 
 function userSearchCacheKey(query = '') {
   return `${SEARCH_CACHE_NAMESPACE}:${query}`;
@@ -1379,6 +1379,7 @@ export const sourceQueue = new SerialQueue(async job => {
       let artistRoute = 'unknown';
       let cacheMs = 0;
       let sourceMs = 0;
+      let sourceStartedAt = 0;
       try {
         const indexedSeed = Number.isInteger(job.seedIndex) && job.seedIndex >= 0
           ? session.options?.[job.seedIndex]
@@ -1399,7 +1400,7 @@ export const sourceQueue = new SerialQueue(async job => {
           session.artistContext = cachedArtist;
           artistRoute = 'catalog';
         } else {
-          const sourceStartedAt = Date.now();
+          sourceStartedAt = Date.now();
           session.artistContext = await openMeloBotArtist(tg, seed);
           sourceMs = Date.now() - sourceStartedAt;
           artistRoute = session.artistContext.recoveredFromAlbum
@@ -1435,6 +1436,7 @@ export const sourceQueue = new SerialQueue(async job => {
           + `total_ms=${Date.now() - artistStartedAt}`
         );
       } catch (err) {
+        if (sourceStartedAt && !sourceMs) sourceMs = Date.now() - sourceStartedAt;
         console.error('[artist]',err.message);
         console.log(
           `[perf.artist] artist=${JSON.stringify(session.artistContext?.artist || '')} `
