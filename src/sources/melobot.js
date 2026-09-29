@@ -1005,6 +1005,7 @@ export async function resolveMeloBotTrackCandidate(
     forceIdentity = false,
   } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, config.searchTimeoutMs);
   const primaryQuery = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
     || candidate?.title
     || candidate?.rawText;
@@ -1027,9 +1028,10 @@ export async function resolveMeloBotTrackCandidate(
 
   let lastError = null;
   for (const query of [...new Set(queries.map(clean).filter(Boolean))]) {
+    if (remaining.expired()) break;
     try {
       const results = await searchMeloBot(client, query, {
-        timeoutMs: Math.min(timeoutMs, config.searchTimeoutMs),
+        timeoutMs: remaining(),
         maxRefinements: 2,
       });
 
