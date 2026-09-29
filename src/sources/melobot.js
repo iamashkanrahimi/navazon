@@ -1245,11 +1245,17 @@ export async function getMeloBotLyrics(
   let lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
-    if (moreButton && !remaining.expired()) {
+    if (moreButton) {
+      if (remaining.expired()) {
+        throw new Error('MeloBot lyrics submenu budget exhausted.');
+      }
       const more = await sendAndCollect(client, moreButton, {
         timeoutMs: remaining(),
         quietMs: 600,
       });
+      if (!more.messages?.length) {
+        throw new Error('MeloBot lyrics submenu returned no response.');
+      }
       lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
     }
   }
@@ -1474,11 +1480,42 @@ export async function enrichMeloBotTrack(
     errors: [],
   };
 
-  const lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
-  if (!lyricsButton) {
-    result.lyrics.checked = true;
+  let lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+  let extraMessages = menuMessages;
+  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
+  let secondaryMenuConfirmed = !moreButton;
+
+  if (moreButton && !remaining.expired()) {
+    try {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: remaining(),
+        quietMs: 550,
+      });
+      if (!more.messages?.length) {
+        result.errors.push('more: empty response');
+      } else {
+        secondaryMenuConfirmed = true;
+        extraMessages = more.messages;
+        const moreButtons = buttonsFromMessages(more.messages);
+        result.capabilities.hasCover ||= moreButtons.some(text => /کاور/u.test(clean(text)));
+        result.capabilities.hasMetadata ||= moreButtons.some(text =>
+          /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+        );
+        result.capabilities.hasLyrics ||= moreButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
+        lyricsButton ||= moreButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+      }
+    } catch (err) {
+      result.errors.push(`more: ${err.message}`);
+    }
+  } else if (moreButton && remaining.expired()) {
+    result.errors.push('more: enrichment budget exhausted');
   }
-  if (lyricsButton && !remaining.expired()) {
+
+  if (!lyricsButton) {
+    // Absence is durable only when every menu that could contain Lyrics was
+    // actually observed. A failed/empty More request remains "unknown".
+    result.lyrics.checked = secondaryMenuConfirmed;
+  } else if (!remaining.expired()) {
     try {
       const lyricsResult = await sendAndCollect(client, lyricsButton, {
         timeoutMs: remaining(),
@@ -1499,25 +1536,6 @@ export async function enrichMeloBotTrack(
       }
     } catch (err) {
       result.errors.push(`lyrics: ${err.message}`);
-    }
-  }
-
-  let extraMessages = menuMessages;
-  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
-  if (moreButton && !remaining.expired()) {
-    try {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 550,
-      });
-      extraMessages = more.messages;
-      const moreButtons = buttonsFromMessages(more.messages);
-      result.capabilities.hasCover ||= moreButtons.some(text => /کاور/u.test(clean(text)));
-      result.capabilities.hasMetadata ||= moreButtons.some(text =>
-        /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
-      );
-    } catch (err) {
-      result.errors.push(`more: ${err.message}`);
     }
   }
 
