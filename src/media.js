@@ -79,11 +79,17 @@ export async function sendMedia(
   if (media.kind === 'audio') await bot.sendAudio(chatId,media.fileId,{
     caption,
     ...(track.title ? { title: track.title } : media.title ? { title: media.title } : {}),
-    ...(track.artist ? { performer: track.artist } : media.performer ? { performer: media.performer } : {}),
+    ...(track.artist && !track.artistInferred
+      ? { performer: track.artist }
+      : media.performer
+        ? { performer: media.performer }
+        : {}),
     ...(media.duration ? { duration: media.duration } : {}),
   });
   else await bot.sendDocument(chatId,media.fileId,{ caption });
-  await cache.recordServe(track,{ cacheHit, cacheKey });
+  if (!track?.artistInferred) {
+    await cache.recordServe(track,{ cacheHit, cacheKey });
+  }
 }
 
 function normalizeMatch(value = '') {
