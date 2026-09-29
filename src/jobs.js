@@ -17,6 +17,7 @@ import {
 } from './media.js';
 import {
   openMeloBotArtist, openMeloBotArtistFresh,
+  openMeloBotArtistFast, openMeloBotArtistFastFresh,
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
   matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums, resolveMeloBotArtistAlbums,
@@ -750,7 +751,7 @@ export const sourceQueue = new SerialQueue(async job => {
         const cachedArtist = await catalog.getArtistContext(artist, config.catalogArtistTtlMs);
         session.artistContext = cachedArtist && isUsableArtistContext(cachedArtist)
           ? cachedArtist
-          : await openMeloBotArtistFresh(tg, artist, null);
+          : await openMeloBotArtistFastFresh(tg, artist, null);
 
         if (!isUsableArtistContext(session.artistContext)) {
           throw new Error('MeloBot returned an empty followed-artist context.');
@@ -1143,7 +1144,7 @@ export const sourceQueue = new SerialQueue(async job => {
           session.artistContext = cachedArtist;
           artistRoute = 'catalog';
         } else {
-          session.artistContext = await openMeloBotArtistFresh(
+          session.artistContext = await openMeloBotArtistFastFresh(
             tg,
             seed.artist,
             seed.source === 'melobot' ? seed : null
@@ -1769,8 +1770,8 @@ export const sourceQueue = new SerialQueue(async job => {
           ) || null;
 
           session.artistContext = albumSeed
-            ? await openMeloBotArtist(tg, { ...albumSeed, source: 'melobot' })
-            : await openMeloBotArtistFresh(tg, artist, null);
+            ? await openMeloBotArtistFast(tg, { ...albumSeed, source: 'melobot' })
+            : await openMeloBotArtistFastFresh(tg, artist, null);
           artistRoute = albumSeed
             ? (session.artistContext.recoveredFromAlbum ? 'album_live_recovery' : 'album_track_seed')
             : 'fresh_artist_search';
@@ -1854,7 +1855,7 @@ export const sourceQueue = new SerialQueue(async job => {
           artistRoute = 'catalog';
         } else {
           sourceStartedAt = Date.now();
-          session.artistContext = await openMeloBotArtist(tg, seed);
+          session.artistContext = await openMeloBotArtistFast(tg, seed);
           sourceMs = Date.now() - sourceStartedAt;
           artistRoute = session.artistContext.recoveredFromAlbum
             ? 'live_album_recovery'
