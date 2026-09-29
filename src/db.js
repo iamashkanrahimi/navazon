@@ -126,6 +126,17 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS track_aliases_canonical_idx
       ON track_aliases (canonical_track_key);
 
+    CREATE TABLE IF NOT EXISTS track_capability_failures (
+      track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
+      capability TEXT NOT NULL,
+      reason TEXT,
+      failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (track_key, capability)
+    );
+
+    CREATE INDEX IF NOT EXISTS track_capability_failures_failed_idx
+      ON track_capability_failures (failed_at DESC);
+
     CREATE TABLE IF NOT EXISTS deep_track_media (
       track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
       quality TEXT NOT NULL,

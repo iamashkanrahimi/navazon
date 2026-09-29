@@ -1,4 +1,4 @@
-# Navazon Cloud v1.6.0 — Canonical Track Identity
+# Navazon Cloud v1.6.1 — Catalog & Cache Repair
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -261,3 +261,17 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Interactive quality waits are capped at 6.5 seconds.
 - Native album/top/recent bulk work uses one bounded source attempt and no longer chains long per-track retries inside the serialized foreground queue.
 - Batch media bridging is bounded, and the `clean is not defined` bulk cache crash is fixed.
+
+
+## Catalog & Cache Repair v1.6.1
+
+- Ranked MeloBot feed rows strip `#NN 🎵` before artist parsing so Top feeds no longer manufacture numbered Artist identities.
+- File-cache keys ignore changing feed rank prefixes, allowing the same audio to reuse one durable cache row across feed positions.
+- Multi-token searches keep full-coverage matches when available, removing partial false positives such as unrelated Reza results for `رضا بهرام یار`.
+- Trustworthy legacy Artist top/recent lists self-heal their semantic version instead of forcing a slow live MeloBot round-trip.
+- Track Artist navigation falls back to deep-catalog/derived popularity lists before using the live source.
+- Native bulk audio metadata canonicalizes inferred Album/Artist rows, persists the repaired album relation, and immediately upgrades subsequent Track pages.
+- Temporary failures for HQ/Normal/Lyrics/Cover/Artist-page actions use a 15-minute cooldown instead of reappearing on every new search or becoming permanent negatives.
+- Track info is local-first and instant; missing metadata is left to background enrichment.
+- Artist loading copy now says `در حال باز کردن صفحه‌ی خواننده…`.
+- Production repair migrates polluted media/cache rows to clean identities and clears stale polluted metadata/tasks without discarding Telegram file IDs.

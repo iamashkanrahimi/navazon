@@ -13,7 +13,7 @@ import {
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
   deliverCached, downloadTrackWithSources, searchPrimaryTyped, sendMedia,
-  sourceCandidateToTrack,
+  sourceCandidateToTrack, canonicalTrackFromAudioMetadata,
 } from './media.js';
 import {
   openMeloBotArtist, openMeloBotArtistFresh,
@@ -49,6 +49,7 @@ import {
   albumTitleAppearsInQuery,
   shouldUseLiveAlbumDiscovery,
   cleanText,
+  keepFullCoverageTracksWhenAvailable,
 } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
@@ -330,6 +331,7 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
 
   const sourceMatches = matchBulkAudioToTracks(sourceTracks, bulkResult?.audioItems || []);
   const mediaByTrack = new Map();
+  const canonicalBySourceKey = new Map();
 
   if (sourceMatches.length) {
     try {
@@ -349,10 +351,10 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
         const key = bulkTrackKey(track);
         mediaByTrack.set(key, media);
 
-        const performer = cleanText(media?.performer || '');
-        const canonicalTrack = track.artistInferred && performer
-          ? { ...track, artist: performer, artistInferred: false }
-          : track;
+        const canonicalTrack = canonicalTrackFromAudioMetadata(track, media);
+        if (!canonicalTrack.artistInferred) {
+          canonicalBySourceKey.set(key, canonicalTrack);
+        }
 
         if (canonicalTrack.artistInferred) {
           console.warn(
@@ -399,13 +401,15 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     try {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
-      const bridgedMedia = mediaByTrack.get(bulkTrackKey(track));
-      const cachedHq = hqCache.get(deepTrackKey(track));
+      const sourceKey = bulkTrackKey(track);
+      const bridgedMedia = mediaByTrack.get(sourceKey);
+      const canonicalTrack = canonicalBySourceKey.get(sourceKey) || track;
+      const cachedHq = hqCache.get(deepTrackKey(canonicalTrack));
       const media = bridgedMedia || cachedHq;
       if (media) {
         await sendMedia(
           session.chatId,
-          track,
+          canonicalTrack,
           media,
           { cacheHit: !bridgedMedia && Boolean(cachedHq) }
         );
@@ -425,6 +429,9 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     sent,
     missing,
     missingTracks,
+    canonicalTracks: sourceTracks.map(track =>
+      canonicalBySourceKey.get(bulkTrackKey(track)) || track
+    ),
     matched: sourceMatches.length,
     quality: 'hq',
   };
@@ -634,6 +641,10 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         const albumOptionsStartedAt = Date.now();
+        // Relevance must be evaluated against the source spelling before
+        // alias canonicalization. A Persian Ahangify result can fully cover a
+        // Persian query and only then resolve to its Latin MeloBot identity.
+        options = keepFullCoverageTracksWhenAvailable(job.query, options);
         options = await deepCatalog.canonicalizeKnownTracks(options);
 
         const indexedAlbumOptions = await searchAlbumOptions(job.query, options);
@@ -1171,16 +1182,38 @@ export const sourceQueue = new SerialQueue(async job => {
 
         if (cachedArtist && isUsableArtistContext(cachedArtist)) {
           session.artistContext = cachedArtist;
-          artistRoute = 'catalog';
+          artistRoute = cachedArtist.healedLegacyLists ? 'catalog_healed' : 'catalog';
         } else {
-          session.artistContext = await openMeloBotArtistFastFresh(
-            tg,
-            seed.artist,
-            seed.source === 'melobot' ? seed : null
-          );
-          artistRoute = session.artistContext.recoveredFromAlbum
-            ? 'live_album_recovery'
-            : 'live';
+          const [storedTop, storedRecent] = await Promise.all([
+            deepCatalog.getArtistList(seed.artist, 'top', TOP_TRACKS_LIMIT),
+            deepCatalog.getArtistList(seed.artist, 'recent', TOP_TRACKS_LIMIT),
+          ]);
+          const derivedTop = storedTop.length
+            ? storedTop
+            : await deepCatalog.deriveArtistList(seed.artist, 'top', TOP_TRACKS_LIMIT);
+          const deepContext = {
+            artist: seed.artist,
+            tracks: derivedTop.length ? derivedTop : storedRecent,
+            topTracks: derivedTop,
+            recentTracks: storedRecent,
+            fromDeepCatalog: true,
+          };
+
+          if (isUsableArtistContext(deepContext)) {
+            session.artistContext = deepContext;
+            artistRoute = storedTop.length || storedRecent.length
+              ? 'deep_catalog'
+              : 'deep_derived';
+          } else {
+            session.artistContext = await openMeloBotArtistFastFresh(
+              tg,
+              seed.artist,
+              seed.source === 'melobot' ? seed : null
+            );
+            artistRoute = session.artistContext.recoveredFromAlbum
+              ? 'live_album_recovery'
+              : 'live';
+          }
         }
 
         if (!isUsableArtistContext(session.artistContext)) {
@@ -1193,6 +1226,7 @@ export const sourceQueue = new SerialQueue(async job => {
             : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null));
 
         await syncArtistContext(session.artistContext);
+        try { await deepCatalog.clearCapabilityFailure(seed, 'hasArtistPage'); } catch {}
         session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
         session.artistBack = 'trt';
         session.albums = null;
@@ -1219,6 +1253,15 @@ export const sourceQueue = new SerialQueue(async job => {
         );
       } catch (err) {
         console.error('[track artist]', err.message);
+        try {
+          if (session.currentTrack) {
+            await deepCatalog.markCapabilityFailure(
+              session.currentTrack,
+              'hasArtistPage',
+              err.message
+            );
+          }
+        } catch {}
         console.log(
           `[perf.track_artist] route=${artistRoute} total_ms=${Date.now() - artistStartedAt} error=true`
         );
@@ -1324,7 +1367,10 @@ export const sourceQueue = new SerialQueue(async job => {
           });
           sent = delivered.sent;
           missing = delivered.missing;
-
+          if (delivered.canonicalTracks?.length) {
+            session.artistContext.recentTracks = delivered.canonicalTracks;
+            await syncArtistContext(session.artistContext);
+          }
 
         }
       } catch (err) {
@@ -1447,7 +1493,11 @@ export const sourceQueue = new SerialQueue(async job => {
           });
           sent = delivered.sent;
           missing = delivered.missing;
-
+          if (delivered.canonicalTracks?.length) {
+            session.artistContext.topTracks = delivered.canonicalTracks;
+            session.artistContext.tracks = delivered.canonicalTracks;
+            await syncArtistContext(session.artistContext);
+          }
 
         }
       } catch (err) {
@@ -1592,7 +1642,14 @@ export const sourceQueue = new SerialQueue(async job => {
           );
           sent = delivered.sent;
           missing = delivered.missing;
-
+          if (delivered.canonicalTracks?.length) {
+            session.currentAlbum.tracks = delivered.canonicalTracks;
+            await syncAlbumTracks(
+              session.currentAlbum.artist || albumContext.artist,
+              session.currentAlbum,
+              delivered.canonicalTracks
+            );
+          }
 
         }
       } catch (err) {

@@ -81,6 +81,7 @@ const {
   rankTracksForQuery,
   shouldUseSearchRelevanceFallback,
   hasCompositeArtistSeparators,
+  keepFullCoverageTracksWhenAvailable,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -2922,6 +2923,83 @@ test('deep catalog learns Persian-to-Latin track alias from cached Telegram audi
     assert.equal(aliasInsert.params[0], 'رضا بهرام|یار');
     assert.equal(aliasInsert.params[3], 'reza bahram|yar');
     assert.equal(aliasInsert.params[5], 'telegram_audio_metadata');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('ranked MeloBot feed rows do not manufacture numbered artists', () => {
+  const parsed = parseTrackButton('#49 🎵 Hamed Rustaie, Mojezeh x 10k');
+  assert.equal(parsed.artist, 'Hamed Rustaie');
+  assert.equal(parsed.title, 'Mojezeh');
+  assert.equal(parsed.sourcePopularityCount, 10000);
+});
+
+test('file cache keys ignore changing feed rank prefixes', () => {
+  const ranked = trackCacheKey({
+    artist: 'Hayedeh',
+    title: 'Soghati',
+    rawText: '#29 🎵 Hayedeh, Soghati x 39.7k',
+  });
+  const unranked = trackCacheKey({
+    artist: 'Hayedeh',
+    title: 'Soghati',
+    rawText: '🎵 Hayedeh, Soghati x 39.7k',
+  });
+  assert.equal(ranked, unranked);
+  assert.equal(ranked, 'hayedeh|soghati|hayedeh soghati');
+});
+
+test('full-coverage search filtering removes partial false positives when an exact match exists', () => {
+  const tracks = keepFullCoverageTracksWhenAvailable('رضا بهرام یار', [
+    { artist: 'رضا بهرام', title: 'یار', source: 'ahangify' },
+    { artist: 'Reza Sadeghi', title: 'Bemoni Baram' },
+    { artist: 'Reza Bahram', title: 'Hamdam' },
+  ]);
+  assert.equal(tracks.length, 1);
+  assert.equal(tracks[0].artist, 'رضا بهرام');
+  assert.equal(tracks[0].title, 'یار');
+});
+
+test('legacy trustworthy Artist lists self-heal their semantic version locally', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  const now = new Date().toISOString();
+  db.query = async (sql, params = []) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('SELECT name, data FROM artists')) {
+      return {
+        rows: [{
+          name: 'Reza Bahram',
+          data: {
+            name: 'Reza Bahram',
+            artistUpdatedAt: now,
+            topTracks: [
+              { artist: 'Reza Bahram', title: 'Yar', source: 'melobot', rawText: '🎵 Reza Bahram, Yar' },
+              { artist: 'Reza Bahram', title: 'Hamdam', source: 'melobot', rawText: '🎵 Reza Bahram, Hamdam' },
+            ],
+            recentTracks: [],
+          },
+        }],
+        rowCount: 1,
+      };
+    }
+    if (text.includes('INSERT INTO artists')) return { rows: [], rowCount: 1 };
+    throw new Error('Unexpected SQL in Artist self-heal regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const store = new CatalogStore();
+    const context = await store.getArtistContext('Reza Bahram', 72 * 60 * 60 * 1000);
+    assert.equal(context.healedLegacyLists, true);
+    assert.equal(context.topTracks.length, 2);
+    const write = calls.find(call => call.sql.includes('INSERT INTO artists'));
+    assert.ok(write);
+    const stored = JSON.parse(write.params[2]);
+    assert.equal(stored.topTracksVersion, 1);
+    assert.equal(stored.artistListVersion, 1);
   } finally {
     db.query = originalQuery;
   }

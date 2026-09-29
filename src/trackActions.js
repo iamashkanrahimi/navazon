@@ -21,6 +21,7 @@ function hasCanonicalTrackIdentity(track = {}) {
 }
 
 const CAPABILITY_TTL_MS = 60 * 60 * 1000;
+const CAPABILITY_FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
 
 function freshCapabilitySnapshot(details = {}) {
   const checkedAt = Date.parse(details?.metadata?.capabilitiesCheckedAt || '');
@@ -93,11 +94,20 @@ export async function prepareTrackPage(track) {
     ? { media: {}, metadata: {} }
     : await deepCatalog.getTrackDetails(track);
   const snapshot = freshCapabilitySnapshot(details);
+  const recentFailures = track?.artistInferred
+    ? {}
+    : await deepCatalog.getRecentCapabilityFailures(
+        track,
+        CAPABILITY_FAILURE_COOLDOWN_MS
+      );
 
   // Cached media/content is authoritative. Source capability snapshots are
-  // trusted for only one hour; after that a positive becomes unknown instead
-  // of being advertised forever.
-  const unavailable = track?.capabilityUnavailable || {};
+  // trusted for only one hour; recent transient failures suppress the matching
+  // button for 15 minutes without turning that failure into durable absence.
+  const unavailable = {
+    ...(track?.capabilityUnavailable || {}),
+    ...Object.fromEntries(Object.keys(recentFailures).map(key => [key, true])),
+  };
   const hasStoredInfo = Boolean(
     details?.release_date || details?.release_date_raw || details?.duration_seconds ||
     details?.popularity_count || details?.popularity_text || details?.albumInfo
@@ -121,14 +131,16 @@ export async function prepareTrackPage(track) {
     hasMetadata: unavailable.hasMetadata
       ? false
       : (hasStoredInfo || snapshot.hasMetadata === true ? true : null),
-    hasArtistPage: Boolean(
-      track?.artist
-      && !track?.artistInferred
-      && (
-        (track?.source === 'melobot' && track?.rawText)
-        || snapshot.hasArtistPage === true
-      )
-    ),
+    hasArtistPage: unavailable.hasArtistPage
+      ? false
+      : Boolean(
+          track?.artist
+          && !track?.artistInferred
+          && (
+            (track?.source === 'melobot' && track?.rawText)
+            || snapshot.hasArtistPage === true
+          )
+        ),
     snapshotFresh: Object.keys(snapshot).length > 0,
   };
 
@@ -238,7 +250,10 @@ export async function sendTrackQuality(
         };
         if (hasCanonicalTrackIdentity(track)) {
           try {
-            await deepCatalog.clearCapability(track, capability);
+            await Promise.all([
+              deepCatalog.clearCapability(track, capability),
+              deepCatalog.markCapabilityFailure(track, capability, err.message),
+            ]);
           } catch {}
         }
         throw err;
@@ -268,7 +283,15 @@ export async function sendTrackQuality(
 
   await sendAudioMedia(chatId, track, media);
   if (hasCanonicalTrackIdentity(track)) {
-    try { await cache.recordServe(track, { cacheHit, cacheKey }); } catch {}
+    try {
+      await Promise.all([
+        cache.recordServe(track, { cacheHit, cacheKey }),
+        deepCatalog.clearCapabilityFailure(
+          track,
+          quality === 'hq' ? 'hasHq' : 'hasNormal'
+        ),
+      ]);
+    } catch {}
   }
   return media;
 }
@@ -307,17 +330,36 @@ export async function sendTrackLyrics(chatId, track) {
   }
 
   if (!lyrics && track?.source === 'melobot' && track?.rawText) {
-    const result = await getMeloBotLyrics(tg, track, { timeoutMs: 6000 });
-    track = adoptCanonicalCandidate(track, result.candidate);
-    if (result.available && result.text) {
-      lyrics = result.text;
-      if (hasCanonicalTrackIdentity(track)) {
-        await deepCatalog.setLyrics(track, lyrics, 'melobot');
+    try {
+      const result = await getMeloBotLyrics(tg, track, { timeoutMs: 6000 });
+      track = adoptCanonicalCandidate(track, result.candidate);
+      if (result.available && result.text) {
+        lyrics = result.text;
+        if (hasCanonicalTrackIdentity(track)) {
+          await Promise.all([
+            deepCatalog.setLyrics(track, lyrics, 'melobot'),
+            deepCatalog.clearCapabilityFailure(track, 'hasLyrics'),
+          ]);
+        }
+      } else if (result.checked === true) {
+        if (hasCanonicalTrackIdentity(track)) {
+          await Promise.all([
+            deepCatalog.markNoLyrics(track, 'melobot'),
+            deepCatalog.clearCapabilityFailure(track, 'hasLyrics'),
+          ]);
+        }
       }
-    } else if (result.checked === true) {
+    } catch (err) {
+      track.capabilityUnavailable = {
+        ...(track.capabilityUnavailable || {}),
+        hasLyrics: true,
+      };
       if (hasCanonicalTrackIdentity(track)) {
-        await deepCatalog.markNoLyrics(track, 'melobot');
+        try {
+          await deepCatalog.markCapabilityFailure(track, 'hasLyrics', err.message);
+        } catch {}
       }
+      throw err;
     }
   }
 
@@ -343,19 +385,40 @@ export async function sendTrackCover(chatId, track) {
   } : null;
 
   if (!media && track?.source === 'melobot' && track?.rawText) {
-    const cover = await getMeloBotCover(tg, track, { timeoutMs: 6000 });
-    track = adoptCanonicalCandidate(track, cover?.candidate);
-    if (cover?.photoMessage) {
-      media = await captureForwardedMedia(cover.photoMessage);
-      if (media.kind === 'photo') {
-        if (hasCanonicalTrackIdentity(track)) {
-          await deepCatalog.setCover(track, media);
+    try {
+      const cover = await getMeloBotCover(tg, track, { timeoutMs: 6000 });
+      track = adoptCanonicalCandidate(track, cover?.candidate);
+      if (cover?.photoMessage) {
+        media = await captureForwardedMedia(cover.photoMessage);
+        if (media.kind === 'photo' && hasCanonicalTrackIdentity(track)) {
+          await Promise.all([
+            deepCatalog.setCover(track, media),
+            deepCatalog.clearCapabilityFailure(track, 'hasCover'),
+          ]);
         }
       }
+      if (!media?.fileId && hasCanonicalTrackIdentity(track)) {
+        await deepCatalog.markCapabilityFailure(track, 'hasCover', 'cover unavailable');
+      }
+    } catch (err) {
+      track.capabilityUnavailable = {
+        ...(track.capabilityUnavailable || {}),
+        hasCover: true,
+      };
+      if (hasCanonicalTrackIdentity(track)) {
+        try {
+          await deepCatalog.markCapabilityFailure(track, 'hasCover', err.message);
+        } catch {}
+      }
+      throw err;
     }
   }
 
   if (!media?.fileId) {
+    track.capabilityUnavailable = {
+      ...(track.capabilityUnavailable || {}),
+      hasCover: true,
+    };
     await bot.sendMessage(chatId, 'کاور این آهنگ موجود نیست.');
     return false;
   }
@@ -365,34 +428,11 @@ export async function sendTrackCover(chatId, track) {
 }
 
 export async function getTrackInfoText(track) {
-  let details = await safeTrackDetails(track);
-  const hasReleaseDate = Boolean(details?.release_date || details?.release_date_raw);
-  const hasPopularity = Boolean(details?.popularity_count || details?.popularity_text);
-  const needsLive = !hasReleaseDate || !hasPopularity;
+  const details = await safeTrackDetails(track);
 
-  if (needsLive && track?.source === 'melobot' && track?.rawText) {
-    try {
-      const patch = await getMeloBotTrackMetadata(tg, track, { timeoutMs: 6000 });
-      track = adoptCanonicalCandidate(track, patch.candidate);
-      if (hasCanonicalTrackIdentity(track)) {
-        await deepCatalog.setMetadata(track, patch);
-        details = await safeTrackDetails(track);
-      } else {
-        details = {
-          ...details,
-          release_date: patch.releaseDate || details?.release_date || null,
-          release_date_raw: patch.releaseDateRaw || details?.release_date_raw || null,
-          popularity_count: Number.isFinite(patch.popularityCount)
-            ? patch.popularityCount
-            : details?.popularity_count,
-          popularity_text: patch.popularityText || details?.popularity_text || null,
-        };
-      }
-    } catch (err) {
-      console.warn('[track info]', err.message);
-    }
-  }
-
+  // Track info is an instant local view. Missing release/popularity fields are
+  // enriched by the existing background crawler instead of blocking the user
+  // on another serialized MeloBot round-trip.
   const lines = [`📋 ${trackPageTitle(track)}`];
   if (details?.albumInfo?.title) lines.push(`💿 آلبوم: ${details.albumInfo.title}`);
   if (details?.release_date) lines.push(`📅 تاریخ انتشار: ${details.release_date}`);
