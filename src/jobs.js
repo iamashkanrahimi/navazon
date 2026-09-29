@@ -40,6 +40,7 @@ import {
   sendTrackCover,
   getTrackInfoText,
   getTrackAlbum,
+  resolveTrackIdentity,
 } from './trackActions.js';
 import {
   hasAlbumIntent,
@@ -822,6 +823,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'track_quality') {
       try {
+        session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         await sendTrackQuality(
           session.chatId,
           session.currentTrack,
@@ -842,6 +844,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'track_lyrics') {
       try {
+        session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         await sendTrackLyrics(session.chatId, session.currentTrack);
       } catch (err) {
         console.error('[track lyrics]', err.message);
@@ -854,6 +857,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'track_cover') {
       try {
+        session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         await sendTrackCover(session.chatId, session.currentTrack);
       } catch (err) {
         console.error('[track cover]', err.message);
@@ -866,6 +870,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'track_info') {
       try {
+        session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         const text = await getTrackInfoText(session.currentTrack);
         await bot.sendMessage(session.chatId, text);
       } catch (err) {
@@ -1008,6 +1013,7 @@ export const sourceQueue = new SerialQueue(async job => {
       const artistStartedAt = Date.now();
       let artistRoute = 'unknown';
       try {
+        session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         const seed = session.currentTrack;
         if (!seed?.artist) throw new Error('Track artist is missing.');
 
