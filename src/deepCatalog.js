@@ -313,24 +313,36 @@ export class DeepCatalog {
   async setCapabilities(track, capabilities = {}) {
     const trackKey = await this.upsertTrack(track);
     if (!trackKey) return;
+
+    // Capability discovery is best-effort. Persist positive evidence only;
+    // a timeout/empty source surface means "unknown", not "unavailable".
+    const positive = Object.fromEntries(
+      Object.entries({
+        hasHq: capabilities.hasHq,
+        hasNormal: capabilities.hasNormal,
+        hasLyrics: capabilities.hasLyrics,
+        hasCover: capabilities.hasCover,
+        hasMetadata: capabilities.hasMetadata,
+        hasArtistPage: capabilities.hasArtistPage,
+      }).filter(([, value]) => value === true)
+    );
+
+    if (!Object.keys(positive).length) return;
+
     await db.query(`
       UPDATE deep_tracks
-      SET metadata = metadata || $2::jsonb,
+      SET metadata = metadata
+          || jsonb_build_object(
+            'capabilities',
+            COALESCE(metadata->'capabilities', '{}'::jsonb) || $2::jsonb,
+            'capabilitiesCheckedAt',
+            to_jsonb(NOW()::text)
+          ),
           updated_at = NOW()
       WHERE track_key = $1
     `, [
       trackKey,
-      safeJson({
-        capabilities: {
-          hasHq: Boolean(capabilities.hasHq),
-          hasNormal: Boolean(capabilities.hasNormal),
-          hasLyrics: Boolean(capabilities.hasLyrics),
-          hasCover: Boolean(capabilities.hasCover),
-          hasMetadata: Boolean(capabilities.hasMetadata),
-          hasArtistPage: Boolean(capabilities.hasArtistPage),
-        },
-        capabilitiesCheckedAt: new Date().toISOString(),
-      }),
+      safeJson(positive),
     ]);
   }
 
