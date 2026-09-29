@@ -68,8 +68,8 @@ export function hasSpecificAlbumTitle(query = '', artist = '', albumTitles = [])
     return queryTokens.some(token => !artistSet.has(token));
   }
 
-  // The source can return a transliterated artist name while the user typed
-  // Persian (or vice versa). In that case allow one-token variance in the
-  // artist name before treating the remaining words as an album title.
-  return queryTokens.length > artistTokens.length + 1;
+  // If the source transliterates the artist into a different script, token
+  // subtraction is not trustworthy. Only a known album title match (handled
+  // above) is strong enough to classify the query as title-specific.
+  return false;
 }
