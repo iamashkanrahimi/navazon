@@ -153,11 +153,15 @@ export function resultsKeyboard(sessionId, session) {
   const artist = exactArtistSeedIndex >= 0
     ? tracks[exactArtistSeedIndex].artist
     : (
-        dominant
-        && matchingArtists.size === 1
-        && artistShortcutMatchesQuery(session.query, dominant)
+        !queryKey
           ? dominant
-          : null
+          : (
+              dominant
+              && matchingArtists.size === 1
+              && artistShortcutMatchesQuery(session.query, dominant)
+                ? dominant
+                : null
+            )
       );
 
   const trackRows = tracks.map((track,index) => ([{
