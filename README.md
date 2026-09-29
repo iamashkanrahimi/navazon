@@ -1,4 +1,4 @@
-# Navazon Cloud v1.4.5 — MeloBot Navigation Hardening
+# Navazon Cloud v1.5.0 — Fast Path Architecture
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -122,3 +122,16 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Missing album buttons trigger a bounded recovery probe for late artist-page messages and secondary navigation.
 - Artist-to-album resolution automatically retries through the direct source route before surfacing an error.
 - Safe source-surface diagnostics record response text and reply-button labels for future MeloBot UI changes.
+
+
+## Fast Path Architecture v1.5.0
+
+- Replaces repeated `messages.GetHistory` polling with a buffered GramJS `NewMessage` inbox in production.
+- Interactive jobs receive strict queue priority over discovery/crawler work.
+- Heavy crawler media tasks require a much longer user-idle window and metadata crawls no longer download media inline.
+- MeloBot track and album rows carry a live source-state token so immediate user actions can reuse the current source screen.
+- Album opening can click the current live album row directly instead of repeating Search → Track → Artist → Albums.
+- Album bulk download can reuse the current live album page and its native HQ bulk button.
+- Event-driven response quiet windows are reduced from multi-second waits to sub-second settling.
+- Source jobs emit `[perf]` timing logs with queue wait, run time, and total latency for before/after measurement.
+- Polling remains as a compatibility fallback for tests or clients where the event inbox is not installed.
