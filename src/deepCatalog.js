@@ -445,9 +445,13 @@ export class DeepCatalog {
     const artistName = clean(artist);
     if (!artistName) return [];
 
-    const order = listType === 'recent'
-      ? 't.release_date DESC NULLS LAST, t.updated_at DESC'
-      : 't.popularity_count DESC NULLS LAST, t.updated_at DESC';
+    const recentMode = listType === 'recent';
+    const evidenceClause = recentMode
+      ? 't.release_date IS NOT NULL'
+      : 't.popularity_count IS NOT NULL';
+    const order = recentMode
+      ? 't.release_date DESC, t.updated_at DESC'
+      : 't.popularity_count DESC, t.updated_at DESC';
 
     const result = await db.query(`
       SELECT
@@ -464,6 +468,7 @@ export class DeepCatalog {
         t.source_data
       FROM deep_tracks t
       WHERE LOWER(t.artist) = LOWER($1)
+        AND ${evidenceClause}
       ORDER BY ${order}
       LIMIT $2
     `, [artistName, Math.max(1, Number(limit || 10))]);
