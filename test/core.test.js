@@ -39,6 +39,7 @@ const {
   normalizeText,
   hasAlbumIntent,
   hasSpecificAlbumTitle,
+  albumTitleAppearsInQuery,
 } = await import('../src/text.js');
 
 test('MeloBot parser extracts artist, title and popularity', () => {
@@ -415,4 +416,45 @@ test('Ahangify track pages label HQ fallback as best available quality', () => {
 test('busy sessions outlive normal browsing sessions', () => {
   assert.ok(BUSY_SESSION_TTL_MS > SESSION_TTL_MS);
   assert.ok(BUSY_SESSION_TTL_MS >= 60 * 60 * 1000);
+});
+
+
+test('generic album query stays generic when source artist is transliterated', () => {
+  assert.equal(
+    hasSpecificAlbumTitle(
+      'آلبوم احسان خواجه امیری',
+      'Ehsan Khajeamiri',
+      ['In Roozha', 'Paeiz Tanhaei']
+    ),
+    false
+  );
+});
+
+test('specific album title is detected even when artist scripts differ', () => {
+  assert.equal(
+    albumTitleAppearsInQuery(
+      'آلبوم احسان خواجه امیری In Roozha',
+      'In Roozha'
+    ),
+    true
+  );
+  assert.equal(
+    hasSpecificAlbumTitle(
+      'آلبوم احسان خواجه امیری In Roozha',
+      'Ehsan Khajeamiri',
+      ['In Roozha', 'Paeiz Tanhaei']
+    ),
+    true
+  );
+});
+
+test('misspelled extra title words do not silently become an all-albums query', () => {
+  assert.equal(
+    hasSpecificAlbumTitle(
+      'album Ehsan Khajeamiri Wrong Album Name',
+      'Ehsan Khajeamiri',
+      ['In Roozha', 'Paeiz Tanhaei']
+    ),
+    true
+  );
 });
