@@ -1302,3 +1302,20 @@ test('typed search splits counted disc rows into artist and album without changi
   assert.equal(listingRow.artist, undefined);
   assert.equal(listingRow.title, 'Mojaz, Vol. 2');
 });
+
+
+test('exact high-confidence track rows skip the album probe for lower latency', async () => {
+  const client = new FakeTelegramClient({});
+  const track = parseTrackButton('🎵 Artist, Real Song x 1.2M');
+
+  const classified = await classifyMeloBotTypedSearchExact(
+    client,
+    'Artist Real Song',
+    { tracks: [track], albums: [] }
+  );
+
+  assert.equal(classified.exactProbe, 'skipped_confident_track');
+  assert.equal(classified.tracks.length, 1);
+  assert.equal(classified.albums.length, 0);
+  assert.deepEqual(client.sent, []);
+});
