@@ -1704,27 +1704,42 @@ export async function downloadMeloBotBulkTracks(client, {
   };
 }
 
-export async function downloadMeloBotTopTracks(client, artistContext) {
+export async function downloadMeloBotTopTracks(
+  client,
+  artistContext,
+  { timeoutMs = 12000 } = {}
+) {
   return downloadMeloBotBulkTracks(client, {
     button: artistContext.bulkHighButton,
     label: 'top tracks',
     expectedCount: artistContext.topTracks?.length || artistContext.tracks?.length || 0,
+    timeoutMs,
   });
 }
 
-export async function downloadMeloBotRecentTracks(client, artistContext) {
+export async function downloadMeloBotRecentTracks(
+  client,
+  artistContext,
+  { timeoutMs = 12000 } = {}
+) {
   return downloadMeloBotBulkTracks(client, {
     button: artistContext.recentBulkHighButton,
     label: 'recent tracks',
     expectedCount: artistContext.recentTracks?.length || artistContext.tracks?.length || 0,
+    timeoutMs,
   });
 }
 
-export async function downloadMeloBotAlbumTracks(client, albumContext) {
+export async function downloadMeloBotAlbumTracks(
+  client,
+  albumContext,
+  { timeoutMs = 12000 } = {}
+) {
   return downloadMeloBotBulkTracks(client, {
     button: albumContext.bulkHighButton,
     label: `album ${albumContext.album?.title || ''}`,
     expectedCount: albumContext.tracks?.length || 0,
+    timeoutMs,
   });
 }
 
