@@ -13,7 +13,10 @@ import {
   messageText,
 } from '../mtproto.js';
 
-let sourceStateVersion = 0;
+// State tokens may leak into short-lived catalog/session JSON. Seed the
+// counter from wall-clock time so a process restart cannot accidentally reuse
+// an old token and treat a stale MeloBot reply-keyboard row as still clickable.
+let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
 export function getMeloBotStateVersion() {
   return sourceStateVersion;
