@@ -801,7 +801,7 @@ export const sourceQueue = new SerialQueue(async job => {
         // arrived just after the crawler was claimed, give the stateful
         // MeloBot lane back before starting the crawl instead of making that
         // foreground request wait several seconds.
-        await new Promise(resolve => setTimeout(resolve, 600));
+        await new Promise(resolve => setTimeout(resolve, 1200));
         if (hasPendingForegroundSourceWork()) {
           await deepCatalog.deferTask(
             job.task?.id,
@@ -1253,7 +1253,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotRecentTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: attempt === 0 ? 12000 : 18000 }
+                { timeoutMs: attempt === 0 ? 9000 : 14000 }
               );
               lastError = null;
               break;
@@ -1391,7 +1391,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotTopTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: attempt === 0 ? 12000 : 18000 }
+                { timeoutMs: attempt === 0 ? 9000 : 14000 }
               );
               lastError = null;
               break;
@@ -1530,7 +1530,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: attempt === 0 ? 12000 : 18000 }
+                { timeoutMs: attempt === 0 ? 9000 : 14000 }
               );
               lastError = null;
               break;
