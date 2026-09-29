@@ -271,6 +271,10 @@ function isControl(text) {
   return CONTROL_WORDS.some(word => value.includes(word));
 }
 
+function isExplicitTrackButton(rawText = '') {
+  return /^[🎵🎶🎧]/u.test(clean(rawText));
+}
+
 function looksLikeAlbumButton(rawText) {
   const value = toAsciiDigits(stripLeadingEmoji(rawText));
   return /^.+?\s*\(\d+\)\s*$/u.test(value);
@@ -296,7 +300,8 @@ function isGenericAlbumNavigationText(rawText = '') {
 
 export function parseTrackButton(rawText, fallbackArtist = '') {
   const original = clean(rawText);
-  if (!original || isControl(original) || looksLikeAlbumButton(original)) return null;
+  if (!original || isControl(original)) return null;
+  if (!isExplicitTrackButton(original) && looksLikeAlbumButton(original)) return null;
   if (/^[🗣🎤🎙]/u.test(original)) return null;
   if (/^[💿📀]/u.test(original)) return null;
 
@@ -422,6 +427,8 @@ export function parseAlbumButton(rawText) {
 }
 
 function parseSearchAlbumButton(rawText) {
+  if (isExplicitTrackButton(rawText)) return null;
+
   const album = parseAlbumButton(rawText);
   if (!album || album.artist || !/^[💿📀]/u.test(clean(rawText))) return album;
 
