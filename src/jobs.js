@@ -1234,6 +1234,7 @@ export const sourceQueue = new SerialQueue(async job => {
             : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null));
 
         await syncArtistContext(session.artistContext);
+        try { await deepCatalog.clearCapabilityFailure(seed, 'hasArtistPage'); } catch {}
         session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
         session.artistBack = 'trt';
         session.albums = null;
