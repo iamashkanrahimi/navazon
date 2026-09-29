@@ -37,7 +37,11 @@ import {
   getTrackInfoText,
   getTrackAlbum,
 } from './trackActions.js';
-import { hasAlbumIntent, hasSpecificAlbumTitle } from './text.js';
+import {
+  hasAlbumIntent,
+  hasSpecificAlbumTitle,
+  albumTitleAppearsInQuery,
+} from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
@@ -185,9 +189,14 @@ async function searchAlbumOptions(query, tracks = []) {
         });
 
         const matched = direct.albums.filter(album =>
-          albumQueryMatches(query, direct.artist, album.title)
+          albumTitleAppearsInQuery(query, album.title)
+          || albumQueryMatches(query, direct.artist, album.title)
         );
-        const specificAlbum = hasSpecificAlbumTitle(query, direct.artist);
+        const specificAlbum = hasSpecificAlbumTitle(
+          query,
+          direct.artist,
+          direct.albums.map(album => album.title)
+        );
         const visible = specificAlbum ? matched : direct.albums;
 
         albums = mergeAlbumResults(
