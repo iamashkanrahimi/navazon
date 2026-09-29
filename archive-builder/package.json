@@ -4,9 +4,7 @@
   "private": true,
   "type": "module",
   "description": "One-shot Radio Javan metadata archive harvester for Navazon.",
-  "engines": {
-    "node": ">=20"
-  },
+  "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test",
     "check": "node --check src/prepare-snapshot.js && node --check src/rj-client.js && node --check src/catalog.js && node --check src/harvest.js && node --check src/pilot.js && node --check src/run-shard.js && node --check src/merge.js",
@@ -14,7 +12,6 @@
     "snapshot": "node src/inspect-snapshot.js",
     "pilot": "node src/pilot.js --limit 50",
     "shard": "node src/run-shard.js",
-    "merge": "node src/merge.js",
-    "snapshot:build": "node src/build-snapshot.js"
+    "merge": "node src/merge.js"
   }
 }

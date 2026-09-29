@@ -1,4 +1,4 @@
-import { canonicalMatchKey, cleanText, normalizeText, selectReleaseDate, splitArtistNames, stableJsonHash, truthyBool } from './utils.js';
+import { canonicalMatchKey, cleanText, selectReleaseDate, splitArtistNames, stableJsonHash, truthyBool } from './utils.js';
 
 function artistTags(raw = {}) {
   if (Array.isArray(raw.artist_tags)) return raw.artist_tags;
@@ -75,27 +75,6 @@ export function normalizeSongResponse(raw = {}, { sourceUrl, sourceSlug, rawText
     lyrics_available: Boolean(lyrics != null && String(lyrics).trim()),
     lyrics_status: lyrics != null && String(lyrics).trim() ? 'available' : 'not_provided',
     lyrics_synced: jsonValue(raw.lyric_synced),
-    lyrics_integrity: (() => {
-      const textLines = (lyrics == null ? '' : String(lyrics))
-        .split(/\r?\n/).map(cleanText).filter(x => x && x !== '-');
-      const syncedLines = Array.isArray(raw.lyric_synced)
-        ? raw.lyric_synced.map(x => cleanText(x?.text || '')).filter(Boolean)
-        : [];
-      const textLast = textLines.at(-1) || null;
-      const syncedLast = syncedLines.at(-1) || null;
-      return {
-        text_line_count: textLines.length,
-        synced_line_count: syncedLines.length,
-        synced_present: syncedLines.length > 0,
-        last_line_matches: syncedLines.length > 0 && textLast != null
-          ? normalizeText(textLast) === normalizeText(syncedLast)
-          : null,
-        suspicious: Boolean(
-          (syncedLines.length > 0 && textLines.length === 0) ||
-          (syncedLines.length > 0 && textLast && normalizeText(textLast) !== normalizeText(syncedLast))
-        ),
-      };
-    })(),
     credits: cleanText(raw.credits || '') || null,
     credits_list: jsonValue(raw.credits_list),
     credit_tags: Array.isArray(raw.credit_tags) ? raw.credit_tags : [],
