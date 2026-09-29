@@ -326,13 +326,38 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
         const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
         const key = bulkTrackKey(track);
         mediaByTrack.set(key, media);
+
+        const performer = clean(media?.performer || '');
+        const canonicalTrack = track.artistInferred && performer
+          ? { ...track, artist: performer, artistInferred: false }
+          : track;
+
+        if (canonicalTrack.artistInferred) {
+          console.warn(
+            `[${label} cache skipped]`,
+            track.title,
+            'primary artist is still inferred'
+          );
+          continue;
+        }
+
         try {
           await Promise.all([
-            cache.set(track, media, { sourceFetch: true }),
-            deepCatalog.setMedia(track, 'hq', media, { source: 'melobot', satisfiedBy: label }),
+            cache.set(canonicalTrack, media, { sourceFetch: true }),
+            deepCatalog.setMedia(
+              canonicalTrack,
+              'hq',
+              media,
+              { source: 'melobot', satisfiedBy: label }
+            ),
           ]);
         } catch (err) {
-          console.warn(`[${label} cache]`, track.artist, track.title, err.message);
+          console.warn(
+            `[${label} cache]`,
+            canonicalTrack.artist,
+            canonicalTrack.title,
+            err.message
+          );
         }
       }
     } catch (err) {
