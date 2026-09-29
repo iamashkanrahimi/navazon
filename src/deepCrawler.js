@@ -14,10 +14,12 @@ import {
   listMeloBotAlbums,
   resolveMeloBotAlbums,
   resolveMeloBotArtistAlbums,
+  resolveMeloBotArtistAlbumsDirectFirst,
   matchBulkAudioToTracks,
   openMeloBotAlbum,
   openMeloBotAlbumContext,
   openMeloBotAlbumByTitle,
+  openMeloBotAlbumRobustByTitle,
   openMeloBotArtistFresh,
   prepareMeloBotBulkAlbum,
   prepareMeloBotBulkRecentTracks,
@@ -624,21 +626,29 @@ async function runAlbumDetail(task) {
   const { artist, album, seedTrack = null } = task.payload || {};
   if (!artist || !album?.title) throw new Error('Album detail task is incomplete.');
 
-  const resolved = await resolveMeloBotArtistAlbums(
+  const resolved = await resolveMeloBotArtistAlbumsDirectFirst(
     tg,
     artist,
     seedTrack,
-    { allowEmpty: true }
+    {
+      allowEmpty: true,
+      maxAlbums: 40,
+      directTimeoutMs: 3500,
+    }
   );
   const albums = resolved.albums;
   const target = albums.find(item =>
     deepNormalize(item.title) === deepNormalize(album.title)
   ) || album;
-  const albumContext = await openMeloBotAlbumByTitle(
+  const albumContext = await openMeloBotAlbumRobustByTitle(
     tg,
     resolved.artist,
     target.title,
-    resolved.seed || seedTrack || null
+    {
+      album: target,
+      timeoutMs: 3500,
+      maxPages: 8,
+    }
   );
   const tracks = albumContext.tracks;
 
