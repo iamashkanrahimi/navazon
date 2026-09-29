@@ -3363,8 +3363,19 @@ export async function openMeloBotAlbumByTitle(
   throw new Error(`MeloBot album was not found: ${albumTitle}`);
 }
 
-export async function listMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
-  const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty });
+export async function listMeloBotAlbums(
+  client,
+  artistContext,
+  {
+    allowEmpty = false,
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
+) {
+  const resolved = await resolveMeloBotAlbums(
+    client,
+    artistContext,
+    { allowEmpty, timeoutMs }
+  );
   console.log(
     `[melobot] albums for ${artistContext.artist}: ${resolved.albums.length}`
     + (resolved.complete ? '' : ' (partial)')
