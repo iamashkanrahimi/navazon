@@ -418,6 +418,31 @@ export function parseAlbumButton(rawText) {
   return null;
 }
 
+function parseSearchAlbumButton(rawText) {
+  const album = parseAlbumButton(rawText);
+  if (!album || album.artist || !/^[💿📀]/u.test(clean(rawText))) return album;
+
+  const body = toAsciiDigits(stripLeadingEmoji(rawText))
+    .replace(/\s*\(\d+\)\s*$/u, '')
+    .trim();
+
+  const comma = body.indexOf(',');
+  if (comma > 0) {
+    const artist = clean(body.slice(0, comma));
+    const title = clean(body.slice(comma + 1));
+    if (artist && title) return { ...album, artist, title };
+  }
+
+  const dashed = body.match(/^(.+?)\s+[–—-]\s+(.+)$/u);
+  if (dashed) {
+    const artist = clean(dashed[1]);
+    const title = clean(dashed[2]);
+    if (artist && title) return { ...album, artist, title };
+  }
+
+  return album;
+}
+
 function parseAlbumButtons(messages = []) {
   const albums = [];
   const seen = new Set();
@@ -510,7 +535,7 @@ export function parseMeloBotSearchSurface(messages = [], fallbackArtist = '') {
   const albumSeen = new Set();
 
   for (const rawText of buttonsFromMessages(messages)) {
-    const album = parseAlbumButton(rawText);
+    const album = parseSearchAlbumButton(rawText);
     if (!album) continue;
     const key = `${normalize(album.artist || '')}|${normalize(album.title)}`;
     if (!normalize(album.title) || albumSeen.has(key)) continue;
