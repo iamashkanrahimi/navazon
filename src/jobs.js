@@ -731,7 +731,12 @@ export const sourceQueue = new SerialQueue(async job => {
             }
           );
 
-          liveAlbum = opened.album;
+          liveAlbum = {
+            ...opened.album,
+            bulkHighButton: opened.bulkHighButton || null,
+            bulkNormalButton: opened.bulkNormalButton || null,
+            sourceStateVersion: opened.sourceStateVersion ?? getMeloBotStateVersion(),
+          };
           tracks = opened.tracks;
           resolvedArtistName = opened.artist || album.artist;
           session.artistSeed = opened.seed || session.artistSeed || seed || null;
