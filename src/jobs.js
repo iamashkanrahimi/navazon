@@ -1084,13 +1084,32 @@ export const sourceQueue = new SerialQueue(async job => {
                 || session.currentTrack
                 || null;
 
-              albumContext = await openMeloBotAlbumByTitle(
-                tg,
-                artist,
-                albumTitle,
-                preferredSeed
+              const canUseLiveAlbumPage = Boolean(
+                attempt === 0
+                && session.currentAlbum?.bulkHighButton
+                && Number(session.currentAlbum?.sourceStateVersion || -1) === getMeloBotStateVersion()
               );
-              session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
+
+              if (canUseLiveAlbumPage) {
+                albumContext = {
+                  artist,
+                  album: session.currentAlbum,
+                  tracks: session.currentAlbum.tracks || requestedTracks,
+                  bulkHighButton: session.currentAlbum.bulkHighButton,
+                  bulkNormalButton: session.currentAlbum.bulkNormalButton || null,
+                  sourceStateVersion: session.currentAlbum.sourceStateVersion,
+                };
+                console.log('[fastpath] album_bulk=current_album_page');
+              } else {
+                albumContext = await openMeloBotAlbumByTitle(
+                  tg,
+                  artist,
+                  albumTitle,
+                  preferredSeed
+                );
+                session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
+              }
+
               if (!albumContext.bulkHighButton) {
                 throw new Error('MeloBot bulk HQ button was not found on the album page.');
               }
@@ -1110,6 +1129,9 @@ export const sourceQueue = new SerialQueue(async job => {
             ...albumContext.album,
             artist: albumContext.artist,
             tracks: albumContext.tracks,
+            bulkHighButton: albumContext.bulkHighButton || null,
+            bulkNormalButton: albumContext.bulkNormalButton || null,
+            sourceStateVersion: albumContext.sourceStateVersion ?? getMeloBotStateVersion(),
           };
 
           await syncAlbumTracks(
