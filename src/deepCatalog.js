@@ -46,9 +46,15 @@ export class DeepCatalog {
     if (aliasKey === canonicalKey) return canonicalTrack;
     if (aliasTrack?.artistInferred || canonicalTrack?.artistInferred) return canonicalTrack;
 
-    await this.upsertTrack(canonicalTrack, {
-      discoveredFrom: 'canonical-alias',
-    });
+    const existingCanonical = await db.query(
+      'SELECT 1 FROM deep_tracks WHERE track_key = $1 LIMIT 1',
+      [canonicalKey]
+    );
+    if (!existingCanonical.rowCount) {
+      await this.upsertTrack(canonicalTrack, {
+        discoveredFrom: 'canonical-alias',
+      });
+    }
 
     await db.query(`
       INSERT INTO track_aliases (
