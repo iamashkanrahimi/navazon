@@ -1265,7 +1265,7 @@ export const sourceQueue = new SerialQueue(async job => {
       await bot.editMessageText(
         session.chatId,
         job.messageId,
-        `${session.artistContext.artist}\n🆕 جدیدترین آهنگ‌ها`,
+        `${session.artistContext.artist}\n🆕 جدیدترین آثار`,
         {
           reply_markup: artistSongsKeyboard(
             job.sessionId,
@@ -1384,7 +1384,7 @@ export const sourceQueue = new SerialQueue(async job => {
       await bot.editMessageText(
         session.chatId,
         job.messageId,
-        `${session.artistContext.artist}\n🎵 پربازدیدترین آهنگ‌ها`,
+        `${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,
         {
           reply_markup: artistSongsKeyboard(job.sessionId, tracks, { mode: 'top' }),
         }
