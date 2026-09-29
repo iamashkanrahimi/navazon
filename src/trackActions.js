@@ -119,8 +119,12 @@ async function sendAudioMedia(chatId, track, media) {
   }
   await bot.sendAudio(chatId, media.fileId, {
     caption: minimalBrandCaption(),
-    ...(track.title ? { title: track.title } : {}),
-    ...(track.artist && !track.artistInferred ? { performer: track.artist } : {}),
+    ...(track.title ? { title: track.title } : media.title ? { title: media.title } : {}),
+    ...(track.artist && !track.artistInferred
+      ? { performer: track.artist }
+      : media.performer
+        ? { performer: media.performer }
+        : {}),
     ...(media.duration ? { duration: media.duration } : {}),
   });
 }
