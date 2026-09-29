@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.1 — Instant Search & Album Open
+# Navazon Cloud v1.5.2 — Instant Albums List
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -145,3 +145,14 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - If the quick direct route is unavailable, the robust fallback remains direct-first and performs at most one seed-navigation recovery path.
 - Repeatedly failing primary Artist → Albums routes are circuit-broken per artist for 10 minutes to avoid paying the same timeout again.
 - Search and album-open phase telemetry is emitted so live latency can be measured separately from queue time.
+
+
+## Instant Albums List v1.5.2
+
+- Reuses a still-live album control/listing from the exact artist source surface when safe.
+- Falls back to a direct-first album listing route instead of paying the slow Artist → Albums timeout first.
+- Only if direct-first fails does the existing primary route run, and its own direct retry is suppressed to avoid duplicate work.
+- Album rows returned by the direct-first path remain live, so opening an album immediately afterward can use the existing current-listing fast path.
+- Artist sorting now records the final source keyboard separately from stale base-page controls.
+- Artist sort/navigation buttons are explicitly rejected by the track parser, preventing them from being mistaken for title-only songs.
+- Adds dedicated Albums telemetry with route, cache time, source time, total time, and album count.
