@@ -187,7 +187,7 @@ export async function handleUpdate(update) {
         const index = Number(parts[2]);
         if (!session.followedArtists?.[index]) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن خواننده…');
+        await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن صفحه‌ی خواننده…');
         sourceQueue.push({ type: 'home_artist', sessionId, messageId, index });
       } else if (action === 't') {
         const track = session.options[Number(parts[2])]; if (!track) return;
@@ -208,7 +208,7 @@ export async function handleUpdate(update) {
         });
       } else if (action === 'ar') {
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
+        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
         sourceQueue.push({
           type: 'artist',
           sessionId,
@@ -220,7 +220,7 @@ export async function handleUpdate(update) {
         const album = session.albumOptions?.[albumIndex];
         if (!album?.artist) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
+        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
         sourceQueue.push({
           type: 'artist_from_album',
           sessionId,
@@ -369,7 +369,7 @@ export async function handleUpdate(update) {
       } else if (action === 'tar') {
         if (!session.currentTrack) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
+        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
         sourceQueue.push({ type: 'track_artist', sessionId, messageId });
       } else if (action === 'tal') {
         if (!session.currentTrack) return;
