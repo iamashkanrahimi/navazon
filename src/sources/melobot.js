@@ -1987,9 +1987,14 @@ export async function prepareMeloBotBulkRecentTracks(client, artist, preferredSe
   return context;
 }
 
-export async function openMeloBotAlbumContext(client, artist, album) {
+export async function openMeloBotAlbumContext(
+  client,
+  artist,
+  album,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
   const page = await sendAndCollect(client, album.rawText, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 650,
     stopWhen: message => {
       const buttons = replyButtons(message);
@@ -2615,7 +2620,8 @@ export async function openMeloBotAlbumDirectByTitle(
       const context = await openMeloBotAlbumContext(
         client,
         resolvedArtist,
-        target
+        target,
+        { timeoutMs }
       );
       return {
         ...context,
@@ -2661,7 +2667,12 @@ export async function openMeloBotAlbumRobustByTitle(
     && Number(album?.sourceStateVersion || -1) === Number(sourceStateVersion)
   ) {
     try {
-      const context = await openMeloBotAlbumContext(client, artist, album);
+      const context = await openMeloBotAlbumContext(
+        client,
+        artist,
+        album,
+        { timeoutMs }
+      );
       return { ...context, route: 'live_album_row' };
     } catch (err) {
       errors.push(`live_row=${err.message}`);
@@ -2707,7 +2718,8 @@ export async function openMeloBotAlbumRobustByTitle(
         const context = await openMeloBotAlbumContext(
           client,
           resolvedArtist,
-          candidate
+          candidate,
+          { timeoutMs }
         );
         return {
           ...context,
