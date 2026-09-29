@@ -1466,60 +1466,31 @@ export const sourceQueue = new SerialQueue(async job => {
               console.warn('[album direct title fastpath]', album.title, directError.message);
 
               const fallbackStartedAt = Date.now();
-              const resolved = seed
-                ? await resolveMeloBotArtistAlbums(
-                    tg,
-                    session.artistContext.artist,
-                    seed,
-                    { allowEmpty: true }
-                  )
-                : await resolveArtistAlbumsDirect(
-                    session.artistContext.artist,
-                    { maxAlbums: 30 }
-                  );
 
-              session.artistSeed = resolved.seed || session.artistSeed || seed || null;
-              resolvedArtist = resolved.artist;
-              liveAlbum = resolved.albums.find(item =>
-                normalize(item.title) === normalize(album.title)
+              // Stay on the direct-first route even for the robust fallback.
+              // This avoids the known slow Artist -> Albums primary path and,
+              // unlike resolving a whole discography first, clicks the target
+              // row while the correct source page is still live.
+              openedAlbumContext = await openMeloBotAlbumDirectByTitle(
+                tg,
+                session.artistContext.artist,
+                album.title,
+                {
+                  timeoutMs: config.searchTimeoutMs,
+                  maxPages: 12,
+                  allowSeedFallback: true,
+                }
               );
-              if (!liveAlbum) {
-                throw new Error(`Album not found in current MeloBot listing: ${album.title}`);
-              }
-
-              const canOpenResolvedRowDirectly = Boolean(
-                liveAlbum.rawText
-                && Number(liveAlbum.sourceStateVersion || -1) === getMeloBotStateVersion()
-              );
-
-              if (canOpenResolvedRowDirectly) {
-                openedAlbumContext = await openMeloBotAlbumContext(
-                  tg,
-                  resolvedArtist,
-                  liveAlbum
-                );
-              } else {
-                openedAlbumContext = await openMeloBotAlbumByTitle(
-                  tg,
-                  resolvedArtist,
-                  liveAlbum.title,
-                  session.artistSeed || seed || null
-                );
-              }
 
               resolvedArtist = openedAlbumContext.artist;
               liveAlbum = openedAlbumContext.album;
               tracks = openedAlbumContext.tracks;
               session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
-              await syncAlbumIndex(resolvedArtist, resolved.albums, {
-                complete: Boolean(resolved.complete),
-                emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
-              });
               await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
 
               console.log(
-                `[perf.album_open] direct_ms=${directMs} fallback_ms=${Date.now() - fallbackStartedAt} `
-                + `resolved_row_direct=${canOpenResolvedRowDirectly}`
+                `[perf.album_open] direct_ms=${directMs} `
+                + `robust_direct_ms=${Date.now() - fallbackStartedAt}`
               );
             }
           }
