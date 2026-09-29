@@ -128,11 +128,39 @@ export function followedArtistsKeyboard(sessionId, artists = []) {
 }
 
 export function resultsKeyboard(sessionId, session) {
-  const dominant = dominantArtist(session.options || []);
-  const artist = dominant && artistShortcutMatchesQuery(session.query, dominant)
-    ? dominant
-    : null;
-  const trackRows = (session.options || []).map((track,index) => ([{
+  const tracks = session.options || [];
+  const queryKey = normalize(session.query || '');
+  const exactArtistSeedIndex = !hasAlbumIntent(session.query)
+    ? tracks.findIndex(track =>
+        track?.source === 'melobot'
+        && !track?.artistInferred
+        && normalize(track.artist || '') === queryKey
+      )
+    : -1;
+
+  const dominant = dominantArtist(tracks);
+  const matchingArtists = new Set(
+    tracks
+      .filter(track =>
+        track?.source === 'melobot'
+        && !track?.artistInferred
+        && artistShortcutMatchesQuery(session.query, track.artist || '')
+      )
+      .map(track => normalize(track.artist || ''))
+      .filter(Boolean)
+  );
+
+  const artist = exactArtistSeedIndex >= 0
+    ? tracks[exactArtistSeedIndex].artist
+    : (
+        dominant
+        && matchingArtists.size === 1
+        && artistShortcutMatchesQuery(session.query, dominant)
+          ? dominant
+          : null
+      );
+
+  const trackRows = tracks.map((track,index) => ([{
     text: trackButtonLabel(track,index,{ numbered: true }),
     callback_data: `t:${sessionId}:${index}`,
   }]));
@@ -147,8 +175,14 @@ export function resultsKeyboard(sessionId, session) {
     : [...trackRows, ...albumRows];
 
   const artistSeedIndex = artist
-    ? session.options.findIndex(t =>
-        t.source === 'melobot' && normalize(t.artist || '') === normalize(artist)
+    ? (
+        exactArtistSeedIndex >= 0
+          ? exactArtistSeedIndex
+          : tracks.findIndex(t =>
+              t.source === 'melobot'
+              && !t.artistInferred
+              && normalize(t.artist || '') === normalize(artist)
+            )
       )
     : -1;
   if (artistSeedIndex >= 0) {
