@@ -283,6 +283,14 @@ function looksLikeAlbumNavigationText(rawText = '') {
   return /^[💿📀]\s*$/u.test(text);
 }
 
+function isGenericAlbumNavigationText(rawText = '') {
+  const body = normalize(stripLeadingEmoji(rawText));
+  return /^(?:آلبوم|البوم)(?: ها| های)?$/u.test(body)
+    || /^albums?$/iu.test(body)
+    || /^(?:دیسکوگرافی|discography)$/iu.test(body)
+    || /^(?:مشاهده|لیست|list|view)\s+(?:آلبوم|البوم|albums?)(?: ها| های)?$/iu.test(body);
+}
+
 export function parseTrackButton(rawText, fallbackArtist = '') {
   const original = clean(rawText);
   if (!original || isControl(original) || looksLikeAlbumButton(original)) return null;
@@ -348,7 +356,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
 
 export function parseAlbumButton(rawText) {
   const original = clean(rawText);
-  if (!original || isControl(original) || looksLikeAlbumNavigationText(original)) return null;
+  if (!original || isControl(original)) return null;
 
   const value = toAsciiDigits(stripLeadingEmoji(original));
   const counted = value.match(/^(.+?)\s*\((\d+)\)\s*$/u);
@@ -365,7 +373,7 @@ export function parseAlbumButton(rawText) {
   // MeloBot search surfaces sometimes expose album rows with a disc icon but
   // without the usual "(track count)" suffix. Keep them typed as albums so a
   // comma or dash inside the label can never turn them into fake tracks.
-  if (/^[💿📀]/u.test(original)) {
+  if (/^[💿📀]/u.test(original) && !isGenericAlbumNavigationText(original)) {
     const body = clean(stripLeadingEmoji(original));
     if (!body) return null;
 
