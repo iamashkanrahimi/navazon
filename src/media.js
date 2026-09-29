@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { bot, bridge, cache, tg } from './runtime.js';
+import { bot, bridge, cache, deepCatalog, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
@@ -28,6 +28,19 @@ export function sourceCandidateToTrack(candidate) {
   if (candidate.source === 'melobot') return candidate;
   const parsed = splitAhangifyTitle(candidate.title);
   return applyPolicyDefaults({ ...candidate, artist: parsed.artist, title: parsed.title });
+}
+
+export function canonicalTrackFromAudioMetadata(track = {}, media = {}) {
+  const performer = String(media?.performer || '').replace(/\s+/g, ' ').trim();
+  const title = String(media?.title || '').replace(/\s+/g, ' ').trim();
+  if (!performer || !title || track?.artistInferred) return track;
+
+  return applyPolicyDefaults({
+    ...track,
+    artist: performer,
+    title,
+    artistInferred: false,
+  });
 }
 
 export function assertDeliveryAllowed(track, userRegion = 'unknown') {
@@ -70,10 +83,27 @@ export async function bridgeSourceMessage(
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
 
-  const performer = String(media?.performer || '').trim();
-  const durableTrack = track?.artistInferred && performer
-    ? { ...track, artist: performer, artistInferred: false }
-    : track;
+  const originalTrack = { ...track };
+  const durableTrack = canonicalTrackFromAudioMetadata(track, media);
+
+  if (
+    durableTrack?.artist
+    && durableTrack?.title
+    && (
+      normalizeText(durableTrack.artist) !== normalizeText(originalTrack.artist || '')
+      || normalizeText(durableTrack.title) !== normalizeText(originalTrack.title || '')
+    )
+  ) {
+    try {
+      await deepCatalog.setTrackAlias(originalTrack, durableTrack, {
+        source: originalTrack.source || sourceUsername,
+        evidence: 'telegram_audio_metadata',
+      });
+    } catch (err) {
+      console.warn('[track alias learn]', err.message);
+    }
+    Object.assign(track, durableTrack);
+  }
 
   if (!durableTrack?.artistInferred) {
     await cache.set(durableTrack,media,{ sourceFetch: true });
