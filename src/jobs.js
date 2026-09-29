@@ -1473,14 +1473,14 @@ export const sourceQueue = new SerialQueue(async job => {
                 };
                 console.log('[fastpath] album_bulk=current_album_page');
               } else {
-                albumContext = await openMeloBotAlbumDirectByTitle(
+                albumContext = await openMeloBotAlbumRobustByTitle(
                   tg,
                   artist,
                   albumTitle,
                   {
-                    timeoutMs: 6000,
-                    maxPages: 12,
-                    allowSeedFallback: true,
+                    album: session.currentAlbum,
+                    timeoutMs: 4500,
+                    maxPages: 8,
                   }
                 );
                 session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
@@ -1541,7 +1541,11 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       } catch (err) {
         console.warn('[native bulk album failed]', err.message);
-        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        const fallback = await deliverBulkIndividuallyHq(session, requestedTracks, {
+          label: 'album individual HQ',
+          sourceTimeoutMs: 6000,
+          totalBudgetMs: 25000,
+        });
         sent = fallback.sent;
         missing = fallback.missing;
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
