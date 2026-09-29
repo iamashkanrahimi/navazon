@@ -101,9 +101,12 @@ export class DeepCatalog {
   async setArtistList(artist, listType, tracks = []) {
     const artistKey = deepNormalize(artist);
     if (!artistKey) return;
+    const durableTracks = (tracks || []).filter(track => !track?.artistInferred);
+    if (!durableTracks.length) return;
+
     await db.query('DELETE FROM deep_artist_tracks WHERE artist_key = $1 AND list_type = $2', [artistKey, listType]);
 
-    const rows = await Promise.all((tracks || []).map(async (track, index) => {
+    const rows = await Promise.all(durableTracks.map(async (track, index) => {
       const trackKey = await this.upsertTrack(track, { discoveredFrom: `artist:${listType}` });
       return trackKey ? { trackKey, rank: index + 1 } : null;
     }));
@@ -424,21 +427,23 @@ export class DeepCatalog {
       LIMIT $3
     `, [artistKey, listType, Math.max(1, Number(limit || 10))]);
 
-    return result.rows.map(row => ({
-      artist: row.artist,
-      title: row.title,
-      album: row.album || undefined,
-      durationSeconds: row.duration_seconds || undefined,
-      sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
-      sourcePopularityText: row.popularity_text || undefined,
-      contentOrigin: row.content_origin || 'unknown',
-      availabilityPolicy: row.availability_policy || 'unknown',
-      ...(row.source_data || {}),
-      source: row.source_data?.source || 'melobot',
-      rawText: row.source_data?.rawText || undefined,
-      artistInferred: Boolean(row.source_data?.artistInferred)
-        || inferredArtistFromFeaturedTitle(row.artist, row.title),
-    }));
+    return result.rows
+      .map(row => ({
+        artist: row.artist,
+        title: row.title,
+        album: row.album || undefined,
+        durationSeconds: row.duration_seconds || undefined,
+        sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+        sourcePopularityText: row.popularity_text || undefined,
+        contentOrigin: row.content_origin || 'unknown',
+        availabilityPolicy: row.availability_policy || 'unknown',
+        ...(row.source_data || {}),
+        source: row.source_data?.source || 'melobot',
+        rawText: row.source_data?.rawText || undefined,
+        artistInferred: Boolean(row.source_data?.artistInferred)
+          || inferredArtistFromFeaturedTitle(row.artist, row.title),
+      }))
+      .filter(track => !track.artistInferred);
   }
 
   async deriveArtistList(artist, listType = 'top', limit = 10) {
@@ -473,22 +478,24 @@ export class DeepCatalog {
       LIMIT $2
     `, [artistName, Math.max(1, Number(limit || 10))]);
 
-    return result.rows.map(row => ({
-      artist: row.artist,
-      title: row.title,
-      album: row.album || undefined,
-      durationSeconds: row.duration_seconds || undefined,
-      releaseDate: row.release_date || undefined,
-      sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
-      sourcePopularityText: row.popularity_text || undefined,
-      contentOrigin: row.content_origin || 'unknown',
-      availabilityPolicy: row.availability_policy || 'unknown',
-      ...(row.source_data || {}),
-      source: row.source_data?.source || 'melobot',
-      rawText: row.source_data?.rawText || undefined,
-      artistInferred: Boolean(row.source_data?.artistInferred)
-        || inferredArtistFromFeaturedTitle(row.artist, row.title),
-    }));
+    return result.rows
+      .map(row => ({
+        artist: row.artist,
+        title: row.title,
+        album: row.album || undefined,
+        durationSeconds: row.duration_seconds || undefined,
+        releaseDate: row.release_date || undefined,
+        sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+        sourcePopularityText: row.popularity_text || undefined,
+        contentOrigin: row.content_origin || 'unknown',
+        availabilityPolicy: row.availability_policy || 'unknown',
+        ...(row.source_data || {}),
+        source: row.source_data?.source || 'melobot',
+        rawText: row.source_data?.rawText || undefined,
+        artistInferred: Boolean(row.source_data?.artistInferred)
+          || inferredArtistFromFeaturedTitle(row.artist, row.title),
+      }))
+      .filter(track => !track.artistInferred);
   }
 
   async searchAlbums(query, limit = 4) {
