@@ -59,7 +59,11 @@ export async function resolveTrackIdentity(track) {
   }
 
   try {
-    const resolved = await resolveMeloBotTrackCandidate(tg, track);
+    const resolved = await resolveMeloBotTrackCandidate(
+      tg,
+      track,
+      { timeoutMs: 5000 }
+    );
     if (!resolved?.title) return track;
     return {
       ...track,
@@ -189,7 +193,7 @@ export async function sendTrackLyrics(chatId, track) {
   }
 
   if (!lyrics && track?.source === 'melobot' && track?.rawText) {
-    const result = await getMeloBotLyrics(tg, track);
+    const result = await getMeloBotLyrics(tg, track, { timeoutMs: 6000 });
     if (result.available && result.text) {
       lyrics = result.text;
       await deepCatalog.setLyrics(track, lyrics, 'melobot');
@@ -220,7 +224,7 @@ export async function sendTrackCover(chatId, track) {
   } : null;
 
   if (!media && track?.source === 'melobot' && track?.rawText) {
-    const cover = await getMeloBotCover(tg, track);
+    const cover = await getMeloBotCover(tg, track, { timeoutMs: 6000 });
     if (cover?.photoMessage) {
       media = await captureForwardedMedia(cover.photoMessage);
       if (media.kind === 'photo') {
@@ -245,7 +249,7 @@ export async function getTrackInfoText(track) {
 
   if (needsLive && track?.source === 'melobot' && track?.rawText) {
     try {
-      const patch = await getMeloBotTrackMetadata(tg, track);
+      const patch = await getMeloBotTrackMetadata(tg, track, { timeoutMs: 6000 });
       await deepCatalog.setMetadata(track, patch);
       details = await deepCatalog.getTrackDetails(track);
     } catch (err) {
