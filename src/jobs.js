@@ -102,6 +102,8 @@ async function syncArtistContext(artistContext) {
   if (!artistContext?.artist) return false;
   const topTracks = artistContext.topTracks || artistContext.tracks || [];
   const recentTracks = artistContext.recentTracks || [];
+  const durableTopTracks = topTracks.filter(track => !track?.artistInferred);
+  const durableRecentTracks = recentTracks.filter(track => !track?.artistInferred);
 
   if (!topTracks.length && !recentTracks.length) {
     console.warn('[artist sync skipped]', artistContext.artist, 'empty track context');
@@ -110,16 +112,16 @@ async function syncArtistContext(artistContext) {
 
   const writes = [
     catalog.recordArtist(artistContext.artist, {
-      topTracks,
-      recentTracks,
+      topTracks: durableTopTracks,
+      recentTracks: durableRecentTracks,
       albumButton: artistContext.albumButton || null,
     }),
   ];
-  if (topTracks.length) {
-    writes.push(deepCatalog.setArtistList(artistContext.artist, 'top', topTracks));
+  if (durableTopTracks.length) {
+    writes.push(deepCatalog.setArtistList(artistContext.artist, 'top', durableTopTracks));
   }
-  if (recentTracks.length) {
-    writes.push(deepCatalog.setArtistList(artistContext.artist, 'recent', recentTracks));
+  if (durableRecentTracks.length) {
+    writes.push(deepCatalog.setArtistList(artistContext.artist, 'recent', durableRecentTracks));
   }
 
   const results = await Promise.allSettled(writes);
