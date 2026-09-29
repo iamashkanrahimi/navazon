@@ -314,9 +314,9 @@ export async function handleUpdate(update) {
           await bot.editMessageText(session.chatId,messageId,'در حال دریافت جدیدترین آثار…');
           sourceQueue.push({ type: 'artist_list', mode: 'recent', sessionId, messageId });
         }
-      } else if (action === 'ata' && session.artistContext?.tracks?.length) {
+      } else if (action === 'ata' && session.artistContext?.topTracks?.length) {
         session.busy = true;
-        const tracks = session.artistContext.topTracks || session.artistContext.tracks || [];
+        const tracks = session.artistContext.topTracks || [];
         const count = Math.min(TOP_TRACKS_LIMIT,tracks.length);
         await bot.editMessageText(session.chatId,messageId,`در حال دریافت ${count} آهنگ برتر…`);
         sourceQueue.push({ type: 'download_top', sessionId, messageId });
