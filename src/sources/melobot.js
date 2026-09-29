@@ -799,24 +799,6 @@ async function openMeloBotArtistBase(client, seedTrack) {
   };
 }
 
-async function findArtistSeed(client, artist, preferredSeed = null) {
-  let seed = preferredSeed;
-  try {
-    const results = await searchMeloBot(client, artist);
-    const target = normalize(artist);
-    seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track =>
-        normalize(track.artist).includes(target) ||
-        target.includes(normalize(track.artist))
-      )
-      || seed;
-  } catch (err) {
-    console.warn('[melobot bulk artist seed]', artist, err.message);
-  }
-  if (!seed) throw new Error(`No usable MeloBot seed track found for artist: ${artist}`);
-  return seed;
-}
-
 export async function openMeloBotArtist(client, seedTrack) {
   const base = await openMeloBotArtistBase(client, seedTrack);
   let topTracks = [];
