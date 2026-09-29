@@ -1037,37 +1037,24 @@ async function openTrackMenu(client, candidate) {
   return (await openTrackMenuWithCandidate(client, candidate)).messages;
 }
 
-export async function downloadMeloBotTrack(client, candidate) {
-  const menuMessages = await openTrackMenu(client, candidate);
-
-  const highQualityButton = findButton(menuMessages, text =>
-    text.includes('کیفیت عالی') && !text.includes('خرید اشتراک')
-  );
-
-  if (!highQualityButton) {
-    const response = menuMessages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot HQ button not found. ${response.slice(0, 350)}`);
-  }
-
-  const download = await sendAndCollect(client, highQualityButton, {
-    timeoutMs: config.downloadTimeoutMs,
-    quietMs: 600,
-    stopWhen: isAudioMessage,
-  });
-
-  const audio = download.messages.find(isAudioMessage);
-  if (!audio) {
-    const response = download.messages.map(messageText).filter(Boolean).join('\n');
-    if (/خرید اشتراک|premium|اشتراک/i.test(response)) {
-      throw new Error('MeloBot Premium/HQ access was not recognized for the proxy account.');
+export async function downloadMeloBotTrack(
+  client,
+  candidate,
+  { timeoutMs = 15000 } = {}
+) {
+  const result = await downloadMeloBotTrackQuality(
+    client,
+    candidate,
+    'hq',
+    {
+      timeoutMs,
+      menuTimeoutMs: Math.min(5000, timeoutMs),
     }
-    throw new Error(`MeloBot did not deliver HQ audio. ${response.slice(0, 350)}`);
-  }
-
+  );
   return {
     source: 'melobot',
-    candidate,
-    audioMessage: audio,
+    candidate: result.candidate || candidate,
+    audioMessage: result.audioMessage,
   };
 }
 
@@ -1509,10 +1496,11 @@ export async function inspectMeloBotTrack(client, candidate) {
 }
 
 async function openMeloBotArtistBase(client, seedTrack) {
+  const remaining = sourceBudget(9000, 9000);
   let openedMenu = await openTrackMenuWithCandidate(
     client,
     seedTrack,
-    { timeoutMs: ARTIST_NAV_TIMEOUT_MS }
+    { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
   );
   let menuMessages = openedMenu.messages;
   let effectiveSeed = openedMenu.candidate || seedTrack;
@@ -1536,7 +1524,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
       openedMenu = await openTrackMenuWithCandidate(
         client,
         recoverySeed,
-        { timeoutMs: ARTIST_NAV_TIMEOUT_MS }
+        { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
       );
       menuMessages = openedMenu.messages;
       effectiveSeed = openedMenu.candidate || recoverySeed;
@@ -1567,8 +1555,9 @@ async function openMeloBotArtistBase(client, seedTrack) {
     );
     throw new Error('MeloBot artist button not found.');
   }
+  if (remaining.expired()) throw new Error('MeloBot artist navigation budget exhausted.');
   let artistPage = await sendAndCollect(client, artistButton, {
-    timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+    timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
     quietMs: 650,
   });
 
@@ -1595,8 +1584,9 @@ async function openMeloBotArtistBase(client, seedTrack) {
 
     selectedArtist = chosen.name;
 
+    if (remaining.expired()) throw new Error('MeloBot artist picker budget exhausted.');
     artistPage = await sendAndCollect(client, chosen.rawText, {
-      timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+      timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       quietMs: 750,
     });
   }
