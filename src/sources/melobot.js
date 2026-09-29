@@ -869,6 +869,7 @@ export async function probeMeloBotCandidateSurface(
         bulkHighButton: inspected.bulkHighButton,
         bulkNormalButton: inspected.bulkNormalButton,
         tracks: inspected.tracks,
+        verifiedAlbum: true,
       },
       messages: selected.messages,
       sourceStateVersion,
