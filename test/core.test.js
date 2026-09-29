@@ -2401,3 +2401,26 @@ test('track pages never expose Artist navigation for an inferred primary artist'
   assert.equal(callbacks.includes('tcv:infer1'), true);
   assert.equal(callbacks.includes('tly:infer1'), true);
 });
+
+
+test('query normalization unifies Persian Arabic digits and keyboard variants', () => {
+  assert.equal(normalizeText('بهرام ۲۴ ساعت'), 'بهرام 24 ساعت');
+  assert.equal(normalizeText('بهرام ٢٤ ساعت'), 'بهرام 24 ساعت');
+  assert.equal(normalizeText('علي كريمي'), 'علی کریمی');
+  assert.equal(normalizeText('آلبوم‌های شایع'), 'آلبوم های شایع');
+});
+
+test('query ranking prefers full collaboration coverage over a featured-artist-only hit', () => {
+  const ranked = rankTracksForQuery(
+    'Shayea Ma Ft T-Dey',
+    [
+      { artist: 'T-Dey', title: 'Ye Ja Dige' },
+      { artist: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' },
+      { artist: 'Shayea', title: 'Ma (Ft T-Dey)' },
+    ]
+  );
+
+  assert.equal(ranked[0].track.artist, 'Shayea');
+  assert.equal(ranked[0].track.title, 'Ma (Ft T-Dey)');
+  assert.ok(ranked[0].coverage > ranked[1].coverage);
+});
