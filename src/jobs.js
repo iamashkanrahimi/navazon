@@ -641,8 +641,11 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         const albumOptionsStartedAt = Date.now();
-        options = await deepCatalog.canonicalizeKnownTracks(options);
+        // Relevance must be evaluated against the source spelling before
+        // alias canonicalization. A Persian Ahangify result can fully cover a
+        // Persian query and only then resolve to its Latin MeloBot identity.
         options = keepFullCoverageTracksWhenAvailable(job.query, options);
+        options = await deepCatalog.canonicalizeKnownTracks(options);
 
         const indexedAlbumOptions = await searchAlbumOptions(job.query, options);
         const albumLimit = albumIntent ? 20 : 4;
