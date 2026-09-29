@@ -894,7 +894,8 @@ export const sourceQueue = new SerialQueue(async job => {
           session.chatId,
           session.currentTrack,
           job.quality,
-          session.userRegion || 'unknown'
+          session.userRegion || 'unknown',
+          { sourceTimeoutMs: 15000 }
         );
       } catch (err) {
         console.error('[track quality]', err.message);
@@ -1308,9 +1309,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'download_top') {
       const requestedTracks = (
-        session.artistContext?.topTracks ||
-        session.artistContext?.tracks ||
-        []
+        session.artistContext?.topTracks || []
       ).slice(0, TOP_TRACKS_LIMIT);
       let sent = 0;
       let missing = 0;
@@ -1385,7 +1384,7 @@ export const sourceQueue = new SerialQueue(async job => {
       }
 
       session.busy = false;
-      const tracks = session.artistContext?.topTracks || session.artistContext?.tracks || requestedTracks;
+      const tracks = session.artistContext?.topTracks || requestedTracks;
       await bot.editMessageText(
         session.chatId,
         job.messageId,
