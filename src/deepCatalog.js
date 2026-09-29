@@ -155,6 +155,12 @@ export class DeepCatalog {
     const durableTracks = sourceTracks.filter(track => !track?.artistInferred);
 
     await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
+    await db.query(`
+      UPDATE deep_albums
+      SET metadata = metadata - 'trackListVersion',
+          updated_at = NOW()
+      WHERE album_key = $1
+    `, [albumKey]);
 
     // A title-only album row can inherit the page artist even when the real
     // primary artist is a collaborator. Keep that live list in the session/
@@ -164,12 +170,6 @@ export class DeepCatalog {
       !sourceTracks.length
       || durableTracks.length !== sourceTracks.length
     ) {
-      await db.query(`
-        UPDATE deep_albums
-        SET metadata = metadata - 'trackListVersion',
-            updated_at = NOW()
-        WHERE album_key = $1
-      `, [albumKey]);
       return;
     }
 
@@ -181,7 +181,10 @@ export class DeepCatalog {
       return trackKey ? { trackKey, position: index + 1 } : null;
     }));
 
-    await Promise.all(rows.filter(Boolean).map(row => db.query(`
+    const validRows = rows.filter(Boolean);
+    if (validRows.length !== durableTracks.length) return;
+
+    await Promise.all(validRows.map(row => db.query(`
       INSERT INTO deep_album_tracks (album_key, track_key, position)
       VALUES ($1,$2,$3)
       ON CONFLICT (album_key, track_key) DO UPDATE SET position = EXCLUDED.position
