@@ -2086,3 +2086,24 @@ test('capability persistence stores positive evidence only and treats false as u
   assert.equal('hasNormal' in stored, false);
   assert.equal('hasLyrics' in stored, false);
 });
+
+
+test('failed canonical lookup keeps an inferred artist unconfirmed', async () => {
+  const inferred = {
+    ...parseTrackButton('🎵 Khalesaneh (feat. T-Dey)', 'T-Dey'),
+    source: 'melobot',
+  };
+  const client = new FakeTelegramClient({
+    'Khalesaneh (feat. T-Dey)': [[fakeBotMessage('no result', [])]],
+    'T-Dey Khalesaneh (feat. T-Dey)': [[fakeBotMessage('no result', [])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    inferred,
+    { timeoutMs: 30, forceIdentity: true }
+  );
+
+  assert.equal(resolved.artist, 'T-Dey');
+  assert.equal(resolved.artistInferred, true);
+});
