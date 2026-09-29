@@ -17,6 +17,7 @@ import {
   matchBulkAudioToTracks,
   openMeloBotAlbum,
   openMeloBotAlbumContext,
+  openMeloBotAlbumByTitle,
   openMeloBotArtistFresh,
   prepareMeloBotBulkAlbum,
   prepareMeloBotBulkRecentTracks,
@@ -649,7 +650,12 @@ async function runAlbumDetail(task) {
   const target = albums.find(item =>
     deepNormalize(item.title) === deepNormalize(album.title)
   ) || album;
-  const albumContext = await openMeloBotAlbumContext(tg, resolved.artist, target);
+  const albumContext = await openMeloBotAlbumByTitle(
+    tg,
+    resolved.artist,
+    target.title,
+    resolved.seed || seedTrack || null
+  );
   const tracks = albumContext.tracks;
 
   if (resolved.complete) {
@@ -667,7 +673,7 @@ async function runAlbumDetail(task) {
     preferBulk: true,
   });
 
-  const albumSeed = resolved.seed || seedTrack || tracks[0] || null;
+  const albumSeed = albumContext.seed || resolved.seed || seedTrack || tracks[0] || null;
   const albumKey = `${deepNormalize(resolved.artist)}:${deepNormalize(target.title)}`;
 
   let albumHqComplete = false;

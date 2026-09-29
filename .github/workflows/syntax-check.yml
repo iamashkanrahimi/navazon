@@ -3,6 +3,7 @@ name: syntax-check
 on:
   push:
     branches:
+      - main
       - 'v*'
   pull_request:
     branches:

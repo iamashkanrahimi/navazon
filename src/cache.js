@@ -1,13 +1,9 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
+import { normalizeText } from './text.js';
 
 function normalize(value = '') {
-  return String(value)
-    .toLocaleLowerCase('en-US')
-    .replace(/[\u200e\u200f\u202a-\u202e]/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeText(value);
 }
 
 function stableVariant(track = {}) {
