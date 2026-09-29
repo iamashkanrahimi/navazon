@@ -1331,7 +1331,7 @@ export async function enrichMeloBotTrack(
       raw: '',
       ...parsePopularityValue(liveCandidate.rawText || candidate?.rawText || ''),
     },
-    lyrics: { available: false, text: '' },
+    lyrics: { available: false, text: '', checked: false },
     cover: null,
     capabilities: {
       hasHq: menuButtons.some(text =>
@@ -1351,6 +1351,9 @@ export async function enrichMeloBotTrack(
   };
 
   const lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+  if (!lyricsButton) {
+    result.lyrics.checked = true;
+  }
   if (lyricsButton && !remaining.expired()) {
     try {
       const lyricsResult = await sendAndCollect(client, lyricsButton, {
@@ -1363,6 +1366,7 @@ export async function enrichMeloBotTrack(
         available: Boolean(text),
         text,
         rawText: raw,
+        checked: true,
       };
     } catch (err) {
       result.errors.push(`lyrics: ${err.message}`);
