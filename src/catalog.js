@@ -21,6 +21,12 @@ function looksLikeAlbumRowButton(value = '') {
   return /^.+?\s*\([۰-۹٠-٩0-9]+\)\s*$/u.test(text);
 }
 
+function trustedStoredAlbum(album = {}) {
+  const rawText = clean(album.rawText || '');
+  if (!rawText) return true;
+  return /^[💿📀]/u.test(rawText);
+}
+
 function freshEnough(iso, maxAgeMs) {
   if (!iso || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) return false;
   const t = Date.parse(iso);
@@ -54,6 +60,7 @@ export class CatalogStore {
       rawText: clean(policy.rawText),
       cmd: clean(policy.cmd),
       source: policy.source || undefined,
+      artistInferred: Boolean(policy.artistInferred) || undefined,
       duration: policy.duration || undefined,
       bitrate: policy.bitrate || undefined,
       sourcePopularityText: policy.sourcePopularityText || undefined,
@@ -163,7 +170,11 @@ export class CatalogStore {
     if (!node || !Array.isArray(node.albumList)) return null;
 
     if (node.albumList.length) {
-      return freshEnough(node.albumsUpdatedAt, maxAgeMs) ? node.albumList : null;
+      if (!freshEnough(node.albumsUpdatedAt, maxAgeMs)) return null;
+      const trusted = node.albumList.filter(trustedStoredAlbum);
+      // If every stored row came from the old loose "(count)" parser, force a
+      // live refresh rather than presenting a fake empty discography.
+      return trusted.length ? trusted : null;
     }
 
     // Empty album lists are trusted only when the source explicitly confirmed
@@ -211,7 +222,11 @@ export class CatalogStore {
     `, params);
 
     return result.rows
-      .filter(row => row.artist && row.title)
+      .filter(row =>
+        row.artist
+        && row.title
+        && (!row.raw_text || /^[💿📀]/u.test(clean(row.raw_text)))
+      )
       .map(row => ({
         artist: row.artist,
         title: row.title,
@@ -287,18 +302,19 @@ export class CatalogStore {
     const { key, node } = await this.readArtist(name);
     if (!node) return;
 
+    const trustedAlbums = (albums || []).filter(trustedStoredAlbum);
     const now = new Date().toISOString();
-    node.albumList = albums.map(album => ({
+    node.albumList = trustedAlbums.map(album => ({
       title: clean(album.title),
       trackCount: album.trackCount || undefined,
       rawText: clean(album.rawText),
     }));
     node.albumsUpdatedAt = now;
-    node.albumsEmptyConfirmedAt = !albums.length && emptyConfirmed ? now : null;
+    node.albumsEmptyConfirmedAt = !trustedAlbums.length && emptyConfirmed ? now : null;
     node.albumButton = null;
     node.albums ||= {};
 
-    for (const album of albums) {
+    for (const album of trustedAlbums) {
       const albumKey = normalize(album.title);
       if (!albumKey) continue;
       node.albums[albumKey] = {
