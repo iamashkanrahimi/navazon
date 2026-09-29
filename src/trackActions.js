@@ -244,8 +244,8 @@ export async function getTrackInfoText(track) {
     const sec = String(details.duration_seconds % 60).padStart(2, '0');
     lines.push(`⏱ مدت: ${min}:${sec}`);
   }
-  if (details?.popularity_text) lines.push(`📈 محبوبیت: ${details.popularity_text}`);
-  else if (details?.popularity_count) lines.push(`📈 محبوبیت: ${Number(details.popularity_count).toLocaleString('en-US')}`);
+  if (details?.popularity_text) lines.push(`📈 بازدید حدودی: ${details.popularity_text}`);
+  else if (details?.popularity_count) lines.push(`📈 بازدید حدودی: ${Number(details.popularity_count).toLocaleString('en-US')}`);
 
   const qualities = Object.keys(details?.media || {});
   if (qualities.length) {
@@ -256,7 +256,7 @@ export async function getTrackInfoText(track) {
           ? 'معمولی'
           : q
     );
-    lines.push(`🎧 کیفیت‌های آماده: ${labels.join('، ')}`);
+    lines.push(`🎧 کیفیت‌های موجود: ${labels.join('، ')}`);
   }
 
   if (lines.length === 1) lines.push('اطلاعات بیشتری برای این آهنگ ثبت نشده.');
