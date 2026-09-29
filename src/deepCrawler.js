@@ -848,8 +848,12 @@ async function runTrackLyrics(task) {
     };
   }
 
-  await deepCatalog.markNoLyrics(liveTrack, 'melobot');
-  return { track: `${liveTrack.artist} — ${liveTrack.title}`, lyrics: false };
+  if (lyrics.checked === true) {
+    await deepCatalog.markNoLyrics(liveTrack, 'melobot');
+    return { track: `${liveTrack.artist} — ${liveTrack.title}`, lyrics: false };
+  }
+
+  throw new Error('Lyrics availability could not be confirmed.');
 }
 
 export async function executeDeepTask(task) {
