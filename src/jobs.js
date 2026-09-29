@@ -1659,20 +1659,33 @@ export const sourceQueue = new SerialQueue(async job => {
       if (!candidate?.artist) return;
       const runId = await recordCrawlerStart(candidate.artist);
       try {
-        const liveArtist = await openMeloBotArtistFresh(tg,candidate.artist,
-          candidate.seedTrack ? { ...candidate.seedTrack, source: 'melobot' } : null);
-        await catalog.recordArtist(liveArtist.artist,{
-          topTracks: liveArtist.topTracks || liveArtist.tracks || [],
-          recentTracks: liveArtist.recentTracks || [], albumButton: liveArtist.albumButton || null,
-        });
+        const liveArtist = await openMeloBotArtistFresh(
+          tg,
+          candidate.artist,
+          candidate.seedTrack
+            ? { ...candidate.seedTrack, source: 'melobot' }
+            : null,
+          { timeoutMs: 7000 }
+        );
+
+        await syncArtistContext(liveArtist);
+
         for (const relatedArtist of liveArtist.relatedArtists || []) {
           if (normalize(relatedArtist) !== normalize(liveArtist.artist)) {
-            await catalog.ensureArtist(relatedArtist,{ discoveredFrom: `artist-picker:${liveArtist.artist}` });
+            await catalog.ensureArtist(relatedArtist,{
+              discoveredFrom: `artist-picker:${liveArtist.artist}`,
+            });
           }
         }
-        if (config.discoveryUseAhangify) {
+
+        let supplemental = 0;
+        if (config.discoveryUseAhangify && !hasPendingForegroundSourceWork()) {
           try {
-            const extra = await searchAhangify(tg,liveArtist.artist);
+            const extra = await searchAhangify(
+              tg,
+              liveArtist.artist,
+              { timeoutMs: 5000 }
+            );
             const targetArtist = normalize(liveArtist.artist);
             const tracks = extra
               .map(item => sourceCandidateToTrack({ ...item, source: 'ahangify' }))
@@ -1685,65 +1698,69 @@ export const sourceQueue = new SerialQueue(async job => {
                   .some(part => normalize(part) === targetArtist);
               });
             if (tracks.length) {
-              await catalog.recordSupplementalTracks(liveArtist.artist,tracks,'crawl:ahangify');
+              await catalog.recordSupplementalTracks(
+                liveArtist.artist,
+                tracks,
+                'crawl:ahangify'
+              );
+              supplemental = tracks.length;
             }
-          } catch (err) { console.warn('[crawler ahangify]',liveArtist.artist,err.message); }
-        }
-        let albums = [];
-        try {
-          albums = await listMeloBotAlbums(tg,liveArtist);
-          await catalog.recordAlbums(liveArtist.artist,albums);
-        } catch (err) { console.warn('[crawler albums]',liveArtist.artist,err.message); }
-
-        let openedAlbums = 0;
-        while (openedAlbums < config.discoveryAlbumsPerRun && albums.length) {
-          const album = await catalog.firstStaleAlbum(liveArtist.artist,albums,config.catalogAlbumTracksTtlMs);
-          if (!album) break;
-          try {
-            const freshArtist = await openMeloBotArtistFresh(tg,liveArtist.artist,candidate.seedTrack || null);
-            const freshAlbums = await listMeloBotAlbums(tg,freshArtist);
-            const target = freshAlbums.find(x => normalize(x.title) === normalize(album.title)) || album;
-            const opened = await openMeloBotAlbumRobustByTitle(
-              tg,
-              liveArtist.artist,
-              target.title,
-              {
-                album: target,
-                timeoutMs: 3500,
-                maxPages: 8,
-              }
-            );
-            const tracks = opened.tracks;
-            await catalog.recordAlbums(opened.artist,freshAlbums);
-            await catalog.recordAlbumTracks(opened.artist,opened.album,tracks);
-            albums = freshAlbums;
-            openedAlbums += 1;
-          } catch (err) { console.warn('[crawler album]',liveArtist.artist,album.title,err.message); break; }
-        }
-
-        if (config.discoveryWarmTopTracks > 0) {
-          for (const sourceTrack of (liveArtist.topTracks || []).slice(0,config.discoveryWarmTopTracks)) {
-            const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
-            try {
-              if (await cache.has(track)) continue;
-              const result = await downloadMeloBotTrack(tg,track);
-              await bridgeSourceAudio(config.melobotUsername,result,track);
-            } catch (err) { console.warn('[crawler warm]',track.artist,track.title,err.message); }
+          } catch (err) {
+            console.warn('[crawler ahangify]', liveArtist.artist, err.message);
           }
         }
 
-        const staleAlbums = albums.length
-          ? await catalog.staleAlbumCount(liveArtist.artist,albums,config.catalogAlbumTracksTtlMs) : 0;
-        await catalog.markDiscoveryChecked(liveArtist.artist,{
-          ok: true, nextDelayMs: staleAlbums > 0 ? config.discoveryContinueDelayMs : null,
-        });
-        const summary = { top: (liveArtist.topTracks || []).length, albums: albums.length, staleAlbums };
+        let albums = [];
+        if (!hasPendingForegroundSourceWork()) {
+          try {
+            albums = await listMeloBotAlbums(
+              tg,
+              liveArtist,
+              { timeoutMs: 5000 }
+            );
+            await catalog.recordAlbums(liveArtist.artist, albums);
+
+            if (albums.length) {
+              const day = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+              await deepCatalog.enqueueTask(
+                'album_index',
+                {
+                  artist: liveArtist.artist,
+                  seedTrack: candidate.seedTrack || liveArtist.seedTrack || null,
+                },
+                {
+                  priority: 72,
+                  taskKey: `album_index:${normalize(liveArtist.artist)}:${day}`,
+                }
+              );
+            }
+          } catch (err) {
+            console.warn('[crawler albums]', liveArtist.artist, err.message);
+          }
+        }
+
+        // Album-detail crawling and media warming used to run inline here and
+        // could hold the single interactive source lane after an idle period.
+        // Those operations now belong exclusively to low-priority deep tasks.
+        await catalog.markDiscoveryChecked(liveArtist.artist,{ ok: true });
+
+        const summary = {
+          top: (liveArtist.topTracks || []).length,
+          recent: (liveArtist.recentTracks || []).length,
+          albums: albums.length,
+          supplemental,
+          yielded: hasPendingForegroundSourceWork(),
+        };
         await recordCrawlerFinish(runId,{ ok: true, summary });
-        console.log(`[crawler] ${liveArtist.artist}: top=${summary.top}, albums=${summary.albums}, stale=${summary.staleAlbums}`);
+        console.log(
+          `[crawler] ${liveArtist.artist}: top=${summary.top}, recent=${summary.recent}, albums=${summary.albums}, yielded=${summary.yielded}`
+        );
       } catch (err) {
         console.warn('[crawler]',candidate.artist,err.message);
         await catalog.markDiscoveryChecked(candidate.artist,{
-          ok: false, error: err.message, nextDelayMs: config.discoveryRetryDelayMs,
+          ok: false,
+          error: err.message,
+          nextDelayMs: config.discoveryRetryDelayMs,
         });
         await recordCrawlerFinish(runId,{ ok: false, error: err.message });
       }
