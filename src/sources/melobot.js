@@ -261,6 +261,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
       title,
       sourcePopularityText: popularity.text,
       sourcePopularityCount: popularity.count,
+      sourceStateVersion,
     };
   }
 
@@ -276,6 +277,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
         title,
         sourcePopularityText: popularity.text,
         sourcePopularityCount: popularity.count,
+        sourceStateVersion,
       };
     }
   }
@@ -290,6 +292,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
         title,
         sourcePopularityText: popularity.text,
         sourcePopularityCount: popularity.count,
+        sourceStateVersion,
       };
     }
   }
@@ -308,6 +311,7 @@ export function parseAlbumButton(rawText) {
     rawText: original,
     title: clean(match[1]),
     trackCount: Number(match[2]),
+    sourceStateVersion,
   };
 }
 
