@@ -1257,6 +1257,7 @@ export const sourceQueue = new SerialQueue(async job => {
       const requestedTracks = session.artistContext?.recentTracks?.slice(0, TOP_TRACKS_LIMIT) || [];
       let sent = 0;
       let missing = 0;
+      let fallbackNotified = false;
 
       try {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
@@ -1333,10 +1334,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
+          fallbackNotified = true;
         }
       }
 
-      if (missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0 && sent > 0) {
         const notice = bulkFallbackMessage('recent', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -1386,6 +1388,7 @@ export const sourceQueue = new SerialQueue(async job => {
       ).slice(0, TOP_TRACKS_LIMIT);
       let sent = 0;
       let missing = 0;
+      let fallbackNotified = false;
 
       try {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
@@ -1401,7 +1404,7 @@ export const sourceQueue = new SerialQueue(async job => {
           let liveArtist;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 1; attempt += 1) {
             try {
               liveArtist = await prepareMeloBotBulkTopTracks(
                 tg,
@@ -1454,10 +1457,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallbackMessage = bulkFallbackMessage('top', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
+          fallbackNotified = true;
         }
       }
 
-      if (missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0 && sent > 0) {
         const notice = bulkFallbackMessage('top', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -1479,6 +1483,7 @@ export const sourceQueue = new SerialQueue(async job => {
       const requestedTracks = session.currentAlbum?.tracks || [];
       let sent = 0;
       let missing = 0;
+      let fallbackNotified = false;
 
       try {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
@@ -1497,7 +1502,7 @@ export const sourceQueue = new SerialQueue(async job => {
           let albumContext;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 1; attempt += 1) {
             try {
               const preferredSeed = session.artistSeed
                 || session.albumOriginTrack
@@ -1541,7 +1546,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: attempt === 0 ? 9000 : 14000 }
+                { timeoutMs: 6500 }
               );
               lastError = null;
               break;
@@ -1597,10 +1602,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
+          fallbackNotified = true;
         }
       }
 
-      if (missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0 && sent > 0) {
         const notice = bulkFallbackMessage('album', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
