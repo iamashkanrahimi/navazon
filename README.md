@@ -1,4 +1,4 @@
-# Navazon Cloud v1.4.4 — Reliability & Album Hardening
+# Navazon Cloud v1.4.5 — MeloBot Navigation Hardening
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -110,3 +110,15 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Ahangify fallback is labeled as the best available source quality rather than implying a verified HQ bitrate.
 - Confirmed empty album lists use a shorter default negative-cache TTL.
 - CI now also runs on direct pushes to main.
+
+
+## MeloBot navigation hardening v1.4.5
+
+- Search now follows bounded multi-step MeloBot suggestion flows until a real track row is reached.
+- Stateful searches may intentionally send the same visible label again when the source state changed.
+- Artist-picker pages can resolve title-only track rows without treating navigation controls as songs.
+- Album navigation recognizes more source labels and no longer misclassifies album controls as tracks.
+- Album resolution shares one state-safe initial-listing path for browsing, opening, bulk downloads, and crawler work.
+- Missing album buttons trigger a bounded recovery probe for late artist-page messages and secondary navigation.
+- Artist-to-album resolution automatically retries through the direct source route before surfacing an error.
+- Safe source-surface diagnostics record response text and reply-button labels for future MeloBot UI changes.

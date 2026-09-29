@@ -11,6 +11,7 @@ process.env.DATABASE_URL ||= 'postgresql://user:pass@localhost:5432/navazon';
 process.env.WEBHOOK_SECRET ||= 'test-webhook';
 process.env.CRAWLER_TOKEN ||= 'test-crawler';
 process.env.ADMIN_TOKEN ||= 'test-admin';
+process.env.SEARCH_TIMEOUT_MS ||= '650';
 
 const {
   parseTrackButton,
@@ -20,6 +21,10 @@ const {
   resolveMeloBotArtistAlbums,
   openMeloBotAlbumByTitle,
   matchBulkAudioToTracks,
+  searchMeloBot,
+  chooseMeloBotSearchRefinement,
+  albumNavigationButton,
+  describeMeloBotSurface,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const { trackCacheKey } = await import('../src/cache.js');
@@ -41,6 +46,47 @@ const {
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
 } = await import('../src/text.js');
+
+function fakeBotMessage(message, buttons = []) {
+  return {
+    message,
+    replyMarkup: {
+      rows: buttons.map(text => ({ buttons: [{ text }] })),
+    },
+  };
+}
+
+class FakeTelegramClient {
+  constructor(script = {}) {
+    this.script = new Map(
+      Object.entries(script).map(([command, batches]) => [
+        command,
+        Array.isArray(batches?.[0]) ? [...batches] : [batches],
+      ])
+    );
+    this.messages = [];
+    this.sent = [];
+    this.nextId = 1;
+  }
+
+  async getMessages() {
+    return [...this.messages].sort((a, b) => b.id - a.id);
+  }
+
+  async sendMessage(_peer, { message }) {
+    this.sent.push(message);
+    const queue = this.script.get(message) || [];
+    const batch = queue.shift() || [];
+    this.script.set(message, queue);
+    for (const item of batch) {
+      this.messages.push({
+        ...item,
+        id: this.nextId++,
+        out: false,
+      });
+    }
+  }
+}
 
 test('MeloBot parser extracts artist, title and popularity', () => {
   const track = parseTrackButton('🎵 Shadmehr, Taghdir x 1.6M');
@@ -457,4 +503,214 @@ test('misspelled extra title words do not silently become an all-albums query', 
     ),
     true
   );
+});
+
+
+test('MeloBot search refinement chooses a song suggestion and ignores the not-in-list action', () => {
+  const messages = [{
+    message: 'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: 'Arman Garshasbi Hezar Omid' }] },
+        { buttons: [{ text: 'آهنگ در لیست نیست' }] },
+      ],
+    },
+  }];
+
+  assert.equal(
+    chooseMeloBotSearchRefinement(messages, 'Arman Garshasbi'),
+    'Arman Garshasbi Hezar Omid'
+  );
+});
+
+test('MeloBot multi-step search follows suggestion text until a real track button appears', async () => {
+  const client = new FakeTelegramClient({
+    'Arman Garshasbi': [[
+      fakeBotMessage(
+        'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن :',
+        ['Arman Garshasbi Hezar Omid', 'آهنگ در لیست نیست']
+      ),
+    ]],
+    'Arman Garshasbi Hezar Omid': [[
+      fakeBotMessage(
+        'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن :',
+        ['🎵 Arman Garshasbi, Hezar Omid']
+      ),
+    ]],
+  });
+
+  const tracks = await searchMeloBot(client, 'Arman Garshasbi', { maxRefinements: 3 });
+  assert.equal(tracks[0].artist, 'Arman Garshasbi');
+  assert.equal(tracks[0].title, 'Hezar Omid');
+  assert.deepEqual(client.sent, [
+    'Arman Garshasbi',
+    'Arman Garshasbi Hezar Omid',
+  ]);
+});
+
+test('MeloBot state machine allows the same reply label to be sent twice when state changes', async () => {
+  const client = new FakeTelegramClient({
+    Ebi: [
+      [fakeBotMessage('انتخاب کن', ['Ebi'])],
+      [fakeBotMessage('نتیجه', ['🎵 Ebi, Khalij'])],
+    ],
+  });
+
+  const tracks = await searchMeloBot(client, 'Ebi', { maxRefinements: 2 });
+  assert.equal(tracks[0].artist, 'Ebi');
+  assert.equal(tracks[0].title, 'Khalij');
+  assert.deepEqual(client.sent, ['Ebi', 'Ebi']);
+});
+
+test('MeloBot artist picker can lead to title-only tracks without misclassifying navigation', async () => {
+  const client = new FakeTelegramClient({
+    Singer: [[fakeBotMessage('خواننده را انتخاب کن', ['🗣 Singer'])]],
+    '🗣 Singer': [[
+      fakeBotMessage(
+        'آهنگ های Singer',
+        ['Song One', 'Song Two', 'نمایش به ترتیب تاریخ انتشار']
+      ),
+    ]],
+  });
+
+  const tracks = await searchMeloBot(client, 'Singer', { maxRefinements: 2 });
+  assert.deepEqual(
+    tracks.map(track => [track.artist, track.title]),
+    [['Singer', 'Song One'], ['Singer', 'Song Two']]
+  );
+});
+
+test('album navigation controls are recognized broadly and never parsed as tracks', () => {
+  const variants = ['💿 آلبوم‌ها', 'مشاهده آلبوم‌ها', 'البوم ها', 'Discography', '📀'];
+  for (const label of variants) {
+    const messages = [{
+      message: 'artist',
+      replyMarkup: { rows: [{ buttons: [{ text: label }] }] },
+    }];
+    assert.equal(albumNavigationButton(messages), label);
+    assert.equal(parseTrackButton(label, 'Artist'), null);
+  }
+});
+
+test('MeloBot source diagnostics keep both response text and reply buttons visible', () => {
+  const surface = describeMeloBotSurface([{
+    message: 'choose',
+    replyMarkup: { rows: [{ buttons: [{ text: 'Suggestion' }] }] },
+  }]);
+  assert.match(surface, /choose/);
+  assert.match(surface, /Suggestion/);
+});
+
+
+test('MeloBot refinement loop stops when the same source surface repeats', async () => {
+  const repeated = fakeBotMessage('انتخاب کن', ['Same Artist']);
+  const client = new FakeTelegramClient({
+    'Same Artist': [
+      [repeated],
+      [repeated],
+      [repeated],
+    ],
+  });
+
+  await assert.rejects(
+    () => searchMeloBot(client, 'Same Artist', { maxRefinements: 5 }),
+    /no usable tracks/
+  );
+
+  assert.equal(client.sent.length, 2);
+});
+
+test('album rows are not mistaken for album-navigation controls', () => {
+  const messages = [{
+    message: 'albums',
+    replyMarkup: {
+      rows: [{ buttons: [{ text: '💿 In Roozha (8)' }] }],
+    },
+  }];
+  assert.equal(albumNavigationButton(messages), null);
+});
+
+
+test('Arman-shaped multi-step source flow reaches the live album listing end-to-end', async () => {
+  const exactTrack = '🎵 Arman Garshasbi, Hezar Omid';
+  const client = new FakeTelegramClient({
+    'Arman Garshasbi': [[
+      fakeBotMessage(
+        'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن :',
+        ['Arman Garshasbi Hezar Omid', 'آهنگ در لیست نیست']
+      ),
+    ]],
+    'Arman Garshasbi Hezar Omid': [
+      [fakeBotMessage('انتخاب آهنگ', [exactTrack])],
+      [fakeBotMessage('انتخاب آهنگ', [exactTrack])],
+    ],
+    [exactTrack]: [[
+      fakeBotMessage(
+        'صفحه آهنگ',
+        ['📥 کیفیت عالی', '📥 کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'آهنگ های (1 - 10) : Arman Garshasbi',
+        ['Hezar Omid', 'نمایش به ترتیب تاریخ انتشار', '💿 آلبوم‌ها']
+      ),
+    ]],
+    '💿 آلبوم‌ها': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Album One (8)', '💿 Album Two (3)']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistAlbums(
+    client,
+    'Arman Garshasbi',
+    null,
+    { allowEmpty: true, maxAlbums: 20 }
+  );
+
+  assert.equal(resolved.artist, 'Arman Garshasbi');
+  assert.equal(resolved.complete, true);
+  assert.deepEqual(
+    resolved.albums.map(album => [album.title, album.trackCount]),
+    [['Album One', 8], ['Album Two', 3]]
+  );
+  assert.ok(client.sent.includes('💿 آلبوم‌ها'));
+});
+
+
+test('Ebi-style missing artist button falls back to the direct album route', async () => {
+  const exactTrack = '🎵 Ebi, Khalij';
+  const client = new FakeTelegramClient({
+    Ebi: [
+      [fakeBotMessage('search results', [exactTrack])],
+      [fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Shabe Niloufari (9)', '💿 Hasrate Parvaz (8)']
+      )],
+    ],
+    'Ebi Khalij': [[fakeBotMessage('search results', [exactTrack])]],
+    [exactTrack]: [[
+      fakeBotMessage(
+        'صفحه آهنگ بدون دکمه خواننده',
+        ['📥 کیفیت عالی', '📥 کیفیت معمولی']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistAlbums(
+    client,
+    'Ebi',
+    null,
+    { allowEmpty: true, maxAlbums: 20 }
+  );
+
+  assert.equal(resolved.source, 'direct_fallback');
+  assert.deepEqual(
+    resolved.albums.map(album => album.title),
+    ['Shabe Niloufari', 'Hasrate Parvaz']
+  );
+  assert.equal(resolved.complete, true);
 });
