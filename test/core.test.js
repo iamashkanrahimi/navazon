@@ -581,7 +581,7 @@ test('MeloBot artist picker can lead to title-only tracks without misclassifying
 });
 
 test('album navigation controls are recognized broadly and never parsed as tracks', () => {
-  const variants = ['💿 آلبوم‌ها', 'البوم ها', 'Discography', '📀'];
+  const variants = ['💿 آلبوم‌ها', 'مشاهده آلبوم‌ها', 'البوم ها', 'Discography', '📀'];
   for (const label of variants) {
     const messages = [{
       message: 'artist',
