@@ -27,6 +27,7 @@ const {
   openMeloBotAlbumDirectByTitle,
   openMeloBotAlbumRobustByTitle,
   resolveMeloBotArtistTrackList,
+  resolveMeloBotTrackCandidate,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
@@ -48,6 +49,7 @@ const {
 const { SerialQueue } = await import('../src/queue.js');
 const { trackCacheKey } = await import('../src/cache.js');
 const { DeepCatalog, deepTrackKey } = await import('../src/deepCatalog.js');
+const { CatalogStore } = await import('../src/catalog.js');
 const { db } = await import('../src/db.js');
 const {
   resultsKeyboard,
@@ -58,6 +60,8 @@ const {
   homeKeyboard,
   curatedPlaylistsKeyboard,
   trackPageKeyboard,
+  trackPageTitle,
+  trackButtonLabel,
   SESSION_TTL_MS,
   BUSY_SESSION_TTL_MS,
 } = await import('../src/ui.js');
@@ -68,6 +72,8 @@ const {
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
   shouldUseLiveAlbumDiscovery,
+  meaningfulSearchTokens,
+  rankTracksForQuery,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -1132,7 +1138,8 @@ test('disc-prefixed album search rows are albums and never tracks', () => {
   assert.equal(parseTrackButton('💿 Bahram, Eshtebahe Khoob'), null);
   assert.equal(parseAlbumButton('💿 آلبوم‌ها'), null);
 
-  const counted = parseAlbumButton('Album of the Year (10)');
+  assert.equal(parseAlbumButton('Album of the Year (10)'), null);
+  const counted = parseAlbumButton('Album of the Year (10)', { allowBareCounted: true });
   assert.equal(counted.title, 'Album of the Year');
   assert.equal(counted.trackCount, 10);
 });
@@ -1624,7 +1631,8 @@ test('explicit track rows with parenthesized titles are not misclassified as alb
   assert.equal(surface.tracks[0].title, 'Song (2024)');
   assert.equal(surface.albums.length, 0);
 
-  const album = parseAlbumButton('Album Title (10)');
+  assert.equal(parseAlbumButton('Album Title (10)'), null);
+  const album = parseAlbumButton('Album Title (10)', { allowBareCounted: true });
   assert.equal(album.title, 'Album Title');
   assert.equal(album.trackCount, 10);
 });
@@ -1791,4 +1799,189 @@ test('robust album opener falls back to a collaborator component when combined a
   assert.equal(opened.route, 'artist_component_direct');
   assert.equal(opened.album.title, 'Khoone Khorshid');
   assert.deepEqual(opened.tracks.map(track => track.title), ['Track One', 'Track Two']);
+});
+
+
+test('bare counted rows are ignored outside declared album surfaces', () => {
+  const accidental = parseMeloBotSearchSurface([{
+    message: 'آهنگ های Hichkas',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: 'Zedbazi (23)' }] },
+        { buttons: [{ text: 'Jangale Asfalt (10)' }] },
+      ],
+    },
+  }]);
+  assert.equal(accidental.albums.length, 0);
+
+  const declared = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده (2) :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: 'Album One (8)' }] },
+        { buttons: [{ text: 'Album Two (10)' }] },
+      ],
+    },
+  }]);
+  assert.equal(declared.confirmed, true);
+  assert.deepEqual(declared.albums.map(album => album.title), ['Album One', 'Album Two']);
+});
+
+test('legacy mixed album catalog rows force a live refresh instead of a partial list', async () => {
+  const originalQuery = db.query;
+  db.query = async () => ({
+    rowCount: 1,
+    rows: [{
+      name: 'Hichkas',
+      data: {
+        name: 'Hichkas',
+        albumsUpdatedAt: new Date().toISOString(),
+        albumList: [
+          { title: 'Mojaz', rawText: '💿 Mojaz (14)' },
+          { title: 'Zedbazi', rawText: 'Zedbazi (23)' },
+        ],
+      },
+    }],
+  });
+
+  try {
+    const store = new CatalogStore();
+    const albums = await store.getAlbums('Hichkas', 7 * 24 * 60 * 60 * 1000);
+    assert.equal(albums, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('MeloBot track pages keep common actions visible when capability state is unknown', () => {
+  const keyboard = trackPageKeyboard(
+    'stable1',
+    { source: 'melobot', artist: 'T-Dey', title: 'Khalesaneh' },
+    { media: {} },
+    {}
+  );
+  const texts = keyboard.inline_keyboard.flat().map(button => button.text);
+  assert.ok(texts.includes('📥 کیفیت عالی'));
+  assert.ok(texts.includes('📥 کیفیت معمولی'));
+  assert.ok(texts.includes('📝 متن'));
+  assert.ok(texts.includes('🖼 کاور'));
+  assert.ok(texts.includes('📋 مشخصات'));
+  assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
+});
+
+test('inferred page-context artists are not presented as confirmed primary artists', () => {
+  const inferred = parseTrackButton('🎵 Khalesaneh (feat. T-Dey)', 'T-Dey');
+  assert.equal(inferred.artistInferred, true);
+  assert.equal(trackPageTitle(inferred), 'Khalesaneh (feat. T-Dey)');
+  assert.equal(
+    trackButtonLabel(inferred, 0).includes('T-Dey —'),
+    false
+  );
+});
+
+test('inferred featured-artist rows resolve to the explicit primary artist by title', async () => {
+  const inferred = {
+    ...parseTrackButton('🎵 Khalesaneh (feat. T-Dey)', 'T-Dey'),
+    source: 'melobot',
+  };
+  const client = new FakeTelegramClient({
+    'Khalesaneh (feat. T-Dey)': [[
+      fakeBotMessage(
+        'نتیجه جستجو',
+        ['🎵 Sadegh, Khalesaneh (feat. T-Dey) x 1.2M']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    inferred,
+    { timeoutMs: 100 }
+  );
+  assert.equal(resolved.artist, 'Sadegh');
+  assert.equal(resolved.title, 'Khalesaneh (feat. T-Dey)');
+  assert.equal(resolved.artistInferred, false);
+});
+
+test('complex collaboration query ranks full token coverage above one-token artist matches', () => {
+  assert.deepEqual(
+    meaningfulSearchTokens('Shayea Ma Ft T-Dey'),
+    ['shayea', 'ma', 'dey']
+  );
+
+  const ranked = rankTracksForQuery('Shayea Ma Ft T-Dey', [
+    { artist: 'T-Dey', title: 'Ghorooha' },
+    { artist: 'T-Dey', title: 'Ye Ja Dige' },
+    { artist: 'Shayea', title: 'Ma (Ft T-Dey)' },
+  ]);
+
+  assert.equal(ranked[0].track.artist, 'Shayea');
+  assert.equal(ranked[0].track.title, 'Ma (Ft T-Dey)');
+  assert.equal(ranked[0].coverage, 3);
+  assert.ok(ranked[0].score > ranked[1].score);
+});
+
+test('derived artist lists use release date for recent and popularity for top', async () => {
+  const originalQuery = db.query;
+  const sqlCalls = [];
+  db.query = async (sql) => {
+    sqlCalls.push(String(sql));
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.deriveArtistList('Haamim', 'recent', 10);
+    await catalog.deriveArtistList('Haamim', 'top', 10);
+  } finally {
+    db.query = originalQuery;
+  }
+
+  assert.match(sqlCalls[0], /release_date DESC NULLS LAST/i);
+  assert.match(sqlCalls[1], /popularity_count DESC NULLS LAST/i);
+});
+
+test('query relevance matrix covers artist title collaboration and Persian album intent', () => {
+  const cases = [
+    {
+      query: 'reza bahram',
+      tracks: [
+        { artist: 'Bahram', title: '24 Saat' },
+        { artist: 'Reza Bahram', title: 'Gole Eshgh' },
+      ],
+      expected: 'Gole Eshgh',
+    },
+    {
+      query: 'hichkas mojaz',
+      tracks: [
+        { artist: 'Hichkas', title: 'Ye Rooze Khoob Miad' },
+        { artist: 'Hichkas', title: 'Mojaz' },
+      ],
+      expected: 'Mojaz',
+    },
+    {
+      query: 'Sadegh Khalesaneh T-Dey',
+      tracks: [
+        { artist: 'T-Dey', title: 'Alaghe' },
+        { artist: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' },
+      ],
+      expected: 'Khalesaneh (feat. T-Dey)',
+    },
+    {
+      query: 'هیچکس یه روز خوب میاد',
+      tracks: [
+        { artist: 'هیچکس', title: 'اختلاف' },
+        { artist: 'هیچکس', title: 'یه روز خوب میاد' },
+      ],
+      expected: 'یه روز خوب میاد',
+    },
+  ];
+
+  for (const item of cases) {
+    const ranked = rankTracksForQuery(item.query, item.tracks);
+    assert.equal(ranked[0].track.title, item.expected, item.query);
+  }
+
+  assert.equal(hasAlbumIntent('آلبوم‌های هیچکس'), true);
+  assert.equal(hasAlbumIntent('البوم های شایع'), true);
 });
