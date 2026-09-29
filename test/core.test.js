@@ -28,6 +28,9 @@ const {
   openMeloBotAlbumRobustByTitle,
   resolveMeloBotArtistTrackList,
   resolveMeloBotTrackCandidate,
+  getMeloBotCover,
+  getMeloBotTrackMetadata,
+  downloadMeloBotTrackQuality,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
@@ -2108,4 +2111,194 @@ test('failed canonical lookup keeps an inferred artist unconfirmed', async () =>
 
   assert.equal(resolved.artist, 'T-Dey');
   assert.equal(resolved.artistInferred, true);
+});
+
+
+test('confirmed album-list rows carry verified provenance, including bare counted rows', () => {
+  const listing = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده (2) :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: 'Mojaz (14)' }] },
+        { buttons: [{ text: 'Jangale Asfalt (10)' }] },
+      ],
+    },
+  }]);
+
+  assert.equal(listing.confirmed, true);
+  assert.equal(listing.albums.length, 2);
+  assert.ok(listing.albums.every(album => album.verifiedAlbum === true));
+});
+
+test('legacy album rows without raw source provenance force a live refresh', async () => {
+  const originalQuery = db.query;
+  db.query = async () => ({
+    rowCount: 1,
+    rows: [{
+      name: 'Legacy Artist',
+      data: {
+        name: 'Legacy Artist',
+        albumsUpdatedAt: new Date().toISOString(),
+        albumList: [{ title: 'Mystery Album' }],
+      },
+    }],
+  });
+
+  try {
+    const store = new CatalogStore();
+    const albums = await store.getAlbums(
+      'Legacy Artist',
+      7 * 24 * 60 * 60 * 1000
+    );
+    assert.equal(albums, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('direct track-menu cover button works without requiring a More submenu', async () => {
+  const raw = '🎵 Artist, Direct Cover';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage('track', ['کیفیت عالی', 'کاور']),
+    ]],
+    'کاور': [[{
+      message: '',
+      media: { photo: { id: 'photo-1' } },
+    }]],
+  });
+
+  const cover = await getMeloBotCover(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    { timeoutMs: 1200 }
+  );
+
+  assert.ok(cover?.photoMessage);
+  assert.deepEqual(client.sent, [raw, 'کاور']);
+});
+
+test('direct track-menu metadata button works without requiring a More submenu', async () => {
+  const raw = '🎵 Artist, Direct Info';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage('track', ['کیفیت عالی', 'مشخصات']),
+    ]],
+    'مشخصات': [[
+      fakeBotMessage('2026-09-20\n📥: 1.2M', []),
+    ]],
+  });
+
+  const metadata = await getMeloBotTrackMetadata(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    { timeoutMs: 1200 }
+  );
+
+  assert.equal(metadata.releaseDate, '2026-09-20');
+  assert.equal(metadata.popularityCount, 1200000);
+  assert.deepEqual(client.sent, [raw, 'مشخصات']);
+});
+
+test('exact artist query prefers Bahram over Reza Bahram in Artist shortcut', () => {
+  const keyboard = resultsKeyboard('bahram1', {
+    query: 'bahram',
+    options: [
+      { source: 'melobot', artist: 'Reza Bahram', title: 'Hamsafar' },
+      { source: 'melobot', artist: 'Reza Bahram', title: 'Yar' },
+      { source: 'melobot', artist: 'Bahram', title: '24 Saat' },
+    ],
+    albumOptions: [],
+  });
+
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(callbacks.includes('ar:bahram1:2'));
+});
+
+test('ambiguous partial artist query does not invent a single Artist shortcut', () => {
+  const keyboard = resultsKeyboard('amb1', {
+    query: 'ali',
+    options: [
+      { source: 'melobot', artist: 'Ali Sorena', title: 'One' },
+      { source: 'melobot', artist: 'Ali Yasini', title: 'Two' },
+    ],
+    albumOptions: [],
+  });
+
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.some(value => value?.startsWith('ar:amb1:')), false);
+});
+
+test('persistent Artist lists drop inferred featured rows but keep canonical rows', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    return { rows: [], rowCount: 1 };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setArtistList('T-Dey', 'recent', [
+      {
+        artist: 'T-Dey',
+        title: 'Khalesaneh (feat. T-Dey)',
+        artistInferred: true,
+        source: 'melobot',
+      },
+      {
+        artist: 'T-Dey',
+        title: 'Real T-Dey Track',
+        source: 'melobot',
+      },
+    ]);
+  } finally {
+    db.query = originalQuery;
+  }
+
+  const trackWrites = calls.filter(call =>
+    call.sql.includes('INSERT INTO deep_tracks')
+  );
+  assert.equal(trackWrites.length, 1);
+  assert.equal(trackWrites[0].params[2], 'Real T-Dey Track');
+});
+
+test('derived Artist lists exclude rows without the ranking evidence they claim', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.deriveArtistList('Haamim', 'recent', 10);
+    await catalog.deriveArtistList('Haamim', 'top', 10);
+  } finally {
+    db.query = originalQuery;
+  }
+
+  assert.match(calls[0].sql, /release_date IS NOT NULL/i);
+  assert.match(calls[1].sql, /popularity_count IS NOT NULL/i);
+});
+
+test('quality download shares one bounded source budget across menu and media', async () => {
+  const raw = '🎵 Artist, Slow Quality';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('track', ['کیفیت عالی'])]],
+    'کیفیت عالی': [[]],
+  });
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => downloadMeloBotTrackQuality(
+      client,
+      { ...parseTrackButton(raw), source: 'melobot' },
+      'hq',
+      { timeoutMs: 60, menuTimeoutMs: 60 }
+    ),
+    /did not deliver|source budget/
+  );
+  assert.ok(Date.now() - startedAt < 1500);
 });
