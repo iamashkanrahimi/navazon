@@ -600,3 +600,32 @@ test('MeloBot source diagnostics keep both response text and reply buttons visib
   assert.match(surface, /choose/);
   assert.match(surface, /Suggestion/);
 });
+
+
+test('MeloBot refinement loop stops when the same source surface repeats', async () => {
+  const repeated = fakeBotMessage('انتخاب کن', ['Same Artist']);
+  const client = new FakeTelegramClient({
+    'Same Artist': [
+      [repeated],
+      [repeated],
+      [repeated],
+    ],
+  });
+
+  await assert.rejects(
+    () => searchMeloBot(client, 'Same Artist', { maxRefinements: 5 }),
+    /no usable tracks/
+  );
+
+  assert.equal(client.sent.length, 2);
+});
+
+test('album rows are not mistaken for album-navigation controls', () => {
+  const messages = [{
+    message: 'albums',
+    replyMarkup: {
+      rows: [{ buttons: [{ text: '💿 In Roozha (8)' }] }],
+    },
+  }];
+  assert.equal(albumNavigationButton(messages), null);
+});
