@@ -177,7 +177,11 @@ export async function downloadTrackWithSources(
   }
 
   if (track.source === 'ahangify' && track.cmd) {
-    const result = await downloadAhangifyResult(tg, track);
+    const result = await downloadAhangifyResult(
+      tg,
+      track,
+      { timeoutMs: 12000 }
+    );
     return {
       media: await bridgeSourceAudio(config.ahangifyUsername, result, track),
       track,
@@ -186,7 +190,11 @@ export async function downloadTrackWithSources(
 
   if (track.source === 'melobot') {
     try {
-      const result = await downloadMeloBotTrack(tg,track);
+      const result = await downloadMeloBotTrack(
+        tg,
+        track,
+        { timeoutMs: 12000 }
+      );
       return { media: await bridgeSourceAudio(config.melobotUsername,result,track), track };
     } catch (err) {
       console.warn('[melobot download]',err.message);
@@ -200,7 +208,11 @@ export async function downloadTrackWithSources(
   const matched = chooseAhangifyMatch(results, track);
   if (!matched) throw new Error('Fallback source returned no sufficiently close result.');
 
-  const result = await downloadAhangifyResult(tg,matched.candidate);
+  const result = await downloadAhangifyResult(
+    tg,
+    matched.candidate,
+    { timeoutMs: 12000 }
+  );
   const finalTrack = track.artist || track.title ? track : matched.parsed;
   return {
     media: await bridgeSourceAudio(config.ahangifyUsername,result,finalTrack),
