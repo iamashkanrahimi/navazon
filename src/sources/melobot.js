@@ -928,7 +928,10 @@ export async function openMeloBotArtistFresh(client, artist, preferredSeed = nul
 export async function resolveMeloBotTrackCandidate(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    forceIdentity = false,
+  } = {}
 ) {
   const primaryQuery = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
     || candidate?.title
@@ -939,7 +942,7 @@ export async function resolveMeloBotTrackCandidate(
   if (
     candidate?.rawText
     && Number(candidate.sourceStateVersion || -1) === sourceStateVersion
-    && !candidate.artistInferred
+    && (!candidate.artistInferred || !forceIdentity)
   ) {
     return candidate;
   }
