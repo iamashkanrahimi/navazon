@@ -669,11 +669,20 @@ export async function searchMeloBotTyped(client, query, {
 }
 
 export async function searchMeloBot(client, query, options = {}) {
-  const result = await searchMeloBotTyped(client, query, options);
-  if (result.tracks.length) return result.tracks;
-  throw new Error(
-    `MeloBot search returned albums but no usable tracks. ${describeMeloBotSurface(result.messages)}`
-  );
+  try {
+    const result = await searchMeloBotTyped(client, query, options);
+    if (result.tracks.length) return result.tracks;
+    throw new Error(
+      `MeloBot search returned albums but no usable tracks. ${describeMeloBotSurface(result.messages)}`
+    );
+  } catch (err) {
+    if (/no usable results/i.test(err.message || '')) {
+      throw new Error(
+        String(err.message).replace(/no usable results/i, 'no usable tracks')
+      );
+    }
+    throw err;
+  }
 }
 
 function isTrackMenuSurface(messages = []) {
