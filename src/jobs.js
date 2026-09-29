@@ -2086,7 +2086,8 @@ export const sourceQueue = new SerialQueue(async job => {
             openedAlbumContext = await openMeloBotAlbumContext(
               tg,
               session.artistContext.artist,
-              album
+              album,
+              { timeoutMs: 4500 }
             );
             resolvedArtist = openedAlbumContext.artist;
             liveAlbum = openedAlbumContext.album;
