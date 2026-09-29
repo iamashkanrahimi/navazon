@@ -222,15 +222,22 @@ function looksLikeAlbumButton(rawText) {
   return /^.+?\s*\(\d+\)\s*$/u.test(value);
 }
 
+function looksLikeAlbumNavigationText(rawText = '') {
+  const text = clean(rawText);
+  if (!text || /دانلود/u.test(text)) return false;
+
+  const normalized = normalize(text);
+  if (/(?:^|\s)(?:آلبوم|البوم|albums?)(?:\s|$)/iu.test(normalized)) return true;
+  if (/دیسکوگرافی|discography/iu.test(normalized)) return true;
+  return /^[💿📀]\s*$/u.test(text);
+}
+
 export function parseTrackButton(rawText, fallbackArtist = '') {
   const original = clean(rawText);
   if (!original || isControl(original) || looksLikeAlbumButton(original)) return null;
   if (/^[🗣🎤🎙]/u.test(original)) return null;
 
-  const normalizedOriginal = normalize(original);
-  if (/^(?:آلبوم|البوم|albums?|دیسکوگرافی|discography)(?:\s|$)/iu.test(normalizedOriginal)) {
-    return null;
-  }
+  if (looksLikeAlbumNavigationText(original)) return null;
 
   const popularity = parsePopularity(original);
   let value = stripLeadingEmoji(original);
@@ -361,15 +368,9 @@ export function inspectMeloBotAlbumListing(messages = []) {
 }
 
 export function albumNavigationButton(messages = []) {
-  return buttonsFromMessages(messages).find(rawText => {
-    const text = clean(rawText);
-    if (!text || parseAlbumButton(text) || /دانلود/u.test(text)) return false;
-
-    const normalized = normalize(text);
-    if (/^(?:آلبوم|البوم|albums?)(?:\s|$)/iu.test(normalized)) return true;
-    if (/دیسکوگرافی|discography/iu.test(normalized)) return true;
-    return /^[💿📀]\s*$/u.test(text);
-  }) || null;
+  return buttonsFromMessages(messages).find(rawText =>
+    !parseAlbumButton(rawText) && looksLikeAlbumNavigationText(rawText)
+  ) || null;
 }
 
 function findButton(messages, predicate) {
@@ -935,7 +936,14 @@ async function openMeloBotArtistBase(client, seedTrack) {
   const artistButton = findButton(menuMessages, text =>
     text.includes('خواننده') && !text.includes('پیشنهاد')
   );
-  if (!artistButton) throw new Error('MeloBot artist button not found.');
+  if (!artistButton) {
+    console.warn(
+      '[melobot artist menu surface]',
+      seedTrack?.artist || 'unknown',
+      describeMeloBotSurface(menuMessages)
+    );
+    throw new Error('MeloBot artist button not found.');
+  }
 
   let artistPage = await sendAndCollect(client, artistButton, {
     timeoutMs: config.searchTimeoutMs,
