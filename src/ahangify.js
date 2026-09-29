@@ -88,14 +88,18 @@ export async function searchAhangify(
   );
 }
 
-export async function downloadAhangifyResult(client, candidate) {
+export async function downloadAhangifyResult(
+  client,
+  candidate,
+  { timeoutMs = config.downloadTimeoutMs } = {}
+) {
   const peer = config.ahangifyUsername;
   const beforeDownload = await latestMessageId(client, peer);
 
   await client.sendMessage(peer, { message: candidate.cmd });
 
   const download = await collectNewMessages(client, peer, beforeDownload, {
-    timeoutMs: config.downloadTimeoutMs,
+    timeoutMs: Math.max(1500, Number(timeoutMs || config.downloadTimeoutMs)),
     stopWhen: message => {
       if (isAudioMessage(message)) return true;
       const text = messageText(message).toLowerCase();
