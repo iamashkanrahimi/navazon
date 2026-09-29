@@ -127,6 +127,9 @@ export async function initDb() {
       PRIMARY KEY (track_key, quality)
     );
 
+    ALTER TABLE deep_track_media
+      ADD COLUMN IF NOT EXISTS verified_quality BOOLEAN NOT NULL DEFAULT FALSE;
+
     CREATE TABLE IF NOT EXISTS deep_albums (
       album_key TEXT PRIMARY KEY,
       artist TEXT NOT NULL,
