@@ -22,7 +22,8 @@ import {
   matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums, resolveMeloBotArtistAlbums,
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
-  openMeloBotAlbum, openMeloBotAlbumContext, downloadMeloBotTrack, discoverMeloBotHome,
+  openMeloBotAlbum, openMeloBotAlbumContext, openMeloBotAlbumByTitle,
+  downloadMeloBotTrack, discoverMeloBotHome,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
@@ -655,9 +656,17 @@ export const sourceQueue = new SerialQueue(async job => {
             throw new Error(`Album disappeared from live source: ${album.title}`);
           }
 
-          tracks = await openMeloBotAlbum(tg, liveArtistName, liveAlbum);
-          await syncAlbumTracks(liveArtistName, liveAlbum, tracks);
-          resolvedArtistName = liveArtistName;
+          const opened = await openMeloBotAlbumByTitle(
+            tg,
+            liveArtistName,
+            liveAlbum.title,
+            session.artistSeed || seed || null
+          );
+          liveAlbum = opened.album;
+          tracks = opened.tracks;
+          session.artistSeed = opened.seed || session.artistSeed || seed || null;
+          await syncAlbumTracks(opened.artist, liveAlbum, tracks);
+          resolvedArtistName = opened.artist;
         }
 
         session.currentAlbum = {
@@ -1041,27 +1050,14 @@ export const sourceQueue = new SerialQueue(async job => {
                 || session.albumOriginTrack
                 || session.currentTrack
                 || null;
-              const resolved = preferredSeed
-                ? await resolveMeloBotArtistAlbums(
-                    tg,
-                    artist,
-                    preferredSeed,
-                    { allowEmpty: true }
-                  )
-                : await resolveArtistAlbumsDirect(artist, { maxAlbums: 30 });
 
-              const target = resolved.albums.find(item =>
-                normalize(item.title) === normalize(albumTitle)
-              );
-              if (!target) {
-                throw new Error(`MeloBot album was not found: ${albumTitle}`);
-              }
-
-              albumContext = await openMeloBotAlbumContext(
+              albumContext = await openMeloBotAlbumByTitle(
                 tg,
-                resolved.artist,
-                target
+                artist,
+                albumTitle,
+                preferredSeed
               );
+              session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
               if (!albumContext.bulkHighButton) {
                 throw new Error('MeloBot bulk HQ button was not found on the album page.');
               }
@@ -1183,9 +1179,15 @@ export const sourceQueue = new SerialQueue(async job => {
             const freshArtist = await openMeloBotArtistFresh(tg,liveArtist.artist,candidate.seedTrack || null);
             const freshAlbums = await listMeloBotAlbums(tg,freshArtist);
             const target = freshAlbums.find(x => normalize(x.title) === normalize(album.title)) || album;
-            const tracks = await openMeloBotAlbum(tg,liveArtist.artist,target);
-            await catalog.recordAlbums(liveArtist.artist,freshAlbums);
-            await catalog.recordAlbumTracks(liveArtist.artist,target,tracks);
+            const opened = await openMeloBotAlbumByTitle(
+              tg,
+              liveArtist.artist,
+              target.title,
+              candidate.seedTrack || null
+            );
+            const tracks = opened.tracks;
+            await catalog.recordAlbums(opened.artist,freshAlbums);
+            await catalog.recordAlbumTracks(opened.artist,opened.album,tracks);
             albums = freshAlbums;
             openedAlbums += 1;
           } catch (err) { console.warn('[crawler album]',liveArtist.artist,album.title,err.message); break; }
@@ -1409,7 +1411,16 @@ export const sourceQueue = new SerialQueue(async job => {
             throw new Error(`Album not found in current MeloBot listing: ${album.title}`);
           }
 
-          tracks = await openMeloBotAlbum(tg, resolvedArtist, liveAlbum);
+          const opened = await openMeloBotAlbumByTitle(
+            tg,
+            resolvedArtist,
+            liveAlbum.title,
+            session.artistSeed || seed || null
+          );
+          resolvedArtist = opened.artist;
+          liveAlbum = opened.album;
+          tracks = opened.tracks;
+          session.artistSeed = opened.seed || session.artistSeed || seed || null;
           await syncAlbumIndex(resolvedArtist, resolved.albums, {
             complete: Boolean(resolved.complete),
             emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
