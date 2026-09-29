@@ -125,12 +125,18 @@ export async function bridgeSourceAudio(
   );
 }
 
-export async function bridgeSourceMessages(sourceUsername, messages = []) {
+export async function bridgeSourceMessages(
+  sourceUsername,
+  messages = [],
+  { timeoutMs = null } = {}
+) {
   const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
   if (!ids.length) return { items: [], complete: true, expected: 0 };
 
-  const timeoutMs = Math.max(12_000, Math.min(25_000, 7_000 + ids.length * 2_000));
-  const wait = bridge.expectManyMedia(ids.length, timeoutMs);
+  const waitMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.max(3_000, Math.min(10_000, timeoutMs))
+    : Math.max(8_000, Math.min(15_000, 5_000 + ids.length * 1_000));
+  const wait = bridge.expectManyMedia(ids.length, waitMs);
   await forwardHiddenManyToOurBot(tg, sourceUsername, ids);
   return wait;
 }
