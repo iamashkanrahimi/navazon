@@ -1,17 +1,13 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
+import { cleanText, normalizeText } from './text.js';
 
 function clean(value = '') {
-  return String(value).replace(/\s+/g, ' ').trim();
+  return cleanText(value);
 }
 
 export function deepNormalize(value = '') {
-  return clean(value)
-    .toLocaleLowerCase('en-US')
-    .replace(/[\u200e\u200f\u202a-\u202e]/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeText(value);
 }
 
 export function deepTrackKey(track = {}) {
