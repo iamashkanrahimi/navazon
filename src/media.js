@@ -3,6 +3,7 @@ import { bot, bridge, cache, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
+import { normalizeText } from './text.js';
 import { searchMeloBot, downloadMeloBotTrack } from './sources/melobot.js';
 import { searchAhangify, downloadAhangifyResult } from './sources/ahangify.js';
 
@@ -76,12 +77,7 @@ export async function sendMedia(chatId, track, media) {
 }
 
 function normalizeMatch(value = '') {
-  return String(value)
-    .toLocaleLowerCase('en-US')
-    .replace(/[\u200e\u200f\u202a-\u202e]/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeText(value);
 }
 
 function chooseAhangifyMatch(results, track) {
