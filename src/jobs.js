@@ -1040,14 +1040,6 @@ export const sourceQueue = new SerialQueue(async job => {
             || session.albumOriginTrack?.artist
             || session.currentTrack?.artist;
           const albumTitle = session.currentAlbum?.title;
-          const seed = session.artistSeed
-            || session.albumOriginTrack
-            || session.currentTrack
-            || session.options?.find(x =>
-              x.source === 'melobot' &&
-              (!artist || normalize(x.artist) === normalize(artist))
-            );
-
           if (!artist || !albumTitle) {
             throw new Error('Album identity missing for native bulk HQ.');
           }
@@ -1057,26 +1049,24 @@ export const sourceQueue = new SerialQueue(async job => {
           let lastError;
           for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-              if (seed) {
-                albumContext = await prepareMeloBotBulkAlbum(tg, artist, albumTitle, seed);
-              } else {
-                const direct = await discoverMeloBotAlbumsByArtistQuery(
-                  tg,
-                  `album ${artist}`,
-                  { maxAlbums: 30 }
-                );
-                const target = (direct.albums || []).find(item =>
-                  normalize(item.title) === normalize(albumTitle)
-                );
-                if (!target) throw new Error(`MeloBot album was not found: ${albumTitle}`);
-                albumContext = await openMeloBotAlbumContext(
-                  tg,
-                  direct.artist || artist,
-                  target
-                );
-                if (!albumContext.bulkHighButton) {
-                  throw new Error('MeloBot bulk HQ button was not found on the album page.');
-                }
+              // Reset MeloBot to the artist's album listing first. Reusing a
+              // stale seed/keyboard here was the same class of bug that made
+              // the Albums button bounce back to the artist page.
+              const resolved = await resolveArtistAlbumsDirect(artist, { maxAlbums: 30 });
+              const target = resolved.albums.find(item =>
+                normalize(item.title) === normalize(albumTitle)
+              );
+              if (!target) {
+                throw new Error(`MeloBot album was not found: ${albumTitle}`);
+              }
+
+              albumContext = await openMeloBotAlbumContext(
+                tg,
+                resolved.artist,
+                target
+              );
+              if (!albumContext.bulkHighButton) {
+                throw new Error('MeloBot bulk HQ button was not found on the album page.');
               }
 
               bulk = await downloadMeloBotAlbumTracks(tg, albumContext);
