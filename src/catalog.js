@@ -41,7 +41,7 @@ function looksLikeAlbumRowButton(value = '') {
 function trustedStoredAlbum(album = {}) {
   if (album.verifiedAlbum === true) return true;
   const rawText = clean(album.rawText || '');
-  if (!rawText) return true;
+  if (!rawText) return false;
   return /^[💿📀]/u.test(rawText);
 }
 
@@ -251,8 +251,7 @@ export class CatalogStore {
         row.artist
         && row.title
         && (
-          !row.raw_text
-          || /^[💿📀]/u.test(clean(row.raw_text))
+          /^[💿📀]/u.test(clean(row.raw_text || ''))
           || row.verified_album === true
         )
       )
