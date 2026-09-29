@@ -1603,3 +1603,48 @@ test('crawler treats unverified legacy media as missing quality cache', async ()
   assert.match(calls[0].sql, /verified_quality\s*=\s*TRUE/i);
   assert.equal(calls[0].params[0], 'hq');
 });
+
+test('explicit track rows with parenthesized titles are not misclassified as albums', () => {
+  const track = parseTrackButton('🎵 Artist, Song (2024)');
+  assert.equal(track.artist, 'Artist');
+  assert.equal(track.title, 'Song (2024)');
+
+  const surface = parseMeloBotSearchSurface([{
+    message: 'search',
+    replyMarkup: {
+      rows: [{ buttons: [{ text: '🎵 Artist, Song (2024)' }] }],
+    },
+  }]);
+
+  assert.equal(surface.tracks.length, 1);
+  assert.equal(surface.tracks[0].title, 'Song (2024)');
+  assert.equal(surface.albums.length, 0);
+
+  const album = parseAlbumButton('Album Title (10)');
+  assert.equal(album.title, 'Album Title');
+  assert.equal(album.trackCount, 10);
+});
+
+test('query-shape matrix covers punctuation ordering numerals and Persian spacing', async () => {
+  const cases = [
+    { name: 'dash separated exact track', query: 'Artist Song Name', buttons: ['🎵 Artist - Song Name x 750K'], tracks: 1, albums: 0 },
+    { name: 'parenthesized track title', query: 'Artist Song 2024', buttons: ['🎵 Artist, Song (2024)'], tracks: 1, albums: 0 },
+    { name: 'album with Persian digits', query: 'Artist Album', buttons: ['💿 Artist, Album (۱۲)'], tracks: 0, albums: 1 },
+    { name: 'Persian comma track', query: 'هیچکس آهنگ', buttons: ['🎵 هیچکس, آهنگ جدید x 2.1M'], tracks: 1, albums: 0 },
+    { name: 'English album dash', query: 'Shayea Do Be Shak', buttons: ['💿 Shayea — Do Be Shak'], tracks: 0, albums: 1 },
+    { name: 'mixed artist surface', query: 'Shayea', buttons: ['🎵 Shayea, Track One x 1M', '🎵 Shayea, Track Two x 800K', '💿 Shayea, Do Be Shak', '💿 Shayea, Injaneb'], tracks: 2, albums: 2 },
+  ];
+
+  for (const item of cases) {
+    const client = new FakeTelegramClient({
+      [item.query]: [[fakeBotMessage(item.name, item.buttons)]],
+    });
+    const typed = await searchMeloBotTyped(client, item.query);
+    assert.equal(typed.tracks.length, item.tracks, item.name + ': tracks');
+    assert.equal(typed.albums.length, item.albums, item.name + ': albums');
+  }
+
+  assert.equal(hasAlbumIntent('آلبوم‌های شایع'), true);
+  assert.equal(hasAlbumIntent('البوم های شایع'), true);
+  assert.equal(hasAlbumIntent('album Shayea'), true);
+});
