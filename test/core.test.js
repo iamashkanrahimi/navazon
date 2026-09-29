@@ -25,8 +25,15 @@ const {
   chooseMeloBotSearchRefinement,
   albumNavigationButton,
   describeMeloBotSurface,
+  getMeloBotStateVersion,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
+const {
+  installTelegramInbox,
+  latestMessageId,
+  collectNewMessages,
+} = await import('../src/mtproto.js');
+const { SerialQueue } = await import('../src/queue.js');
 const { trackCacheKey } = await import('../src/cache.js');
 const {
   resultsKeyboard,
@@ -85,6 +92,45 @@ class FakeTelegramClient {
         out: false,
       });
     }
+  }
+}
+
+class FakeEventTelegramClient {
+  constructor() {
+    this.handlers = [];
+    this.nextId = 1;
+    this.historyCalls = 0;
+  }
+
+  addEventHandler(handler) {
+    this.handlers.push(handler);
+  }
+
+  async getInputEntity(peer) {
+    return { peer };
+  }
+
+  async getPeerId(input) {
+    return input.peer === 'melobot' ? '42' : '43';
+  }
+
+  async getMessages() {
+    this.historyCalls += 1;
+    throw new Error('event-driven path must not poll history');
+  }
+
+  emit(senderId, message, extra = {}) {
+    const msg = {
+      id: this.nextId++,
+      senderId: BigInt(senderId),
+      out: false,
+      message,
+      ...extra,
+    };
+    for (const handler of this.handlers) {
+      handler({ message: msg, chatId: BigInt(senderId) });
+    }
+    return msg;
   }
 }
 
@@ -713,4 +759,62 @@ test('Ebi-style missing artist button falls back to the direct album route', asy
     ['Shabe Niloufari', 'Hasrate Parvaz']
   );
   assert.equal(resolved.complete, true);
+});
+
+
+test('event-driven MTProto inbox receives replies without GetHistory polling', async () => {
+  const client = new FakeEventTelegramClient();
+  installTelegramInbox(client);
+
+  const afterId = await latestMessageId(client, 'melobot');
+  const pending = collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 300,
+    quietMs: 20,
+  });
+
+  client.emit(42, 'hello from source');
+  const result = await pending;
+
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].message, 'hello from source');
+  assert.equal(client.historyCalls, 0);
+});
+
+test('priority serial queue lets interactive work jump ahead of queued background work', async () => {
+  const order = [];
+  let releaseActive;
+  const activeGate = new Promise(resolve => { releaseActive = resolve; });
+
+  const queue = new SerialQueue(async item => {
+    order.push(item.id);
+    if (item.id === 'active-background') await activeGate;
+  }, {
+    priorityOf: item => item.interactive ? 100 : 0,
+  });
+
+  queue.push({ id: 'active-background', interactive: false });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  queue.push({ id: 'queued-background', interactive: false });
+  queue.push({ id: 'interactive', interactive: true });
+
+  releaseActive();
+
+  const deadline = Date.now() + 500;
+  while (!queue.isIdle() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+
+  assert.deepEqual(order, ['active-background', 'interactive', 'queued-background']);
+});
+
+test('parsed MeloBot rows carry the current live source-state token', () => {
+  const current = getMeloBotStateVersion();
+  assert.equal(
+    parseTrackButton('🎵 Artist, Song').sourceStateVersion,
+    current
+  );
+  assert.equal(
+    parseAlbumButton('💿 Album (5)').sourceStateVersion,
+    current
+  );
 });
