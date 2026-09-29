@@ -460,7 +460,7 @@ async function runTrackEnrich(task) {
     } catch (err) {
       summary.errors.push(`lyrics-save: ${err.message}`);
     }
-  } else {
+  } else if (bundle.lyrics?.checked === true) {
     try { await deepCatalog.markNoLyrics(liveTrack, 'melobot'); } catch {}
   }
 
