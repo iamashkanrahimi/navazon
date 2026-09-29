@@ -133,6 +133,11 @@ export function scoreTrackQueryMatch(query = '', track = {}) {
   return { score, coverage, total: queryTokens.length };
 }
 
+export function shouldUseSearchRelevanceFallback(query = '', bestCoverage = 0) {
+  const meaningful = meaningfulSearchTokens(query);
+  return meaningful.length >= 2 && Number(bestCoverage || 0) < meaningful.length;
+}
+
 export function rankTracksForQuery(query = '', tracks = []) {
   return (tracks || [])
     .map((track, index) => ({
