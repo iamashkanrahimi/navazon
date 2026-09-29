@@ -402,16 +402,21 @@ function structuralNativeBulkFailure(err) {
 
 async function deliverBulkIndividuallyHq(session, tracks, {
   sourceTimeoutMs = 6000,
+  totalBudgetMs = 25000,
   label = 'bulk individual',
 } = {}) {
   const sourceTracks = (tracks || []).slice(0, TOP_TRACKS_LIMIT);
+  const deadline = Date.now() + Math.max(5000, Number(totalBudgetMs || 25000));
   let sent = 0;
   let missing = 0;
 
   for (let index = 0; index < sourceTracks.length; index += 1) {
-    if (hasPendingForegroundSourceWork()) {
+    if (hasPendingForegroundSourceWork() || Date.now() >= deadline) {
       missing += sourceTracks.length - index;
-      console.warn(`[${label}] paused for foreground work remaining=${sourceTracks.length - index}`);
+      console.warn(
+        `[${label}] paused remaining=${sourceTracks.length - index} reason=`
+        + (hasPendingForegroundSourceWork() ? 'foreground' : 'time_budget')
+      );
       break;
     }
 
