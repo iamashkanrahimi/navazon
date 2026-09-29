@@ -281,24 +281,40 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
   // MeloBot capability discovery is intentionally lazy. A temporary source
   // timeout must never make an action disappear from the page.
   const qualityRow = [];
-  if (isMeloBot || media.hq || capabilities.hasHq) {
+  if (
+    media.hq
+    || capabilities.hasHq === true
+    || (isMeloBot && capabilities.hasHq !== false)
+  ) {
     qualityRow.push({
       text: track?.source === 'ahangify' ? '📥 بهترین کیفیت موجود' : '📥 کیفیت عالی',
       callback_data: `tqh:${sessionId}`,
     });
   }
-  if (isMeloBot || media.normal || capabilities.hasNormal) {
+  if (
+    media.normal
+    || capabilities.hasNormal === true
+    || (isMeloBot && capabilities.hasNormal !== false)
+  ) {
     qualityRow.push({ text: '📥 کیفیت معمولی', callback_data: `tqn:${sessionId}` });
   }
   if (qualityRow.length) rows.push(qualityRow);
 
   const extras = [];
   const hasKnownLyrics = Boolean(details?.lyrics_text);
-  const lyricsKnownMissing = details?.metadata?.hasLyrics === false;
-  if (isMeloBot || hasKnownLyrics || (!lyricsKnownMissing && capabilities.hasLyrics)) {
+  const lyricsKnownMissing = details?.metadata?.hasLyrics === false || capabilities.hasLyrics === false;
+  if (
+    hasKnownLyrics
+    || (!lyricsKnownMissing && capabilities.hasLyrics === true)
+    || (isMeloBot && !lyricsKnownMissing && capabilities.hasLyrics !== false)
+  ) {
     extras.push({ text: '📝 متن', callback_data: `tly:${sessionId}` });
   }
-  if (isMeloBot || details?.cover_file_id || capabilities.hasCover) {
+  if (
+    details?.cover_file_id
+    || capabilities.hasCover === true
+    || (isMeloBot && capabilities.hasCover !== false)
+  ) {
     extras.push({ text: '🖼 کاور', callback_data: `tcv:${sessionId}` });
   }
   if (extras.length) rows.push(extras);
@@ -309,11 +325,17 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
     details?.popularity_count || details?.popularity_text || details?.albumInfo ||
     capabilities.hasMetadata
   );
-  if (isMeloBot || hasInfo) infoRow.push({ text: '📋 مشخصات', callback_data: `tif:${sessionId}` });
+  if (
+    hasInfo
+    || capabilities.hasMetadata === true
+    || (isMeloBot && capabilities.hasMetadata !== false)
+  ) {
+    infoRow.push({ text: '📋 مشخصات', callback_data: `tif:${sessionId}` });
+  }
   if (
     track?.artist
     && !track?.artistInferred
-    && (isMeloBot || capabilities.hasArtistPage)
+    && capabilities.hasArtistPage === true
   ) {
     infoRow.push({ text: '🗣 صفحه‌ی خواننده', callback_data: `tar:${sessionId}` });
   }

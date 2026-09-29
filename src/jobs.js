@@ -48,12 +48,13 @@ import {
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
   shouldUseLiveAlbumDiscovery,
+  cleanText,
 } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
 const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
-const SEARCH_CACHE_NAMESPACE = 'v158';
+const SEARCH_CACHE_NAMESPACE = 'v160';
 
 function userSearchCacheKey(query = '') {
   return `${SEARCH_CACHE_NAMESPACE}:${query}`;
@@ -334,7 +335,8 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     try {
       const bridged = await bridgeSourceMessages(
         config.melobotUsername,
-        sourceMatches.map(item => item.audioItem.message)
+        sourceMatches.map(item => item.audioItem.message),
+        { timeoutMs: 6000 }
       );
 
       const bridgedMatches = matchBulkAudioToTracks(
@@ -347,7 +349,7 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
         const key = bulkTrackKey(track);
         mediaByTrack.set(key, media);
 
-        const performer = clean(media?.performer || '');
+        const performer = cleanText(media?.performer || '');
         const canonicalTrack = track.artistInferred && performer
           ? { ...track, artist: performer, artistInferred: false }
           : track;
@@ -632,6 +634,8 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         const albumOptionsStartedAt = Date.now();
+        options = await deepCatalog.canonicalizeKnownTracks(options);
+
         const indexedAlbumOptions = await searchAlbumOptions(job.query, options);
         const albumLimit = albumIntent ? 20 : 4;
         const albumOptions = mergeAlbumResults(
@@ -957,7 +961,7 @@ export const sourceQueue = new SerialQueue(async job => {
           session.currentTrack,
           job.quality,
           session.userRegion || 'unknown',
-          { sourceTimeoutMs: 15000 }
+          { sourceTimeoutMs: 6500 }
         );
       } catch (err) {
         console.error('[track quality]', err.message);
@@ -1254,6 +1258,7 @@ export const sourceQueue = new SerialQueue(async job => {
       const requestedTracks = session.artistContext?.recentTracks?.slice(0, TOP_TRACKS_LIMIT) || [];
       let sent = 0;
       let missing = 0;
+      let fallbackNotified = false;
 
       try {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
@@ -1269,17 +1274,18 @@ export const sourceQueue = new SerialQueue(async job => {
           let liveArtist;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 1; attempt += 1) {
             try {
               liveArtist = await prepareMeloBotBulkRecentTracks(
                 tg,
                 session.artistContext.artist,
-                seed
+                seed,
+                { timeoutMs: 3500 }
               );
               bulk = await downloadMeloBotRecentTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: attempt === 0 ? 9000 : 14000 }
+                { timeoutMs: 6500 }
               );
               lastError = null;
               break;
@@ -1319,33 +1325,24 @@ export const sourceQueue = new SerialQueue(async job => {
           sent = delivered.sent;
           missing = delivered.missing;
 
-          if (delivered.missingTracks?.length) {
-            const tail = await deliverBulkIndividuallyHq(
-              session,
-              delivered.missingTracks,
-              {
-                label: 'recent native gaps',
-                sourceTimeoutMs: 5000,
-                totalBudgetMs: 15000,
-              }
-            );
-            sent += tail.sent;
-            missing = tail.missing;
-          }
+
         }
       } catch (err) {
         console.warn('[native bulk recent failed]', err.message);
-        const fallback = await deliverBulkIndividuallyHq(session, requestedTracks, {
-          label: 'recent individual HQ',
-        });
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
         const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
+          fallbackNotified = true;
         }
       }
 
+      if (!fallbackNotified && missing > 0 && sent > 0) {
+        const notice = bulkFallbackMessage('recent', sent, missing);
+        if (notice) await bot.sendMessage(session.chatId, notice);
+      }
       session.busy = false;
       await bot.editMessageText(
         session.chatId,
@@ -1392,6 +1389,7 @@ export const sourceQueue = new SerialQueue(async job => {
       ).slice(0, TOP_TRACKS_LIMIT);
       let sent = 0;
       let missing = 0;
+      let fallbackNotified = false;
 
       try {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
@@ -1407,17 +1405,18 @@ export const sourceQueue = new SerialQueue(async job => {
           let liveArtist;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 1; attempt += 1) {
             try {
               liveArtist = await prepareMeloBotBulkTopTracks(
                 tg,
                 session.artistContext.artist,
-                seed
+                seed,
+                { timeoutMs: 3500 }
               );
               bulk = await downloadMeloBotTopTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: attempt === 0 ? 9000 : 14000 }
+                { timeoutMs: 6500 }
               );
               lastError = null;
               break;
@@ -1449,33 +1448,24 @@ export const sourceQueue = new SerialQueue(async job => {
           sent = delivered.sent;
           missing = delivered.missing;
 
-          if (delivered.missingTracks?.length) {
-            const tail = await deliverBulkIndividuallyHq(
-              session,
-              delivered.missingTracks,
-              {
-                label: 'top native gaps',
-                sourceTimeoutMs: 5000,
-                totalBudgetMs: 15000,
-              }
-            );
-            sent += tail.sent;
-            missing = tail.missing;
-          }
+
         }
       } catch (err) {
         console.warn('[native bulk top failed]', err.message);
-        const fallback = await deliverBulkIndividuallyHq(session, requestedTracks, {
-          label: 'top individual HQ',
-        });
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
         const fallbackMessage = bulkFallbackMessage('top', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
+          fallbackNotified = true;
         }
       }
 
+      if (!fallbackNotified && missing > 0 && sent > 0) {
+        const notice = bulkFallbackMessage('top', sent, missing);
+        if (notice) await bot.sendMessage(session.chatId, notice);
+      }
       session.busy = false;
       const tracks = session.artistContext?.topTracks || requestedTracks;
       await bot.editMessageText(
@@ -1494,6 +1484,7 @@ export const sourceQueue = new SerialQueue(async job => {
       const requestedTracks = session.currentAlbum?.tracks || [];
       let sent = 0;
       let missing = 0;
+      let fallbackNotified = false;
 
       try {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
@@ -1512,7 +1503,7 @@ export const sourceQueue = new SerialQueue(async job => {
           let albumContext;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 1; attempt += 1) {
             try {
               const preferredSeed = session.artistSeed
                 || session.albumOriginTrack
@@ -1556,7 +1547,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: attempt === 0 ? 9000 : 14000 }
+                { timeoutMs: 6500 }
               );
               lastError = null;
               break;
@@ -1602,35 +1593,24 @@ export const sourceQueue = new SerialQueue(async job => {
           sent = delivered.sent;
           missing = delivered.missing;
 
-          if (delivered.missingTracks?.length) {
-            const tail = await deliverBulkIndividuallyHq(
-              session,
-              delivered.missingTracks,
-              {
-                label: 'album native gaps',
-                sourceTimeoutMs: 5000,
-                totalBudgetMs: 15000,
-              }
-            );
-            sent += tail.sent;
-            missing = tail.missing;
-          }
+
         }
       } catch (err) {
         console.warn('[native bulk album failed]', err.message);
-        const fallback = await deliverBulkIndividuallyHq(session, requestedTracks, {
-          label: 'album individual HQ',
-          sourceTimeoutMs: 6000,
-          totalBudgetMs: 25000,
-        });
+        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
+          fallbackNotified = true;
         }
       }
 
+      if (!fallbackNotified && missing > 0 && sent > 0) {
+        const notice = bulkFallbackMessage('album', sent, missing);
+        if (notice) await bot.sendMessage(session.chatId, notice);
+      }
       session.busy = false;
       const album = session.currentAlbum;
       const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;

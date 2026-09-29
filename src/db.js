@@ -113,6 +113,19 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS deep_tracks_updated_idx ON deep_tracks (updated_at DESC);
     CREATE INDEX IF NOT EXISTS deep_tracks_discovered_idx ON deep_tracks (discovered_at DESC);
 
+    CREATE TABLE IF NOT EXISTS track_aliases (
+      alias_key TEXT PRIMARY KEY,
+      alias_artist TEXT NOT NULL,
+      alias_title TEXT NOT NULL,
+      canonical_track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
+      source TEXT,
+      evidence TEXT NOT NULL DEFAULT 'unknown',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS track_aliases_canonical_idx
+      ON track_aliases (canonical_track_key);
+
     CREATE TABLE IF NOT EXISTS deep_track_media (
       track_key TEXT NOT NULL REFERENCES deep_tracks(track_key) ON DELETE CASCADE,
       quality TEXT NOT NULL,

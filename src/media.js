@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { bot, bridge, cache, tg } from './runtime.js';
+import { bot, bridge, cache, deepCatalog, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
@@ -28,6 +28,19 @@ export function sourceCandidateToTrack(candidate) {
   if (candidate.source === 'melobot') return candidate;
   const parsed = splitAhangifyTitle(candidate.title);
   return applyPolicyDefaults({ ...candidate, artist: parsed.artist, title: parsed.title });
+}
+
+export function canonicalTrackFromAudioMetadata(track = {}, media = {}) {
+  const performer = String(media?.performer || '').replace(/\s+/g, ' ').trim();
+  const title = String(media?.title || '').replace(/\s+/g, ' ').trim();
+  if (!performer || !title || track?.artistInferred) return track;
+
+  return applyPolicyDefaults({
+    ...track,
+    artist: performer,
+    title,
+    artistInferred: false,
+  });
 }
 
 export function assertDeliveryAllowed(track, userRegion = 'unknown') {
@@ -70,10 +83,27 @@ export async function bridgeSourceMessage(
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
 
-  const performer = String(media?.performer || '').trim();
-  const durableTrack = track?.artistInferred && performer
-    ? { ...track, artist: performer, artistInferred: false }
-    : track;
+  const originalTrack = { ...track };
+  const durableTrack = canonicalTrackFromAudioMetadata(track, media);
+
+  if (
+    durableTrack?.artist
+    && durableTrack?.title
+    && (
+      normalizeText(durableTrack.artist) !== normalizeText(originalTrack.artist || '')
+      || normalizeText(durableTrack.title) !== normalizeText(originalTrack.title || '')
+    )
+  ) {
+    try {
+      await deepCatalog.setTrackAlias(originalTrack, durableTrack, {
+        source: originalTrack.source || sourceUsername,
+        evidence: 'telegram_audio_metadata',
+      });
+    } catch (err) {
+      console.warn('[track alias learn]', err.message);
+    }
+    Object.assign(track, durableTrack);
+  }
 
   if (!durableTrack?.artistInferred) {
     await cache.set(durableTrack,media,{ sourceFetch: true });
@@ -95,12 +125,18 @@ export async function bridgeSourceAudio(
   );
 }
 
-export async function bridgeSourceMessages(sourceUsername, messages = []) {
+export async function bridgeSourceMessages(
+  sourceUsername,
+  messages = [],
+  { timeoutMs = null } = {}
+) {
   const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
   if (!ids.length) return { items: [], complete: true, expected: 0 };
 
-  const timeoutMs = Math.max(12_000, Math.min(25_000, 7_000 + ids.length * 2_000));
-  const wait = bridge.expectManyMedia(ids.length, timeoutMs);
+  const waitMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.max(3_000, Math.min(10_000, timeoutMs))
+    : Math.max(8_000, Math.min(15_000, 5_000 + ids.length * 1_000));
+  const wait = bridge.expectManyMedia(ids.length, waitMs);
   await forwardHiddenManyToOurBot(tg, sourceUsername, ids);
   return wait;
 }

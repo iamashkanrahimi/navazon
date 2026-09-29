@@ -20,6 +20,27 @@ function hasCanonicalTrackIdentity(track = {}) {
   return Boolean(track?.artist && track?.title && !track?.artistInferred);
 }
 
+const CAPABILITY_TTL_MS = 60 * 60 * 1000;
+
+function freshCapabilitySnapshot(details = {}) {
+  const checkedAt = Date.parse(details?.metadata?.capabilitiesCheckedAt || '');
+  if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > CAPABILITY_TTL_MS) {
+    return {};
+  }
+  return details?.metadata?.capabilities || {};
+}
+
+async function resolveKnownAliasInPlace(track = {}) {
+  if (!hasCanonicalTrackIdentity(track)) return track;
+  try {
+    const resolved = await deepCatalog.resolveTrackAlias(track);
+    if (resolved && resolved !== track) Object.assign(track, resolved);
+  } catch (err) {
+    console.warn('[track alias]', err.message);
+  }
+  return track;
+}
+
 function adoptCanonicalCandidate(track = {}, candidate = null) {
   if (
     !candidate?.artist
@@ -44,6 +65,7 @@ async function safeTrackDetails(track = {}) {
   if (!hasCanonicalTrackIdentity(track)) {
     return { media: {}, metadata: {}, albumInfo: null };
   }
+  await resolveKnownAliasInPlace(track);
   return await deepCatalog.getTrackDetails(track)
     || { media: {}, metadata: {}, albumInfo: null };
 }
@@ -58,10 +80,11 @@ async function captureForwardedMedia(message, timeoutMs = 10_000) {
 }
 
 export async function prepareTrackPage(track) {
-  // A title-only Artist-page row may carry a page-context artist that is not
-  // the primary artist. Do not create more durable catalog state until a
-  // source-backed action has canonicalized that identity.
+  // Resolve durable aliases before reading capabilities. This keeps Persian,
+  // Latin and fallback-source variants of the same delivered audio on one
+  // canonical Track page without a live source round trip.
   if (!track?.artistInferred) {
+    await resolveKnownAliasInPlace(track);
     await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
     try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
   }
@@ -69,28 +92,51 @@ export async function prepareTrackPage(track) {
   const details = track?.artistInferred
     ? { media: {}, metadata: {} }
     : await deepCatalog.getTrackDetails(track);
-  const snapshot = details?.metadata?.capabilities || {};
+  const snapshot = freshCapabilitySnapshot(details);
 
-  // Initial rendering is local-only. Source capability checks are deliberately
-  // deferred to the button click so a temporary MeloBot timeout can never
-  // make the page take 18–36 seconds or hide an action for days.
+  // Cached media/content is authoritative. Source capability snapshots are
+  // trusted for only one hour; after that a positive becomes unknown instead
+  // of being advertised forever.
+  const unavailable = track?.capabilityUnavailable || {};
+  const hasStoredInfo = Boolean(
+    details?.release_date || details?.release_date_raw || details?.duration_seconds ||
+    details?.popularity_count || details?.popularity_text || details?.albumInfo
+  );
   const capabilities = {
-    hasHq: Boolean(details?.media?.hq) || Boolean(snapshot.hasHq) || track?.source === 'ahangify',
-    hasNormal: Boolean(details?.media?.normal) || Boolean(snapshot.hasNormal),
-    hasLyrics: Boolean(details?.lyrics_text) || Boolean(snapshot.hasLyrics),
-    hasCover: Boolean(details?.cover_file_id) || Boolean(snapshot.hasCover),
-    hasMetadata: Boolean(
-      details?.release_date || details?.release_date_raw || details?.duration_seconds ||
-      details?.popularity_count || details?.popularity_text || details?.albumInfo ||
-      snapshot.hasMetadata
+    hasHq: unavailable.hasHq
+      ? false
+      : (Boolean(details?.media?.hq) || snapshot.hasHq === true
+          || (track?.source === 'ahangify' && Boolean(track?.cmd))
+        ? true
+        : null),
+    hasNormal: unavailable.hasNormal
+      ? false
+      : (Boolean(details?.media?.normal) || snapshot.hasNormal === true ? true : null),
+    hasLyrics: details?.metadata?.hasLyrics === false
+      ? false
+      : (Boolean(details?.lyrics_text) || snapshot.hasLyrics === true ? true : null),
+    hasCover: unavailable.hasCover
+      ? false
+      : (Boolean(details?.cover_file_id) || snapshot.hasCover === true ? true : null),
+    hasMetadata: unavailable.hasMetadata
+      ? false
+      : (hasStoredInfo || snapshot.hasMetadata === true ? true : null),
+    hasArtistPage: Boolean(
+      track?.artist
+      && !track?.artistInferred
+      && (
+        (track?.source === 'melobot' && track?.rawText)
+        || snapshot.hasArtistPage === true
+      )
     ),
-    hasArtistPage: Boolean(track?.artist),
+    snapshotFresh: Object.keys(snapshot).length > 0,
   };
 
   return { details, capabilities };
 }
 
 export async function resolveTrackIdentity(track) {
+  await resolveKnownAliasInPlace(track);
   if (
     track?.source !== 'melobot'
     || !track?.rawText
@@ -169,19 +215,33 @@ export async function sendTrackQuality(
     // promoted to HQ. HQ/normal reuse comes only from deep_track_media where
     // the quality dimension is explicit.
     if (track?.source === 'melobot' && track?.rawText) {
-      const result = await downloadMeloBotTrackQuality(
-        tg,
-        track,
-        quality,
-        { timeoutMs: sourceTimeoutMs }
-      );
-      track = adoptCanonicalCandidate(track, result.candidate);
-      media = await captureForwardedMedia(result.audioMessage);
-      if (hasCanonicalTrackIdentity(track)) {
-        await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
-        if (quality === 'hq') {
-          await cache.set(track, media, { sourceFetch: true });
+      try {
+        const result = await downloadMeloBotTrackQuality(
+          tg,
+          track,
+          quality,
+          { timeoutMs: sourceTimeoutMs }
+        );
+        track = adoptCanonicalCandidate(track, result.candidate);
+        media = await captureForwardedMedia(result.audioMessage);
+        if (hasCanonicalTrackIdentity(track)) {
+          await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
+          if (quality === 'hq') {
+            await cache.set(track, media, { sourceFetch: true });
+          }
         }
+      } catch (err) {
+        const capability = quality === 'hq' ? 'hasHq' : 'hasNormal';
+        track.capabilityUnavailable = {
+          ...(track.capabilityUnavailable || {}),
+          [capability]: true,
+        };
+        if (hasCanonicalTrackIdentity(track)) {
+          try {
+            await deepCatalog.clearCapability(track, capability);
+          } catch {}
+        }
+        throw err;
       }
     } else if (quality === 'hq') {
       const { downloadTrackWithSources } = await import('./media.js');
@@ -346,7 +406,7 @@ export async function getTrackInfoText(track) {
   else if (details?.popularity_count) lines.push(`📈 بازدید حدودی: ${Number(details.popularity_count).toLocaleString('en-US')}`);
 
   const qualitySet = new Set(Object.keys(details?.media || {}));
-  const knownCapabilities = details?.metadata?.capabilities || {};
+  const knownCapabilities = freshCapabilitySnapshot(details);
   if (knownCapabilities.hasHq === true) qualitySet.add('hq');
   if (knownCapabilities.hasNormal === true) qualitySet.add('normal');
   const qualities = [...qualitySet];

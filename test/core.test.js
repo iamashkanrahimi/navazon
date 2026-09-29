@@ -1872,7 +1872,7 @@ test('legacy mixed album catalog rows force a live refresh instead of a partial 
   }
 });
 
-test('MeloBot track pages keep common actions visible when capability state is unknown', () => {
+test('MeloBot track pages keep lazy media actions visible but require source-backed Artist navigation', () => {
   const keyboard = trackPageKeyboard(
     'stable1',
     { source: 'melobot', artist: 'T-Dey', title: 'Khalesaneh' },
@@ -1885,7 +1885,7 @@ test('MeloBot track pages keep common actions visible when capability state is u
   assert.ok(texts.includes('📝 متن'));
   assert.ok(texts.includes('🖼 کاور'));
   assert.ok(texts.includes('📋 مشخصات'));
-  assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
+  assert.equal(texts.includes('🗣 صفحه‌ی خواننده'), false);
 });
 
 test('inferred page-context artists are not presented as confirmed primary artists', () => {
@@ -2835,4 +2835,94 @@ test('composite artist separator guard catches collaboration-style credits conse
   assert.equal(hasCompositeArtistSeparators('Feid, Pirlo'), true);
   assert.equal(hasCompositeArtistSeparators('H.E.R.'), false);
   assert.equal(hasCompositeArtistSeparators('Reza Jafari'), false);
+});
+
+
+test('tri-state track UI hides a quality after the current session confirms failure', () => {
+  const keyboard = trackPageKeyboard(
+    'tri1',
+    { source: 'melobot', artist: 'Reza Bahram', title: 'Yar', rawText: '🎵 Reza Bahram, Yar' },
+    { media: {}, metadata: {} },
+    {
+      hasHq: true,
+      hasNormal: false,
+      hasLyrics: null,
+      hasCover: null,
+      hasMetadata: null,
+      hasArtistPage: true,
+    }
+  );
+  const texts = keyboard.inline_keyboard.flat().map(button => button.text);
+  assert.ok(texts.includes('📥 کیفیت عالی'));
+  assert.equal(texts.includes('📥 کیفیت معمولی'), false);
+  assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
+});
+
+test('deep catalog learns Persian-to-Latin track alias from cached Telegram audio metadata', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+
+    if (text.includes('FROM track_aliases a')) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (text.includes('FROM track_cache') && text.includes('ORDER BY updated_at DESC')) {
+      return {
+        rows: [{
+          track: { source: 'ahangify' },
+          media: { performer: 'Reza Bahram', title: 'Yar' },
+        }],
+        rowCount: 1,
+      };
+    }
+    if (text.includes('FROM deep_tracks') && text.includes('WHERE track_key = $1') && text.includes('source_data')) {
+      return {
+        rows: [{
+          artist: 'Reza Bahram',
+          title: 'Yar',
+          source_data: {
+            source: 'melobot',
+            rawText: '🎵 Reza Bahram, Yar',
+          },
+          duration_seconds: 214,
+          popularity_count: 1200000,
+          popularity_text: '1.2M',
+        }],
+        rowCount: 1,
+      };
+    }
+    if (text.startsWith('SELECT 1 FROM deep_tracks')) {
+      return { rows: [{ '?column?': 1 }], rowCount: 1 };
+    }
+    if (text.includes('INSERT INTO track_aliases')) {
+      return { rows: [], rowCount: 1 };
+    }
+    throw new Error('Unexpected SQL in alias regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const resolved = await catalog.resolveTrackAlias({
+      artist: 'رضا بهرام',
+      title: 'یار',
+      source: 'ahangify',
+      cmd: '/dl_BD69WA3',
+    });
+
+    assert.equal(resolved.artist, 'Reza Bahram');
+    assert.equal(resolved.title, 'Yar');
+    assert.equal(resolved.source, 'melobot');
+    assert.equal(resolved.rawText, '🎵 Reza Bahram, Yar');
+    assert.equal(resolved.cmd, '/dl_BD69WA3');
+
+    const aliasInsert = calls.find(call => call.sql.includes('INSERT INTO track_aliases'));
+    assert.ok(aliasInsert);
+    assert.equal(aliasInsert.params[0], 'رضا بهرام|یار');
+    assert.equal(aliasInsert.params[3], 'reza bahram|yar');
+    assert.equal(aliasInsert.params[5], 'telegram_audio_metadata');
+  } finally {
+    db.query = originalQuery;
+  }
 });
