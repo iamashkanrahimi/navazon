@@ -10,6 +10,23 @@ function normalize(value = '') {
   return normalizeText(value);
 }
 
+function markLegacyInferredArtist(track = {}) {
+  if (track.artistInferred) return track;
+  const artist = normalize(track.artist || '');
+  const title = normalize(track.title || '');
+  if (
+    artist
+    && (
+      title.includes(`feat ${artist}`)
+      || title.includes(`ft ${artist}`)
+      || title.includes(`featuring ${artist}`)
+    )
+  ) {
+    return { ...track, artistInferred: true };
+  }
+  return track;
+}
+
 function trackIdentity(track = {}) {
   return [normalize(track.artist), normalize(track.title), normalize(track.rawText || track.cmd || '')].join('|');
 }
@@ -150,8 +167,12 @@ export class CatalogStore {
   async getArtistContext(name, maxAgeMs) {
     const { node } = await this.readArtist(name);
     if (!node || !freshEnough(node.artistUpdatedAt, maxAgeMs)) return null;
-    const topTracks = Array.isArray(node.topTracks) ? node.topTracks : [];
-    const recentTracks = Array.isArray(node.recentTracks) ? node.recentTracks : [];
+    const topTracks = Array.isArray(node.topTracks)
+      ? node.topTracks.map(markLegacyInferredArtist)
+      : [];
+    const recentTracks = Array.isArray(node.recentTracks)
+      ? node.recentTracks.map(markLegacyInferredArtist)
+      : [];
     if (!topTracks.length && !recentTracks.length) return null;
     return {
       artist: node.name || clean(name),
