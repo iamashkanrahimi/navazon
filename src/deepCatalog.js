@@ -262,7 +262,13 @@ export class DeepCatalog {
           WHEN EXCLUDED.availability_policy <> 'unknown' THEN EXCLUDED.availability_policy
           ELSE deep_tracks.availability_policy
         END,
-        source_data = deep_tracks.source_data || EXCLUDED.source_data,
+        source_data = CASE
+          WHEN COALESCE(deep_tracks.source_data->>'source','') = 'melobot'
+            AND COALESCE(EXCLUDED.source_data->>'source','') <> 'melobot'
+          THEN deep_tracks.source_data
+            || (EXCLUDED.source_data - 'source' - 'rawText')
+          ELSE deep_tracks.source_data || EXCLUDED.source_data
+        END,
         metadata = deep_tracks.metadata || EXCLUDED.metadata,
         updated_at = NOW()
     `, [
