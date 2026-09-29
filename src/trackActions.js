@@ -20,6 +20,26 @@ function hasCanonicalTrackIdentity(track = {}) {
   return Boolean(track?.artist && track?.title && !track?.artistInferred);
 }
 
+function adoptCanonicalCandidate(track = {}, candidate = null) {
+  if (
+    !candidate?.artist
+    || !candidate?.title
+    || candidate.artistInferred
+  ) {
+    return track;
+  }
+
+  // Session track objects are mutable by design. Repair them in place so a
+  // successful quality/lyrics/cover/info action also fixes later Artist/Album
+  // navigation without another identity lookup.
+  Object.assign(track, {
+    ...candidate,
+    source: candidate.source || track.source || 'melobot',
+    artistInferred: false,
+  });
+  return track;
+}
+
 async function safeTrackDetails(track = {}) {
   if (!hasCanonicalTrackIdentity(track)) {
     return { media: {}, metadata: {}, albumInfo: null };
@@ -155,6 +175,7 @@ export async function sendTrackQuality(
         quality,
         { timeoutMs: sourceTimeoutMs }
       );
+      track = adoptCanonicalCandidate(track, result.candidate);
       media = await captureForwardedMedia(result.audioMessage);
       if (hasCanonicalTrackIdentity(track)) {
         await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
@@ -227,6 +248,7 @@ export async function sendTrackLyrics(chatId, track) {
 
   if (!lyrics && track?.source === 'melobot' && track?.rawText) {
     const result = await getMeloBotLyrics(tg, track, { timeoutMs: 6000 });
+    track = adoptCanonicalCandidate(track, result.candidate);
     if (result.available && result.text) {
       lyrics = result.text;
       if (hasCanonicalTrackIdentity(track)) {
@@ -262,6 +284,7 @@ export async function sendTrackCover(chatId, track) {
 
   if (!media && track?.source === 'melobot' && track?.rawText) {
     const cover = await getMeloBotCover(tg, track, { timeoutMs: 6000 });
+    track = adoptCanonicalCandidate(track, cover?.candidate);
     if (cover?.photoMessage) {
       media = await captureForwardedMedia(cover.photoMessage);
       if (media.kind === 'photo') {
@@ -290,6 +313,7 @@ export async function getTrackInfoText(track) {
   if (needsLive && track?.source === 'melobot' && track?.rawText) {
     try {
       const patch = await getMeloBotTrackMetadata(tg, track, { timeoutMs: 6000 });
+      track = adoptCanonicalCandidate(track, patch.candidate);
       if (hasCanonicalTrackIdentity(track)) {
         await deepCatalog.setMetadata(track, patch);
         details = await safeTrackDetails(track);
