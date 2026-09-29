@@ -87,8 +87,27 @@ const BULK_JOB_TYPES = new Set(['download_top', 'download_recent', 'download_alb
 function sourceJobPriority(job = {}) {
   if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
   if (BULK_JOB_TYPES.has(job.type)) return 80;
-  if (job.type === 'download') return 115;
-  if (['album','albums','artist','artist_from_album','artist_list'].includes(job.type)) return 110;
+
+  // Search is the most time-sensitive source operation: a new query should
+  // jump ahead of queued downloads/enrichment, while already-running source
+  // work remains bounded by its own end-to-end budget.
+  if (job.type === 'search') return 140;
+
+  if (
+    [
+      'search_album',
+      'album',
+      'albums',
+      'artist',
+      'artist_from_album',
+      'artist_list',
+      'track_artist',
+    ].includes(job.type)
+  ) return 130;
+
+  if (['track_quality','track_lyrics','track_cover','track_info'].includes(job.type)) return 120;
+  if (job.type === 'download') return 110;
+  if (job.type?.startsWith('home_')) return 105;
   return 100;
 }
 
