@@ -1221,7 +1221,19 @@ export async function getMeloBotLyrics(
     candidate,
     { timeoutMs: remaining() }
   )).messages;
-  const lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
+
+  let lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
+  if (!lyricsButton) {
+    const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
+    if (moreButton && !remaining.expired()) {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+      });
+      lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
+    }
+  }
+
   if (!lyricsButton) {
     return { available: false, text: '', checked: true };
   }
@@ -1309,7 +1321,12 @@ export async function getMeloBotTrackMetadata(
   }
 
   if (!detailsButton) {
-    return { raw: '', ...parsePopularityValue(candidate.rawText || '') };
+    const surfaceRaw = trackMenu.map(messageText).filter(Boolean).join('\n\n').trim();
+    return {
+      raw: surfaceRaw,
+      ...parseReleaseDate(surfaceRaw),
+      ...parsePopularityValue(surfaceRaw || candidate.rawText || ''),
+    };
   }
 
   const result = await sendAndCollect(client, detailsButton, {
