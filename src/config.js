@@ -35,7 +35,7 @@ export const config = {
   catalogSearchTtlMs: Number(process.env.CATALOG_SEARCH_TTL_MINUTES || 15) * 60 * 1000,
   catalogArtistTtlMs: Number(process.env.CATALOG_ARTIST_TTL_HOURS || 72) * 60 * 60 * 1000,
   catalogAlbumsTtlMs: Number(process.env.CATALOG_ALBUMS_TTL_HOURS || 168) * 60 * 60 * 1000,
-  catalogEmptyAlbumsTtlMs: Number(process.env.CATALOG_EMPTY_ALBUMS_TTL_HOURS || 720) * 60 * 60 * 1000,
+  catalogEmptyAlbumsTtlMs: Number(process.env.CATALOG_EMPTY_ALBUMS_TTL_HOURS || 72) * 60 * 60 * 1000,
   catalogAlbumTracksTtlMs: Number(process.env.CATALOG_ALBUM_TRACKS_TTL_HOURS || 720) * 60 * 60 * 1000,
 
   foreignDefaultPolicy: (process.env.FOREIGN_DEFAULT_POLICY || 'iran_only').trim(),
