@@ -14,7 +14,16 @@ export class BotApi {
           signal: AbortSignal.timeout(20_000),
         });
       } catch (err) {
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+          continue;
+        }
         throw new Error(`Bot API ${method} network error: ${err.message}`);
+      }
+
+      if (res.status >= 500 && attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+        continue;
       }
 
       const raw = await res.text();
