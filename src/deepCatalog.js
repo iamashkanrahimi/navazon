@@ -150,9 +150,30 @@ export class DeepCatalog {
   async setAlbumTracks(artist, album, tracks = []) {
     const albumKey = await this.upsertAlbum(artist, album);
     if (!albumKey) return;
+
+    const sourceTracks = tracks || [];
+    const durableTracks = sourceTracks.filter(track => !track?.artistInferred);
+
     await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
 
-    const rows = await Promise.all((tracks || []).map(async (track, index) => {
+    // A title-only album row can inherit the page artist even when the real
+    // primary artist is a collaborator. Keep that live list in the session/
+    // legacy JSON cache, but do not certify a partial or misattributed deep
+    // relation. It will be rebuilt once all identities are canonical.
+    if (
+      !sourceTracks.length
+      || durableTracks.length !== sourceTracks.length
+    ) {
+      await db.query(`
+        UPDATE deep_albums
+        SET metadata = metadata - 'trackListVersion',
+            updated_at = NOW()
+        WHERE album_key = $1
+      `, [albumKey]);
+      return;
+    }
+
+    const rows = await Promise.all(durableTracks.map(async (track, index) => {
       const trackKey = await this.upsertTrack(track, {
         album: album.title,
         discoveredFrom: 'album',
@@ -166,7 +187,7 @@ export class DeepCatalog {
       ON CONFLICT (album_key, track_key) DO UPDATE SET position = EXCLUDED.position
     `, [albumKey, row.trackKey, row.position])));
 
-    // Only mark the relation trusted after the full replacement completed.
+    // Only mark the relation trusted after the full canonical replacement.
     await db.query(`
       UPDATE deep_albums
       SET metadata = metadata || '{"trackListVersion":1}'::jsonb,
@@ -386,10 +407,7 @@ export class DeepCatalog {
         FROM deep_album_tracks dat
         JOIN deep_albums a ON a.album_key = dat.album_key
         WHERE dat.track_key = $1
-          AND (
-            COALESCE((a.metadata->>'verifiedAlbum')::boolean, FALSE) = TRUE
-            OR COALESCE(a.metadata->>'rawText', '') ~ '^[💿📀]'
-          )
+          AND a.metadata @> '{"verifiedAlbum":true,"albumTrustVersion":2,"trackListVersion":1}'::jsonb
         ORDER BY a.updated_at DESC
         LIMIT 1
       `, [trackKey]),
