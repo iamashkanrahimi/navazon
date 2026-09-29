@@ -1298,6 +1298,28 @@ export async function resolveMeloBotAlbums(client, artistContext, { allowEmpty =
   };
 }
 
+export async function resolveMeloBotArtistAlbums(
+  client,
+  artist,
+  preferredSeed = null,
+  { allowEmpty = true } = {}
+) {
+  const seed = await findArtistSeed(client, artist, preferredSeed);
+  const artistContext = await openMeloBotArtistBase(client, seed);
+
+  // Important: resolve albums immediately from the base artist page.
+  // openMeloBotArtist() sorts/navigates to another keyboard state, which can
+  // make the old 💿 button invalid in MeloBot's stateful reply-keyboard flow.
+  const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty });
+
+  return {
+    artist: artistContext.artist,
+    seed,
+    artistContext,
+    ...resolved,
+  };
+}
+
 export async function listMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
   const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty });
   console.log(
