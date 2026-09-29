@@ -78,3 +78,59 @@ export function hasSpecificAlbumTitle(query = '', artist = '', albumTitles = [])
 export function shouldUseLiveAlbumDiscovery(query = '') {
   return hasAlbumIntent(query);
 }
+
+
+const SEARCH_NOISE_WORDS = new Set([
+  'ft', 'feat', 'featuring', 'with', 'and', 'vs',
+  'the', 'a', 'an',
+]);
+
+export function meaningfulSearchTokens(query = '') {
+  return normalizeText(query)
+    .split(' ')
+    .filter(token =>
+      token.length >= 2
+      && !SEARCH_NOISE_WORDS.has(token)
+      && !ALBUM_INTENT_WORDS.has(token)
+      && !ALBUM_SUFFIX_WORDS.has(token)
+    );
+}
+
+export function scoreTrackQueryMatch(query = '', track = {}) {
+  const queryTokens = meaningfulSearchTokens(query);
+  if (!queryTokens.length) return { score: 0, coverage: 0, total: 0 };
+
+  const artist = normalizeText(track.artist || '');
+  const title = normalizeText(track.title || '');
+  const haystack = new Set(
+    normalizeText([track.artist, track.title].filter(Boolean).join(' '))
+      .split(' ')
+      .filter(Boolean)
+  );
+
+  let coverage = 0;
+  for (const token of queryTokens) {
+    if (haystack.has(token)) coverage += 1;
+  }
+
+  let score = coverage * 10;
+  if (title && normalizeText(query).includes(title)) score += 8;
+  if (artist && normalizeText(query).includes(artist)) score += 6;
+  if (track.artistInferred) score -= 1;
+
+  return { score, coverage, total: queryTokens.length };
+}
+
+export function rankTracksForQuery(query = '', tracks = []) {
+  return (tracks || [])
+    .map((track, index) => ({
+      track,
+      index,
+      ...scoreTrackQueryMatch(query, track),
+    }))
+    .sort((a, b) =>
+      b.score - a.score
+      || b.coverage - a.coverage
+      || a.index - b.index
+    );
+}
