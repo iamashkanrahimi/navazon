@@ -775,19 +775,24 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
   if (!albums.length) {
     const exact = exactSearchTrackMatch(query, tracks);
     if (exact?.rawText) {
-      try {
-        const probed = await probeMeloBotCandidateSurface(client, exact);
-        exactProbe = probed.kind || 'unknown';
-        if (probed.kind === 'album' && probed.album?.title) {
-          tracks = tracks.filter(track => track !== exact);
-          albums = [{
-            ...probed.album,
-            artist: probed.album.artist || exact.artist,
-          }];
+      const confidentTrack = Number.isFinite(exact.sourcePopularityCount);
+      if (confidentTrack) {
+        exactProbe = 'skipped_confident_track';
+      } else {
+        try {
+          const probed = await probeMeloBotCandidateSurface(client, exact);
+          exactProbe = probed.kind || 'unknown';
+          if (probed.kind === 'album' && probed.album?.title) {
+            tracks = tracks.filter(track => track !== exact);
+            albums = [{
+              ...probed.album,
+              artist: probed.album.artist || exact.artist,
+            }];
+          }
+        } catch (err) {
+          exactProbe = 'failed';
+          console.warn('[melobot exact candidate probe]', err.message);
         }
-      } catch (err) {
-        exactProbe = 'failed';
-        console.warn('[melobot exact candidate probe]', err.message);
       }
     }
   }
