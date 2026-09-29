@@ -71,7 +71,9 @@ export async function resolveTrackIdentity(track) {
       track,
       { timeoutMs: 5000, forceIdentity: true }
     );
-    if (!resolved?.title) return track;
+    if (!resolved?.title || resolved.artistInferred !== false) {
+      return track;
+    }
     return {
       ...track,
       ...resolved,
