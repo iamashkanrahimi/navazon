@@ -230,7 +230,7 @@ export async function sendTrackLyrics(chatId, track) {
       if (hasCanonicalTrackIdentity(track)) {
         await deepCatalog.setLyrics(track, lyrics, 'melobot');
       }
-    } else {
+    } else if (result.checked === true) {
       if (hasCanonicalTrackIdentity(track)) {
         await deepCatalog.markNoLyrics(track, 'melobot');
       }
