@@ -936,7 +936,12 @@ export async function probeMeloBotCandidateSurface(
   };
 }
 
-async function findArtistSeed(client, artist, preferredSeed = null) {
+async function findArtistSeed(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
   const target = normalize(artist);
   const preferredArtist = normalize(preferredSeed?.artist || '');
 
@@ -958,7 +963,10 @@ async function findArtistSeed(client, artist, preferredSeed = null) {
 
   let seed = null;
   try {
-    const results = await searchMeloBot(client, artist);
+    const results = await searchMeloBot(client, artist, {
+      timeoutMs,
+      maxRefinements: 3,
+    });
     seed = results.find(track => normalize(track.artist) === target)
       || results.find(track => {
         const candidateArtist = normalize(track.artist);
@@ -973,9 +981,20 @@ async function findArtistSeed(client, artist, preferredSeed = null) {
   return seed;
 }
 
-export async function openMeloBotArtistFresh(client, artist, preferredSeed = null) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  return openMeloBotArtist(client, seed);
+export async function openMeloBotArtistFresh(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  return openMeloBotArtist(client, seed, { timeoutMs: remaining() });
 }
 
 export async function resolveMeloBotTrackCandidate(
@@ -2409,7 +2428,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   const navButton = albumNavigationButton(contextMessages);
   if (navButton) {
     const page = await sendAndCollect(client, navButton, {
-      timeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     listing = inspectMeloBotAlbumListing(page.messages);
@@ -3032,22 +3051,33 @@ export async function resolveMeloBotArtistAlbums(
     allowEmpty = true,
     maxAlbums = 60,
     skipDirectFallback = false,
+    timeoutMs = Math.min(config.searchTimeoutMs, 10000),
   } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, 10000);
   let primaryError = null;
   const circuitRemainingMs = albumPrimaryCircuitRemainingMs(artist);
 
   if (!circuitRemainingMs) {
     try {
-      const seed = await findArtistSeed(client, artist, preferredSeed);
-      const artistContext = await openMeloBotArtistBase(client, seed);
+      const seed = await findArtistSeed(
+        client,
+        artist,
+        preferredSeed,
+        { timeoutMs: remaining() }
+      );
+      const artistContext = await openMeloBotArtistBase(
+        client,
+        seed,
+        { timeoutMs: remaining() }
+      );
 
       // MeloBot uses a stateful reply keyboard. Resolve albums immediately from
       // the base artist page before sorting/top-track navigation changes that state.
       const resolved = await resolveMeloBotAlbums(
         client,
         artistContext,
-        { allowEmpty, maxAlbums }
+        { allowEmpty, maxAlbums, timeoutMs: remaining() }
       );
 
       clearAlbumPrimaryFailure(artistContext.artist || artist);
@@ -3072,10 +3102,13 @@ export async function resolveMeloBotArtistAlbums(
   }
 
   try {
+    if (remaining.expired()) {
+      throw new Error('MeloBot artist album resolution budget exhausted.');
+    }
     const direct = await discoverMeloBotAlbumsByArtistQuery(
       client,
       `album ${artist}`,
-      { maxAlbums }
+      { maxAlbums, timeoutMs: remaining() }
     );
     if (!direct.albums?.length && !direct.confirmedEmpty && !allowEmpty) {
       throw new Error('Direct album route returned no usable albums.');
