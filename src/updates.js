@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { bot, bridge, follows, sessions } from './runtime.js';
 import { sourceQueue, showResults } from './jobs.js';
 import {
-  SESSION_TTL_MS, TOP_TRACKS_LIMIT,
+  SESSION_TTL_MS, BUSY_SESSION_TTL_MS, TOP_TRACKS_LIMIT,
   homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   artistHomeKeyboard, artistSongsKeyboard, albumsKeyboard,
@@ -381,7 +381,7 @@ export async function handleUpdate(update) {
         sourceQueue.push({ type: 'download_album', sessionId, messageId });
       }
     } finally {
-      session.expiresAt = Date.now() + SESSION_TTL_MS;
+      session.expiresAt = Date.now() + (session.busy ? BUSY_SESSION_TTL_MS : SESSION_TTL_MS);
       await sessions.set(sessionId,session);
     }
     return;
