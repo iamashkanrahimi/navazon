@@ -80,6 +80,7 @@ const {
   meaningfulSearchTokens,
   rankTracksForQuery,
   shouldUseSearchRelevanceFallback,
+  hasCompositeArtistSeparators,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -2824,4 +2825,14 @@ test('bundled enrichment discovers lyrics hidden behind More before declaring th
   assert.equal(bundle.lyrics.available, true);
   assert.equal(bundle.lyrics.checked, true);
   assert.equal(bundle.lyrics.text, 'first line\nsecond line');
+});
+
+
+test('composite artist separator guard catches collaboration-style credits conservatively', () => {
+  assert.equal(hasCompositeArtistSeparators('Drake & Yeat'), true);
+  assert.equal(hasCompositeArtistSeparators('Eminem x Jay Z'), true);
+  assert.equal(hasCompositeArtistSeparators('Sadegh feat. T-Dey'), true);
+  assert.equal(hasCompositeArtistSeparators('Feid, Pirlo'), true);
+  assert.equal(hasCompositeArtistSeparators('H.E.R.'), false);
+  assert.equal(hasCompositeArtistSeparators('Reza Jafari'), false);
 });
