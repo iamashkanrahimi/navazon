@@ -454,11 +454,11 @@ function parseSearchAlbumButton(rawText) {
   return album;
 }
 
-function parseAlbumButtons(messages = []) {
+function parseAlbumButtons(messages = [], { allowBareCounted = false } = {}) {
   const albums = [];
   const seen = new Set();
   for (const rawText of buttonsFromMessages(messages)) {
-    const album = parseAlbumButton(rawText, { allowBareCounted: true });
+    const album = parseAlbumButton(rawText, { allowBareCounted });
     if (!album) continue;
     const key = normalize(album.title);
     if (!key || seen.has(key)) continue;
@@ -492,8 +492,10 @@ function albumNextButton(messages = []) {
 }
 
 export function inspectMeloBotAlbumListing(messages = []) {
-  const albums = parseAlbumButtons(messages);
   const declaration = albumListingDeclaration(messages);
+  const albums = parseAlbumButtons(messages, {
+    allowBareCounted: declaration.declaredCount !== null || declaration.explicitEmpty,
+  });
   const nextButton = albumNextButton(messages);
   const confirmed = albums.length > 0
     || declaration.declaredCount !== null
