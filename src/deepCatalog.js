@@ -629,6 +629,23 @@ export class DeepCatalog {
     `, [id, safeJson(summary)]);
   }
 
+  async deferTask(id, delayMs = 5 * 60 * 1000, reason = 'deferred') {
+    await db.query(`
+      UPDATE crawl_tasks
+      SET status = 'queued',
+          available_at = NOW() + ($2 * INTERVAL '1 millisecond'),
+          started_at = NULL,
+          attempts = GREATEST(0, attempts - 1),
+          last_error = $3,
+          updated_at = NOW()
+      WHERE id = $1
+    `, [
+      id,
+      Math.max(0, Number(delayMs || 0)),
+      String(reason || 'deferred').slice(0, 1000),
+    ]);
+  }
+
   async failTask(id, error, { retryDelayMs = 6 * 60 * 60 * 1000, maxAttempts = 4 } = {}) {
     const result = await db.query('SELECT attempts FROM crawl_tasks WHERE id = $1', [id]);
     const attempts = Number(result.rows[0]?.attempts || 0);
