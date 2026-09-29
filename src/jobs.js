@@ -41,6 +41,7 @@ import {
   hasAlbumIntent,
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
+  shouldUseLiveAlbumDiscovery,
 } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
@@ -199,7 +200,7 @@ async function searchAlbumOptions(query, tracks = []) {
 
   // Explicit "album + artist" queries should work even when track search
   // returns no usable MeloBot seed. Resolve the source's artist picker directly.
-  if (albumIntent) {
+  if (shouldUseLiveAlbumDiscovery(query)) {
     try {
       const direct = await discoverMeloBotAlbumsByArtistQuery(tg, query, {
         maxAlbums: limit,
@@ -230,49 +231,12 @@ async function searchAlbumOptions(query, tracks = []) {
     } catch (err) {
       console.warn('[direct album search]', err.message);
     }
-
-    return albums;
   }
 
-  if (albums.length >= limit) return albums;
-
-  const q = normalize(query);
-  const melobotSeeds = (tracks || []).filter(track =>
-    track?.source === 'melobot' && track?.rawText && track?.artist
-  );
-  const artistMentioned = melobotSeeds.some(track =>
-    q.includes(normalize(track.artist))
-  );
-  const shouldTryLive = melobotSeeds.length && (
-    artistMentioned || q.split(/\s+/).filter(Boolean).length >= 2
-  );
-
-  if (shouldTryLive) {
-    try {
-      const liveAlbums = await discoverMeloBotAlbumsForQuery(
-        tg,
-        query,
-        melobotSeeds,
-        { maxArtists: 2, maxAlbums: limit }
-      );
-
-      const grouped = new Map();
-      for (const album of liveAlbums) {
-        const key = normalize(album.artist);
-        const group = grouped.get(key) || { artist: album.artist, albums: [] };
-        group.albums.push(album);
-        grouped.set(key, group);
-      }
-      await Promise.all([...grouped.values()].map(group =>
-        syncAlbumIndex(group.artist, group.albums, { complete: false })
-      ));
-
-      albums = mergeAlbumResults(limit, albums, liveAlbums);
-    } catch (err) {
-      console.warn('[album search discovery]', err.message);
-    }
-  }
-
+  // Ordinary track/artist searches must stay instant. They may show album
+  // suggestions already present in the catalogs above, but they never spend a
+  // live MeloBot round-trip trying to discover extra albums. Users who want
+  // live discography discovery can ask explicitly with "album / آلبوم".
   return albums;
 }
 
