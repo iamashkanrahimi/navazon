@@ -1674,3 +1674,30 @@ test('same-name track and album collision is probed even when the track has popu
   assert.equal(classified.albums.length, 1);
   assert.equal(classified.albums[0].tracks.length, 2);
 });
+
+test('album-only search exposes a safe Artist-page shortcut from the album artist', () => {
+  const session = {
+    options: [],
+    albumOptions: [
+      { source: 'melobot', artist: 'Shayea', title: 'Do Be Shak' },
+    ],
+  };
+
+  const keyboard = resultsKeyboard('albumartist1', session);
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.includes('aar:albumartist1:0'), true);
+});
+
+test('mixed album artists do not create an ambiguous album-derived Artist shortcut', () => {
+  const session = {
+    options: [],
+    albumOptions: [
+      { source: 'melobot', artist: 'Artist A', title: 'Album A' },
+      { source: 'melobot', artist: 'Artist B', title: 'Album B' },
+    ],
+  };
+
+  const keyboard = resultsKeyboard('albumartist2', session);
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.some(value => value?.startsWith('aar:')), false);
+});
