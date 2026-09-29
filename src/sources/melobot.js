@@ -828,7 +828,12 @@ function exactSearchTrackMatch(query, tracks = []) {
   }) || null;
 }
 
-export async function classifyMeloBotTypedSearchExact(client, query, typedResult = {}) {
+export async function classifyMeloBotTypedSearchExact(
+  client,
+  query,
+  typedResult = {},
+  { probeTimeoutMs = EXACT_SEARCH_PROBE_TIMEOUT_MS } = {}
+) {
   let tracks = [...(typedResult.tracks || [])];
   let albums = [...(typedResult.albums || [])];
   let exactProbe = 'not_needed';
@@ -849,7 +854,11 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
       exactProbe = 'skipped_confident_track';
     } else {
       try {
-        const probed = await probeMeloBotCandidateSurface(client, exact);
+        const probed = await probeMeloBotCandidateSurface(
+          client,
+          exact,
+          { timeoutMs: probeTimeoutMs }
+        );
         exactProbe = probed.kind || 'unknown';
         if (probed.kind === 'album' && probed.album?.title) {
           tracks = tracks.filter(track => track !== exact);
