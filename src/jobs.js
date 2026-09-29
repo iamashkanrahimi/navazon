@@ -30,6 +30,7 @@ import {
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { executeDeepTask } from './deepCrawler.js';
+import { deepTrackKey } from './deepCatalog.js';
 import { HOME_FEEDS, curatedPlaylistByKey } from './homeCatalog.js';
 import {
   renderTrackPage,
@@ -319,22 +320,18 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     }
   }
 
+  const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
+
   let sent = 0;
   let missing = 0;
   for (const sourceTrack of sourceTracks) {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     try {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
-      const media = mediaByTrack.get(bulkTrackKey(track));
+      const media = mediaByTrack.get(bulkTrackKey(track))
+        || hqCache.get(deepTrackKey(track));
       if (media) {
         await sendMedia(session.chatId, track, media);
-        sent += 1;
-        continue;
-      }
-
-      const cached = await cache.get(track);
-      if (cached) {
-        await deliverCached(session.chatId, track, cached);
         sent += 1;
       } else {
         missing += 1;
@@ -345,46 +342,52 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     }
   }
 
-  return { sent, missing, matched: sourceMatches.length };
+  return { sent, missing, matched: sourceMatches.length, quality: 'hq' };
 }
 
 async function deliverBulkFromCacheIfComplete(session, tracks) {
   const sourceTracks = (tracks || []).slice();
-  if (!sourceTracks.length) return { complete: false, sent: 0 };
-  const cached = await Promise.all(sourceTracks.map(track => cache.get(track)));
-  if (!cached.every(Boolean)) return { complete: false, sent: 0 };
+  if (!sourceTracks.length) return { complete: false, sent: 0, quality: 'hq' };
+
+  const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
+  const complete = sourceTracks.every(track => hqCache.has(deepTrackKey(track)));
+  if (!complete) return { complete: false, sent: 0, quality: 'hq' };
 
   let sent = 0;
-  for (let index = 0; index < sourceTracks.length; index += 1) {
-    const track = applyPolicyDefaults({ ...sourceTracks[index], source: 'melobot' });
+  for (const sourceTrack of sourceTracks) {
+    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     assertDeliveryAllowed(track, session.userRegion || 'unknown');
-    await deliverCached(session.chatId, track, cached[index]);
+    await sendMedia(session.chatId, track, hqCache.get(deepTrackKey(track)));
     sent += 1;
   }
-  return { complete: true, sent };
+
+  console.log(`[fastpath] bulk_hq_cache=complete count=${sent}`);
+  return { complete: true, sent, quality: 'hq' };
 }
 
-
-
 async function deliverAvailableBulkCache(session, tracks) {
+  const sourceTracks = (tracks || []).slice();
+  const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
+
   let sent = 0;
   let missing = 0;
-  for (const sourceTrack of tracks || []) {
+  for (const sourceTrack of sourceTracks) {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     try {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
-      const cached = await cache.get(track);
-      if (!cached) {
+      const cachedHq = hqCache.get(deepTrackKey(track));
+      if (!cachedHq) {
         missing += 1;
         continue;
       }
-      await deliverCached(session.chatId, track, cached);
+      await sendMedia(session.chatId, track, cachedHq);
       sent += 1;
     } catch {
       missing += 1;
     }
   }
-  return { sent, missing };
+
+  return { sent, missing, quality: 'hq' };
 }
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
@@ -1003,7 +1006,7 @@ export const sourceQueue = new SerialQueue(async job => {
         if (missing) {
           await bot.sendMessage(
             session.chatId,
-            'دانلود یکجای جدیدترین‌ها از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+            'دانلود یکجای جدیدترین‌ها با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
           );
         }
       }
@@ -1107,7 +1110,7 @@ export const sourceQueue = new SerialQueue(async job => {
         if (missing) {
           await bot.sendMessage(
             session.chatId,
-            'دانلود یکجای پربازدیدترین‌ها از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+            'دانلود یکجای پربازدیدترین‌ها با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
           );
         }
       }
@@ -1228,7 +1231,7 @@ export const sourceQueue = new SerialQueue(async job => {
         if (missing) {
           await bot.sendMessage(
             session.chatId,
-            'دانلود یکجای آلبوم از منبع انجام نشد؛ فایل‌های موجود در کش ارسال شدند. دوباره امتحان کن.'
+            'دانلود یکجای آلبوم با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
           );
         }
       }
