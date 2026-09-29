@@ -119,7 +119,10 @@ export class DeepCatalog {
       clean(artist),
       clean(album.title),
       Number(album.trackCount || 0) || null,
-      safeJson({ rawText: album.rawText || undefined }),
+      safeJson({
+        rawText: album.rawText || undefined,
+        verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+      }),
     ]);
     return albumKey;
   }
@@ -489,6 +492,7 @@ export class DeepCatalog {
       .filter(row =>
         !row.metadata?.rawText
         || /^[💿📀]/u.test(clean(row.metadata.rawText))
+        || row.metadata?.verifiedAlbum === true
       )
       .map(row => ({
         albumKey: row.album_key,
@@ -496,6 +500,7 @@ export class DeepCatalog {
         title: row.title,
         trackCount: row.track_count || undefined,
         rawText: row.metadata?.rawText || undefined,
+        verifiedAlbum: Boolean(row.metadata?.verifiedAlbum),
         source: 'catalog',
       }));
   }
