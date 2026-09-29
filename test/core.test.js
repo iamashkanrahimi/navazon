@@ -27,6 +27,9 @@ const {
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
   searchMeloBot,
+  searchMeloBotTyped,
+  classifyMeloBotTypedSearchExact,
+  probeMeloBotCandidateSurface,
   chooseMeloBotSearchRefinement,
   albumNavigationButton,
   describeMeloBotSurface,
@@ -1112,4 +1115,170 @@ test('direct-first album listing returns before attempting artist-page navigatio
   );
   assert.match(resolved.source, /^direct_first:/);
   assert.deepEqual(client.sent, ['Direct Albums Artist']);
+});
+
+
+test('disc-prefixed album search rows are albums and never tracks', () => {
+  const loose = parseAlbumButton('💿 Bahram, Eshtebahe Khoob');
+  assert.equal(loose.artist, 'Bahram');
+  assert.equal(loose.title, 'Eshtebahe Khoob');
+  assert.equal(parseTrackButton('💿 Bahram, Eshtebahe Khoob'), null);
+  assert.equal(parseAlbumButton('💿 آلبوم‌ها'), null);
+
+  const counted = parseAlbumButton('Album of the Year (10)');
+  assert.equal(counted.title, 'Album of the Year');
+  assert.equal(counted.trackCount, 10);
+});
+
+test('typed MeloBot search keeps disc-prefixed results as albums', async () => {
+  const client = new FakeTelegramClient({
+    'Bahram Eshtebahe Khoob': [[
+      fakeBotMessage(
+        'نتیجه جستجو',
+        ['💿 Bahram, Eshtebahe Khoob']
+      ),
+    ]],
+  });
+
+  const result = await searchMeloBotTyped(client, 'Bahram Eshtebahe Khoob');
+  assert.equal(result.tracks.length, 0);
+  assert.equal(result.albums.length, 1);
+  assert.equal(result.albums[0].artist, 'Bahram');
+  assert.equal(result.albums[0].title, 'Eshtebahe Khoob');
+  assert.deepEqual(client.sent, ['Bahram Eshtebahe Khoob']);
+});
+
+test('exact track-looking search hit is reclassified when it opens an album page', async () => {
+  const ambiguous = '🎵 Hichkas, Mojaz';
+  const client = new FakeTelegramClient({
+    'Hichkas Mojaz': [[
+      fakeBotMessage('نتیجه جستجو', [ambiguous]),
+    ]],
+    [ambiguous]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آلبوم چه کنی ؟',
+        [
+          'دانلود همه (عالی)',
+          'دانلود همه (معمولی)',
+          '🎵 Rosva x 2.5M',
+          '🎵 To Koja Boodi x 3M',
+        ]
+      ),
+    ]],
+  });
+
+  const typed = await searchMeloBotTyped(client, 'Hichkas Mojaz');
+  assert.equal(typed.tracks.length, 1);
+
+  const classified = await classifyMeloBotTypedSearchExact(
+    client,
+    'Hichkas Mojaz',
+    typed
+  );
+
+  assert.equal(classified.exactProbe, 'album');
+  assert.equal(classified.tracks.length, 0);
+  assert.equal(classified.albums.length, 1);
+  assert.equal(classified.albums[0].artist, 'Hichkas');
+  assert.equal(classified.albums[0].title, 'Mojaz');
+  assert.deepEqual(
+    classified.albums[0].tracks.map(track => track.title),
+    ['Rosva', 'To Koja Boodi']
+  );
+});
+
+test('candidate surface probe leaves a genuine exact track typed as a track', async () => {
+  const raw = '🎵 Artist, Real Song';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آهنگ چه کنی ؟',
+        ['کیفیت عالی', 'کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+  });
+
+  const candidate = parseTrackButton(raw);
+  const probed = await probeMeloBotCandidateSurface(client, candidate);
+  assert.equal(probed.kind, 'track');
+  assert.equal(probed.candidate.title, 'Real Song');
+});
+
+test('artist navigation recovers from an album page through a real album track', async () => {
+  const ambiguous = '🎵 Bahram, Eshtebahe Khoob';
+  const client = new FakeTelegramClient({
+    [ambiguous]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آلبوم چه کنی ؟',
+        [
+          'دانلود همه (عالی)',
+          '🎵 Khoob x 3.5M',
+          '🎵 Saz x 3.3M',
+        ]
+      ),
+    ]],
+    '🎵 Khoob x 3.5M': [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آهنگ چه کنی ؟',
+        ['کیفیت عالی', 'کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'آهنگ های Bahram',
+        ['Khoob', 'Saz', '💿 آلبوم‌ها']
+      ),
+    ]],
+  });
+
+  const seed = {
+    ...parseTrackButton(ambiguous),
+    source: 'melobot',
+  };
+
+  const artist = await openMeloBotArtist(client, seed);
+
+  assert.equal(artist.artist, 'Bahram');
+  assert.equal(artist.recoveredFromAlbum, true);
+  assert.equal(artist.seedTrack.title, 'Khoob');
+  assert.deepEqual(
+    artist.recentTracks.map(track => track.title),
+    ['Khoob', 'Saz']
+  );
+  assert.deepEqual(client.sent, [
+    ambiguous,
+    '🎵 Khoob x 3.5M',
+    '🎤 خواننده',
+  ]);
+});
+
+test('empty artist surfaces fail closed instead of producing a broken artist page', async () => {
+  const raw = '🎵 Empty Artist, Seed';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آهنگ چه کنی ؟',
+        ['کیفیت عالی', 'کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'Empty Artist',
+        ['💿 آلبوم‌ها']
+      ),
+    ]],
+    'Empty Artist': [[
+      fakeBotMessage('نتیجه‌ای پیدا نشد', [])
+    ]],
+  });
+
+  const seed = {
+    ...parseTrackButton(raw),
+    source: 'melobot',
+  };
+
+  await assert.rejects(
+    () => openMeloBotArtist(client, seed),
+    /no usable tracks/
+  );
 });
