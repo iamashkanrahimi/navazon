@@ -3,7 +3,7 @@ import { bot, bridge, cache, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
-import { normalizeText } from './text.js';
+import { normalizeText, rankTracksForQuery, meaningfulSearchTokens } from './text.js';
 import {
   searchMeloBot,
   searchMeloBotTyped,
@@ -173,9 +173,48 @@ export async function searchPrimaryTyped(query) {
       query,
       await searchMeloBotTyped(tg, query)
     );
-    const tracks = (typed.tracks || []).slice(0, MAX_RESULTS).map(track =>
-      applyPolicyDefaults({ ...track, source: 'melobot' })
-    );
+    const rankedMelo = rankTracksForQuery(query, typed.tracks || []);
+    const meaningful = meaningfulSearchTokens(query);
+    let selectedMelo = rankedMelo;
+
+    // Complex queries such as "Shayea Ma Ft T-Dey" should not degrade into
+    // five unrelated T-Dey rows merely because one token matched. When MeloBot
+    // has no result covering at least two meaningful tokens, blend in the
+    // fallback source and re-rank the combined candidates.
+    if (
+      meaningful.length >= 3
+      && (rankedMelo[0]?.coverage || 0) < 2
+    ) {
+      try {
+        const fallback = await searchAhangify(tg, query);
+        const fallbackTracks = fallback.map(candidate => applyPolicyDefaults({
+          ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }),
+          source: 'ahangify',
+        }));
+        const combined = [
+          ...rankedMelo.map(item => applyPolicyDefaults({ ...item.track, source: 'melobot' })),
+          ...fallbackTracks,
+        ];
+        const seen = new Set();
+        selectedMelo = rankTracksForQuery(query, combined)
+          .filter(item => {
+            const key = `${normalizeText(item.track.artist || '')}|${normalizeText(item.track.title || '')}`;
+            if (!key || key === '|' || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+      } catch (err) {
+        console.warn('[search relevance fallback]', err.message);
+      }
+    }
+
+    const tracks = selectedMelo
+      .slice(0, MAX_RESULTS)
+      .map(item => applyPolicyDefaults({
+        ...item.track,
+        source: item.track.source || 'melobot',
+      }));
+
     const albums = (typed.albums || [])
       .filter(album => album?.artist && album?.title)
       .slice(0, MAX_RESULTS)
@@ -188,6 +227,7 @@ export async function searchPrimaryTyped(query) {
         source: 'melobot',
         typed: true,
         exactProbe: typed.exactProbe || 'not_needed',
+        relevanceCoverage: selectedMelo[0]?.coverage || 0,
       };
     }
 
