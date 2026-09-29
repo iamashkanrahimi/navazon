@@ -28,9 +28,11 @@ async function safeTrackDetails(track = {}) {
     || { media: {}, metadata: {}, albumInfo: null };
 }
 
-async function captureForwardedMedia(message) {
+async function captureForwardedMedia(message, timeoutMs = 10_000) {
   if (!message?.id) throw new Error('Source media message is missing.');
-  const wait = bridge.expectMedia(25_000);
+  const wait = bridge.expectMedia(
+    Math.max(3_000, Math.min(15_000, Number(timeoutMs || 10_000)))
+  );
   await forwardHiddenToOurBot(tg, config.melobotUsername, message.id);
   return wait;
 }
@@ -281,8 +283,9 @@ export async function sendTrackCover(chatId, track) {
 
 export async function getTrackInfoText(track) {
   let details = await safeTrackDetails(track);
-  const needsLive = !details?.release_date && !details?.release_date_raw &&
-    !details?.popularity_count && !details?.popularity_text;
+  const hasReleaseDate = Boolean(details?.release_date || details?.release_date_raw);
+  const hasPopularity = Boolean(details?.popularity_count || details?.popularity_text);
+  const needsLive = !hasReleaseDate || !hasPopularity;
 
   if (needsLive && track?.source === 'melobot' && track?.rawText) {
     try {
