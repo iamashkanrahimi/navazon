@@ -18,6 +18,7 @@ const {
   inspectMeloBotAlbumListing,
   albumQueryMatches,
   resolveMeloBotArtistAlbums,
+  openMeloBotAlbumByTitle,
   matchBulkAudioToTracks,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
@@ -29,8 +30,16 @@ const {
   albumsErrorKeyboard,
   homeKeyboard,
   curatedPlaylistsKeyboard,
+  trackPageKeyboard,
+  SESSION_TTL_MS,
+  BUSY_SESSION_TTL_MS,
 } = await import('../src/ui.js');
 const { CURATED_PLAYLISTS, HOME_FEEDS } = await import('../src/homeCatalog.js');
+const {
+  normalizeText,
+  hasAlbumIntent,
+  hasSpecificAlbumTitle,
+} = await import('../src/text.js');
 
 test('MeloBot parser extracts artist, title and popularity', () => {
   const track = parseTrackButton('🎵 Shadmehr, Taghdir x 1.6M');
@@ -333,4 +342,77 @@ test('album source failures stay recoverable instead of silently returning to ar
 
 test('state-safe artist album resolver is exported for all album flows', () => {
   assert.equal(typeof resolveMeloBotArtistAlbums, 'function');
+});
+
+
+test('canonical normalization treats Persian half-space album wording as separate tokens', () => {
+  assert.equal(normalizeText('آلبوم‌های احسان خواجه امیری'), 'آلبوم های احسان خواجه امیری');
+  assert.equal(hasAlbumIntent('آلبوم‌های احسان خواجه امیری'), true);
+  assert.equal(hasSpecificAlbumTitle(
+    'آلبوم‌های احسان خواجه امیری',
+    'احسان خواجه امیری'
+  ), false);
+  assert.equal(hasSpecificAlbumTitle(
+    'آلبوم احسان خواجه امیری پاییز تنهایی',
+    'احسان خواجه امیری'
+  ), true);
+});
+
+test('album listing with a next-page control stays partial until pagination finishes', () => {
+  const listing = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده :',
+    replyMarkup: {
+      rows: [
+        { buttons: [{ text: '💿 Album One (8)' }] },
+        { buttons: [{ text: 'بعدی' }] },
+      ],
+    },
+  }]);
+
+  assert.equal(listing.confirmed, true);
+  assert.equal(listing.complete, false);
+  assert.equal(listing.nextButton, 'بعدی');
+});
+
+test('generic Persian half-space album query matches all albums for the artist', () => {
+  assert.equal(
+    albumQueryMatches(
+      'آلبوم‌های احسان خواجه امیری',
+      'احسان خواجه امیری',
+      'پاییز تنهایی'
+    ),
+    true
+  );
+});
+
+test('specific album intent can be distinguished from an artist-only album query', () => {
+  assert.equal(
+    hasSpecificAlbumTitle('album Ehsan Khajeamiri', 'Ehsan Khajeamiri'),
+    false
+  );
+  assert.equal(
+    hasSpecificAlbumTitle('album Ehsan Khajeamiri In Roozha', 'Ehsan Khajeamiri'),
+    true
+  );
+});
+
+test('state-safe album opener is exported for paginated album flows', () => {
+  assert.equal(typeof openMeloBotAlbumByTitle, 'function');
+});
+
+test('Ahangify track pages label HQ fallback as best available quality', () => {
+  const keyboard = trackPageKeyboard(
+    'sess',
+    { source: 'ahangify', artist: 'Artist', title: 'Track' },
+    {},
+    { hasHq: true }
+  );
+  const labels = keyboard.inline_keyboard.flat().map(button => button.text);
+  assert.ok(labels.includes('📥 بهترین کیفیت موجود'));
+  assert.equal(labels.includes('📥 کیفیت عالی'), false);
+});
+
+test('busy sessions outlive normal browsing sessions', () => {
+  assert.ok(BUSY_SESSION_TTL_MS > SESSION_TTL_MS);
+  assert.ok(BUSY_SESSION_TTL_MS >= 60 * 60 * 1000);
 });
