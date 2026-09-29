@@ -2366,11 +2366,12 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   maxAlbums = 12,
   timeoutMs = Math.min(config.searchTimeoutMs, 6000),
 } = {}) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const artistQuery = stripAlbumIntent(query);
   if (!artistQuery) return { artist: '', albums: [] };
 
   const first = await sendAndCollect(client, artistQuery, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 750,
   });
 
@@ -2383,7 +2384,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     if (picker) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       contextMessages = selected.messages;
@@ -2394,7 +2395,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   if (listing.confirmed) {
     const resolved = listing.complete || !listing.nextButton
       ? listing
-      : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs });
+      : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs: remaining() });
     return {
       artist,
       albums: resolved.albums,
@@ -2415,7 +2416,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     if (listing.confirmed) {
       const resolved = listing.complete || !listing.nextButton
         ? listing
-        : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs });
+        : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs: remaining() });
       return {
         artist,
         albums: resolved.albums,
@@ -2433,7 +2434,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   let seedTracks = parseTracksFromMessages(first.messages);
   if (!seedTracks.length) {
     try {
-      seedTracks = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs });
+      seedTracks = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs: remaining() });
     } catch (err) {
       console.warn(
         '[melobot album seed search]',
@@ -2453,11 +2454,11 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     || null;
 
   if (seed) {
-    const artistContext = await openMeloBotArtistBase(client, seed);
+    const artistContext = await openMeloBotArtistBase(client, seed, { timeoutMs: remaining() });
     const resolved = await resolveMeloBotAlbums(
       client,
       artistContext,
-      { allowEmpty: true, maxAlbums }
+      { allowEmpty: true, maxAlbums, timeoutMs: remaining() }
     );
     return {
       artist: artistContext.artist,
@@ -2847,14 +2848,27 @@ export async function openMeloBotAlbumRobustByTitle(
 export async function resolveMeloBotAlbums(
   client,
   artistContext,
-  { allowEmpty = false, maxAlbums = 60 } = {}
+  {
+    allowEmpty = false,
+    maxAlbums = 60,
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
 ) {
-  const initial = await getInitialMeloBotAlbumListing(client, artistContext);
+  const remaining = sourceBudget(timeoutMs, 6000);
+  const initial = await getInitialMeloBotAlbumListing(
+    client,
+    artistContext,
+    { timeoutMs: remaining() }
+  );
   const listing = initial.listing;
 
   const resolved = listing.complete || !listing.nextButton
     ? listing
-    : await collectMeloBotAlbumPages(client, listing, { maxAlbums });
+    : await collectMeloBotAlbumPages(
+        client,
+        listing,
+        { maxAlbums, timeoutMs: remaining() }
+      );
 
   if (!resolved.albums.length && !allowEmpty) {
     throw new Error(
@@ -2875,7 +2889,11 @@ export async function resolveMeloBotAlbums(
 export async function resolveMeloBotAlbumsFromLiveArtistContext(
   client,
   artistContext,
-  { allowEmpty = true, maxAlbums = 60 } = {}
+  {
+    allowEmpty = true,
+    maxAlbums = 60,
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
 ) {
   if (
     Number(artistContext?.liveAlbumSourceStateVersion || -1)
@@ -2907,7 +2925,7 @@ export async function resolveMeloBotAlbumsFromLiveArtistContext(
   const resolved = await resolveMeloBotAlbums(
     client,
     liveContext,
-    { allowEmpty, maxAlbums }
+    { allowEmpty, maxAlbums, timeoutMs }
   );
 
   return {
