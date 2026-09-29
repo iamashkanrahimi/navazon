@@ -21,6 +21,33 @@ jobs:
       - run: npm test
       - run: npm run check
 
+  lyrics-qa:
+    needs: tests
+    if: contains(github.event.head_commit.message, '[lyrics-qa]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Verify full lyrics on collapsed UI example
+        env:
+          RJ_REQUEST_DELAY_MS: '1200'
+          RJ_MAX_ATTEMPTS: '4'
+          RJ_TIMEOUT_MS: '20000'
+        run: node src/pilot.js --urls-file ./data/lyrics-qa-urls.txt --limit 1 --out ./out/lyrics-qa
+      - name: Upload lyrics QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rj-lyrics-qa
+          path: archive-builder/out/lyrics-qa
+          retention-days: 14
+          if-no-files-found: error
+
   snapshot-qa:
     needs: tests
     if: contains(github.event.head_commit.message, '[archive-data]')
