@@ -53,8 +53,15 @@ export async function deliverCached(chatId, track, cached) {
   }
 }
 
-export async function bridgeSourceMessage(sourceUsername, audioMessage, track) {
-  const mediaPromise = bridge.expectMedia(15_000);
+export async function bridgeSourceMessage(
+  sourceUsername,
+  audioMessage,
+  track,
+  { timeoutMs = 10_000 } = {}
+) {
+  const mediaPromise = bridge.expectMedia(
+    Math.max(3_000, Math.min(15_000, Number(timeoutMs || 10_000)))
+  );
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
 
@@ -205,9 +212,8 @@ export async function searchPrimaryTyped(query) {
     // fallback source and re-rank the combined candidates.
     const bestCoverage = rankedMelo[0]?.coverage || 0;
     const needsRelevanceFallback = (
-      meaningful.length >= 3
-        ? bestCoverage < meaningful.length
-        : meaningful.length === 2 && bestCoverage === 0
+      meaningful.length >= 2
+      && bestCoverage < meaningful.length
     );
 
     if (needsRelevanceFallback) {
