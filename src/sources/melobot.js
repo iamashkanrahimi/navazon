@@ -563,6 +563,13 @@ async function resolveMeloBotTrackCandidate(client, candidate) {
 
   if (!query) throw new Error('MeloBot track candidate is incomplete.');
 
+  if (
+    candidate?.rawText
+    && Number(candidate.sourceStateVersion || -1) === sourceStateVersion
+  ) {
+    return candidate;
+  }
+
   try {
     const results = await searchMeloBot(client, query);
     const artist = normalize(candidate?.artist || '');
