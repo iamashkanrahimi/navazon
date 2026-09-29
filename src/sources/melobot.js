@@ -495,7 +495,7 @@ export function inspectMeloBotAlbumListing(messages = []) {
   const declaration = albumListingDeclaration(messages);
   const albums = parseAlbumButtons(messages, {
     allowBareCounted: declaration.declaredCount !== null || declaration.explicitEmpty,
-  });
+  }).map(album => ({ ...album, verifiedAlbum: true }));
   const nextButton = albumNextButton(messages);
   const confirmed = albums.length > 0
     || declaration.declaredCount !== null
