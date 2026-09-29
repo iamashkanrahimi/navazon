@@ -1752,12 +1752,13 @@ export async function openMeloBotAlbumDirectByTitle(
   {
     maxPages = 12,
     timeoutMs = 6000,
+    allowSeedFallback = false,
   } = {}
 ) {
   const direct = await openMeloBotAlbumListingDirect(
     client,
     artist,
-    { timeoutMs, allowSeedFallback: false }
+    { timeoutMs, allowSeedFallback }
   );
 
   let state = direct.listing;
