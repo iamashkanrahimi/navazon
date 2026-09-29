@@ -12,7 +12,7 @@ import {
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
-  deliverCached, downloadTrackWithSources, searchPrimary, sendMedia,
+  deliverCached, downloadTrackWithSources, searchPrimary, searchPrimaryTyped, sendMedia,
   sourceCandidateToTrack,
 } from './media.js';
 import {
@@ -49,6 +49,34 @@ import {
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
 const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
+const SEARCH_CACHE_NAMESPACE = 'v153';
+
+function userSearchCacheKey(query = '') {
+  return `${SEARCH_CACHE_NAMESPACE}:${query}`;
+}
+
+function artistContextTracks(context = {}) {
+  const groups = [
+    context.topTracks,
+    context.recentTracks,
+    context.tracks,
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const group of groups) {
+    for (const track of group || []) {
+      const key = `${normalize(track?.artist || '')}|${normalize(track?.title || '')}`;
+      if (!normalize(track?.title || '') || seen.has(key)) continue;
+      seen.add(key);
+      out.push(track);
+    }
+  }
+  return out;
+}
+
+function isUsableArtistContext(context = {}) {
+  return Boolean(context?.artist && artistContextTracks(context).length);
+}
 
 function sourceJobPriority(job = {}) {
   if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
@@ -58,9 +86,14 @@ function sourceJobPriority(job = {}) {
 }
 
 async function syncArtistContext(artistContext) {
-  if (!artistContext?.artist) return;
+  if (!artistContext?.artist) return false;
   const topTracks = artistContext.topTracks || artistContext.tracks || [];
   const recentTracks = artistContext.recentTracks || [];
+
+  if (!topTracks.length && !recentTracks.length) {
+    console.warn('[artist sync skipped]', artistContext.artist, 'empty track context');
+    return false;
+  }
 
   const results = await Promise.allSettled([
     catalog.recordArtist(artistContext.artist, {
@@ -76,6 +109,7 @@ async function syncArtistContext(artistContext) {
       console.warn('[artist sync]', artistContext.artist, result.reason?.message || result.reason);
     }
   }
+  return true;
 }
 
 async function syncAlbumIndex(artist, albums = [], {
@@ -400,30 +434,52 @@ export const sourceQueue = new SerialQueue(async job => {
       let searchCacheHit = false;
       try {
         const albumIntent = hasAlbumIntent(job.query);
+        const cacheKey = userSearchCacheKey(job.query);
         const cachedOptions = albumIntent
           ? null
-          : await catalog.getSearch(job.query, config.catalogSearchTtlMs);
+          : await catalog.getSearch(cacheKey, config.catalogSearchTtlMs);
         let options = cachedOptions || [];
+        let sourceAlbumOptions = [];
+        let primarySource = cachedOptions ? 'catalog' : 'none';
         searchCacheHit = Boolean(cachedOptions);
 
         if (!albumIntent && !cachedOptions) {
           const primaryStartedAt = Date.now();
           try {
-            options = await searchPrimary(job.query);
+            const primary = await searchPrimaryTyped(job.query);
+            options = primary.tracks || [];
+            sourceAlbumOptions = (primary.albums || []).filter(album =>
+              album?.artist && album?.title
+            );
+            primarySource = primary.source || 'unknown';
+
+            for (const album of sourceAlbumOptions) {
+              await syncAlbumIndex(album.artist, [album], { complete: false });
+              if (Array.isArray(album.tracks) && album.tracks.length) {
+                await syncAlbumTracks(album.artist, album, album.tracks);
+              }
+            }
           } catch (err) {
-            console.warn('[track search]', err.message);
+            console.warn('[typed search]', err.message);
             options = [];
+            sourceAlbumOptions = [];
           } finally {
             primaryMs = Date.now() - primaryStartedAt;
           }
         }
 
         const albumOptionsStartedAt = Date.now();
-        const albumOptions = await searchAlbumOptions(job.query, options);
+        const indexedAlbumOptions = await searchAlbumOptions(job.query, options);
+        const albumLimit = albumIntent ? 20 : 4;
+        const albumOptions = mergeAlbumResults(
+          albumLimit,
+          sourceAlbumOptions,
+          indexedAlbumOptions
+        );
         albumOptionsMs = Date.now() - albumOptionsStartedAt;
         if (!options.length && !albumOptions.length) throw new Error('No results');
 
-        const albumFirst = albumIntent && albumOptions.length > 0;
+        const albumFirst = albumOptions.length > 0 && (albumIntent || !options.length);
         const sessionId = newSessionId();
         const fresh = {
           chatId: job.chatId, userId: job.userId, query: job.query,
@@ -437,7 +493,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await showResults(sessionId,fresh);
 
         if (!albumIntent && !cachedOptions && options.length) {
-          try { await catalog.recordSearch(job.query,options); } catch (err) {
+          try { await catalog.recordSearch(cacheKey,options); } catch (err) {
             console.warn('[search catalog]', err.message);
           }
           await Promise.all(options.map(async track => {
@@ -451,6 +507,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
         console.log(
           `[perf.search] query=${JSON.stringify(job.query)} cache_hit=${searchCacheHit} `
+          + `source=${primarySource} tracks=${options.length} albums=${albumOptions.length} `
           + `primary_ms=${primaryMs} album_options_ms=${albumOptionsMs} `
           + `phase_total_ms=${Date.now() - searchPhaseStartedAt}`
         );
@@ -785,19 +842,40 @@ export const sourceQueue = new SerialQueue(async job => {
     }
 
     if (job.type === 'track_artist') {
+      const artistStartedAt = Date.now();
+      let artistRoute = 'unknown';
       try {
         const seed = session.currentTrack;
         if (!seed?.artist) throw new Error('Track artist is missing.');
 
-        const cachedArtist = await catalog.getArtistContext(seed.artist, config.catalogArtistTtlMs);
-        session.artistContext = cachedArtist || await openMeloBotArtistFresh(
-          tg,
+        const cachedArtist = await catalog.getArtistContext(
           seed.artist,
-          seed.source === 'melobot' ? seed : null
+          config.catalogArtistTtlMs
         );
-        session.artistSeed = seed.source === 'melobot'
-          ? seed
-          : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null);
+
+        if (cachedArtist && isUsableArtistContext(cachedArtist)) {
+          session.artistContext = cachedArtist;
+          artistRoute = 'catalog';
+        } else {
+          session.artistContext = await openMeloBotArtistFresh(
+            tg,
+            seed.artist,
+            seed.source === 'melobot' ? seed : null
+          );
+          artistRoute = session.artistContext.recoveredFromAlbum
+            ? 'live_album_recovery'
+            : 'live';
+        }
+
+        if (!isUsableArtistContext(session.artistContext)) {
+          throw new Error('MeloBot returned an empty artist context.');
+        }
+
+        session.artistSeed = session.artistContext.seedTrack
+          || (seed.source === 'melobot'
+            ? seed
+            : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null));
+
         await syncArtistContext(session.artistContext);
         session.isFollowing = await follows.isFollowing(session.userId, session.artistContext.artist);
         session.artistBack = 'trt';
@@ -817,8 +895,17 @@ export const sourceQueue = new SerialQueue(async job => {
             ),
           }
         );
+
+        console.log(
+          `[perf.track_artist] artist=${JSON.stringify(session.artistContext.artist)} `
+          + `route=${artistRoute} tracks=${artistContextTracks(session.artistContext).length} `
+          + `total_ms=${Date.now() - artistStartedAt}`
+        );
       } catch (err) {
         console.error('[track artist]', err.message);
+        console.log(
+          `[perf.track_artist] route=${artistRoute} total_ms=${Date.now() - artistStartedAt} error=true`
+        );
         session.busy = false;
         try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
       }
@@ -1283,6 +1370,10 @@ export const sourceQueue = new SerialQueue(async job => {
     }
 
     if (job.type === 'artist') {
+      const artistStartedAt = Date.now();
+      let artistRoute = 'unknown';
+      let cacheMs = 0;
+      let sourceMs = 0;
       try {
         const indexedSeed = Number.isInteger(job.seedIndex) && job.seedIndex >= 0
           ? session.options?.[job.seedIndex]
@@ -1291,10 +1382,33 @@ export const sourceQueue = new SerialQueue(async job => {
           ? indexedSeed
           : session.options.find(x => x.source === 'melobot');
         if (!seed) throw new Error('Artist profile currently requires MeloBot result.');
-        session.artistSeed = seed;
-        const cachedArtist = await catalog.getArtistContext(seed.artist,config.catalogArtistTtlMs);
-        session.artistContext = cachedArtist || await openMeloBotArtist(tg,seed);
+
+        const cacheStartedAt = Date.now();
+        const cachedArtist = await catalog.getArtistContext(
+          seed.artist,
+          config.catalogArtistTtlMs
+        );
+        cacheMs = Date.now() - cacheStartedAt;
+
+        if (cachedArtist && isUsableArtistContext(cachedArtist)) {
+          session.artistContext = cachedArtist;
+          artistRoute = 'catalog';
+        } else {
+          const sourceStartedAt = Date.now();
+          session.artistContext = await openMeloBotArtist(tg, seed);
+          sourceMs = Date.now() - sourceStartedAt;
+          artistRoute = session.artistContext.recoveredFromAlbum
+            ? 'live_album_recovery'
+            : 'live';
+        }
+
+        if (!isUsableArtistContext(session.artistContext)) {
+          throw new Error('MeloBot returned an empty artist context.');
+        }
+
+        session.artistSeed = session.artistContext.seedTrack || seed;
         await syncArtistContext(session.artistContext);
+
         if (!cachedArtist) {
           for (const relatedArtist of session.artistContext.relatedArtists || []) {
             if (normalize(relatedArtist) !== normalize(session.artistContext.artist)) {
@@ -1302,14 +1416,27 @@ export const sourceQueue = new SerialQueue(async job => {
             }
           }
         }
+
         session.isFollowing = await follows.isFollowing(session.userId,session.artistContext.artist);
         session.artistBack = 'rs';
         session.albums = null; session.albumsEmptyConfirmed = false; session.busy = false;
         await bot.editMessageText(session.chatId,job.messageId,session.artistContext.artist,{
           reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext,session.isFollowing,{ backAction: session.artistBack || 'rs' }),
         });
+
+        console.log(
+          `[perf.artist] artist=${JSON.stringify(session.artistContext.artist)} route=${artistRoute} `
+          + `cache_ms=${cacheMs} source_ms=${sourceMs} tracks=${artistContextTracks(session.artistContext).length} `
+          + `total_ms=${Date.now() - artistStartedAt}`
+        );
       } catch (err) {
-        console.error('[artist]',err.message); session.busy = false;
+        console.error('[artist]',err.message);
+        console.log(
+          `[perf.artist] artist=${JSON.stringify(session.artistContext?.artist || '')} `
+          + `route=${artistRoute} cache_ms=${cacheMs} source_ms=${sourceMs} `
+          + `total_ms=${Date.now() - artistStartedAt} error=true`
+        );
+        session.busy = false;
         await showResults(job.sessionId,session,job.messageId);
       }
       return;
