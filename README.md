@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.5 — Bulk Fail-Fast & Queue Guard
+# Navazon Cloud v1.5.6 — Cleaner User-Facing Status
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -199,3 +199,12 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Album retries use the direct-by-title path rather than the slower primary Artist → Albums route.
 - Search-result albums now preserve their live HQ bulk button and source-state token, allowing Download All to reuse the page that is already open instead of reopening the album.
 - Adds a regression ensuring interactive album bulk honors caller-provided short timeouts.
+
+
+## Cleaner User-Facing Status v1.5.6
+
+- Removes internal source/cache terminology from user-visible bulk-download failure messages.
+- If verified HQ cache completes a failed source request, no warning is shown at all.
+- Partial bulk fallback now reports only how many songs could not be received; complete failure uses a short retry message.
+- Track info label `محبوبیت` is renamed to `بازدید حدودی`.
+- Track info label `کیفیت‌های آماده` is renamed to `کیفیت‌های موجود`.
