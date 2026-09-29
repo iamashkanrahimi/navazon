@@ -503,7 +503,11 @@ export function inspectMeloBotAlbumListing(messages = []) {
   const declaration = albumListingDeclaration(messages);
   const albums = parseAlbumButtons(messages, {
     allowBareCounted: declaration.declaredCount !== null || declaration.explicitEmpty,
-  }).map(album => ({ ...album, verifiedAlbum: true }));
+  }).map(album => ({
+    ...album,
+    verifiedAlbum: true,
+    albumTrustVersion: 2,
+  }));
   const nextButton = albumNextButton(messages);
   const confirmed = albums.length > 0
     || declaration.declaredCount !== null
@@ -561,7 +565,11 @@ export function parseMeloBotSearchSurface(messages = [], fallbackArtist = '') {
     const key = `${normalize(album.artist || '')}|${normalize(album.title)}`;
     if (!normalize(album.title) || albumSeen.has(key)) continue;
     albumSeen.add(key);
-    albums.push(album);
+    albums.push({
+      ...album,
+      verifiedAlbum: true,
+      albumTrustVersion: 2,
+    });
   }
 
   return {
@@ -878,6 +886,7 @@ export async function probeMeloBotCandidateSurface(
         bulkNormalButton: inspected.bulkNormalButton,
         tracks: inspected.tracks,
         verifiedAlbum: true,
+        albumTrustVersion: 2,
       },
       messages: selected.messages,
       sourceStateVersion,
