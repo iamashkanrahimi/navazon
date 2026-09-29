@@ -28,11 +28,16 @@ export function normalizeText(value = '') {
     .trim();
 }
 
+function splitArtists(value = '') {
+  return cleanText(value)
+    .split(/\s*(?:&|,|\band\b|\+|؛|،)\s*/i)
+    .map(cleanText)
+    .filter(Boolean);
+}
+
 export function splitArtistNames(display = '', tags = []) {
-  const fromTags = Array.isArray(tags) ? tags.map(cleanText).filter(Boolean) : [];
-  const values = fromTags.length
-    ? fromTags
-    : cleanText(display).split(/\s*(?:&|,|\band\b|\+|؛|،)\s*/i).map(cleanText).filter(Boolean);
+  const raw = Array.isArray(tags) && tags.length ? tags : [display];
+  const values = raw.flatMap(splitArtists);
   const seen = new Set();
   const out = [];
   for (const name of values) {
@@ -45,12 +50,18 @@ export function splitArtistNames(display = '', tags = []) {
 }
 
 export function artistSetKey(display = '', tags = []) {
-  const parts = splitArtistNames(display, tags).map(normalizeText).filter(Boolean).sort();
-  return parts.join('&') || normalizeText(display);
+  return splitArtistNames(display, tags).map(normalizeText).filter(Boolean).sort().join('&') || normalizeText(display);
+}
+
+export function normalizeTrackTitle(value = '') {
+  const withoutFeaturedGroups = cleanText(value)
+    .replace(/\s*[\(\[]\s*(?:ft\.?|feat\.?|featuring)\b[^\)\]]*[\)\]]\s*/giu, ' ')
+    .replace(/\s+-\s+(?:ft\.?|feat\.?|featuring)\b.+$/giu, ' ');
+  return normalizeText(withoutFeaturedGroups);
 }
 
 export function canonicalMatchKey({ artist = '', artistTags = [], title = '' } = {}) {
-  return `${artistSetKey(artist, artistTags)}|${normalizeText(title)}`;
+  return `${artistSetKey(artist, artistTags)}|${normalizeTrackTitle(title)}`;
 }
 
 export function slugFromUrl(value) {
@@ -74,10 +85,8 @@ export function parseArgs(argv = process.argv.slice(2)) {
     if (!token.startsWith('--')) continue;
     const key = token.slice(2);
     const next = argv[i + 1];
-    if (next != null && !next.startsWith('--')) {
-      out[key] = next;
-      i += 1;
-    } else out[key] = true;
+    if (next != null && !next.startsWith('--')) { out[key] = next; i += 1; }
+    else out[key] = true;
   }
   return out;
 }
@@ -97,11 +106,7 @@ export function isoDate(value) {
 }
 
 export function selectReleaseDate(raw = {}) {
-  const candidates = [
-    ['release_date', raw.release_date],
-    ['date', raw.date],
-    ['created_at_fallback', raw.created_at],
-  ];
+  const candidates = [['release_date', raw.release_date], ['date', raw.date], ['created_at_fallback', raw.created_at]];
   for (const [source, value] of candidates) {
     const date = isoDate(value);
     if (date) return { release_date: date, release_date_raw: cleanText(value), release_date_source: source };
