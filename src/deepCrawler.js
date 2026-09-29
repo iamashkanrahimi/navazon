@@ -236,6 +236,7 @@ async function enqueueSparseMediaFallback(tracks, quality, priority = 104) {
       {
         priority,
         taskKey: `track_${quality}:${trackKey}`,
+        reviveDone: true,
       }
     );
   }

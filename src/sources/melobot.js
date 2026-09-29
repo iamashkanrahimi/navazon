@@ -271,6 +271,10 @@ function isControl(text) {
   return CONTROL_WORDS.some(word => value.includes(word));
 }
 
+function isExplicitTrackButton(rawText = '') {
+  return /^[🎵🎶🎧]/u.test(clean(rawText));
+}
+
 function looksLikeAlbumButton(rawText) {
   const value = toAsciiDigits(stripLeadingEmoji(rawText));
   return /^.+?\s*\(\d+\)\s*$/u.test(value);
@@ -296,7 +300,8 @@ function isGenericAlbumNavigationText(rawText = '') {
 
 export function parseTrackButton(rawText, fallbackArtist = '') {
   const original = clean(rawText);
-  if (!original || isControl(original) || looksLikeAlbumButton(original)) return null;
+  if (!original || isControl(original)) return null;
+  if (!isExplicitTrackButton(original) && looksLikeAlbumButton(original)) return null;
   if (/^[🗣🎤🎙]/u.test(original)) return null;
   if (/^[💿📀]/u.test(original)) return null;
 
@@ -422,6 +427,8 @@ export function parseAlbumButton(rawText) {
 }
 
 function parseSearchAlbumButton(rawText) {
+  if (isExplicitTrackButton(rawText)) return null;
+
   const album = parseAlbumButton(rawText);
   if (!album || album.artist || !/^[💿📀]/u.test(clean(rawText))) return album;
 
@@ -772,27 +779,50 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
   let albums = [...(typedResult.albums || [])];
   let exactProbe = 'not_needed';
 
-  if (!albums.length) {
-    const exact = exactSearchTrackMatch(query, tracks);
-    if (exact?.rawText) {
-      const confidentTrack = Number.isFinite(exact.sourcePopularityCount);
-      if (confidentTrack) {
-        exactProbe = 'skipped_confident_track';
-      } else {
-        try {
-          const probed = await probeMeloBotCandidateSurface(client, exact);
-          exactProbe = probed.kind || 'unknown';
-          if (probed.kind === 'album' && probed.album?.title) {
-            tracks = tracks.filter(track => track !== exact);
-            albums = [{
-              ...probed.album,
-              artist: probed.album.artist || exact.artist,
-            }];
+  const exact = exactSearchTrackMatch(query, tracks);
+  if (exact?.rawText) {
+    const confidentTrack = Number.isFinite(exact.sourcePopularityCount);
+    const sameNamedAlbum = albums.some(album =>
+      normalize(album.artist || '') === normalize(exact.artist || '')
+      && normalize(album.title || '') === normalize(exact.title || '')
+    );
+
+    // Popularity is normally strong evidence for a real track, but when the
+    // same live search surface simultaneously exposes an album with the exact
+    // same artist/title, the row is genuinely ambiguous. Probe that rare case
+    // instead of trusting the metric blindly.
+    if (confidentTrack && !sameNamedAlbum) {
+      exactProbe = 'skipped_confident_track';
+    } else {
+      try {
+        const probed = await probeMeloBotCandidateSurface(client, exact);
+        exactProbe = probed.kind || 'unknown';
+        if (probed.kind === 'album' && probed.album?.title) {
+          tracks = tracks.filter(track => track !== exact);
+          const promoted = {
+            ...probed.album,
+            artist: probed.album.artist || exact.artist,
+          };
+          const key = `${normalize(promoted.artist || '')}|${normalize(promoted.title || '')}`;
+          const existingIndex = albums.findIndex(album =>
+            `${normalize(album.artist || '')}|${normalize(album.title || '')}` === key
+          );
+          if (existingIndex >= 0) {
+            albums[existingIndex] = {
+              ...albums[existingIndex],
+              ...promoted,
+              trackCount: promoted.trackCount || albums[existingIndex].trackCount,
+              tracks: promoted.tracks?.length
+                ? promoted.tracks
+                : albums[existingIndex].tracks,
+            };
+          } else {
+            albums.unshift(promoted);
           }
-        } catch (err) {
-          exactProbe = 'failed';
-          console.warn('[melobot exact candidate probe]', err.message);
         }
+      } catch (err) {
+        exactProbe = 'failed';
+        console.warn('[melobot exact candidate probe]', err.message);
       }
     }
   }
@@ -1526,7 +1556,10 @@ export async function openMeloBotArtist(client, seedTrack) {
         Number.isFinite(track.sourcePopularityCount)
         || /\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u.test(track.rawText || '')
       );
-      const exactTracks = confidentTracks.slice(0, 10);
+      const recoveryTracks = confidentTracks.length
+        ? confidentTracks
+        : (exactArtistTracks.length >= 2 ? exactArtistTracks : []);
+      const exactTracks = recoveryTracks.slice(0, 10);
 
       if (exactTracks.length) {
         topTracks = exactTracks;

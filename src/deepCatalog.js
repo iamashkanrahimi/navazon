@@ -149,8 +149,8 @@ export class DeepCatalog {
     await db.query(`
       INSERT INTO deep_track_media (
         track_key, quality, file_id, file_unique_id, kind,
-        bitrate, file_size, duration_seconds, source, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+        bitrate, file_size, duration_seconds, source, verified_quality, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,NOW())
       ON CONFLICT (track_key, quality) DO UPDATE SET
         file_id = EXCLUDED.file_id,
         file_unique_id = COALESCE(EXCLUDED.file_unique_id, deep_track_media.file_unique_id),
@@ -159,6 +159,7 @@ export class DeepCatalog {
         file_size = COALESCE(EXCLUDED.file_size, deep_track_media.file_size),
         duration_seconds = COALESCE(EXCLUDED.duration_seconds, deep_track_media.duration_seconds),
         source = EXCLUDED.source,
+        verified_quality = TRUE,
         updated_at = NOW()
     `, [
       trackKey,
@@ -175,6 +176,39 @@ export class DeepCatalog {
       satisfiedBy: extra.satisfiedBy || 'media_cache',
       quality,
     });
+  }
+
+  async getMediaMap(tracks = [], quality = 'hq') {
+    const keys = [...new Set((tracks || [])
+      .map(track => deepTrackKey(track))
+      .filter(key => key && key !== '|'))];
+
+    const out = new Map();
+    if (!keys.length) return out;
+
+    const result = await db.query(`
+      SELECT track_key, quality, file_id, file_unique_id, kind,
+             bitrate, file_size, duration_seconds, source
+      FROM deep_track_media
+      WHERE quality = $1
+        AND verified_quality = TRUE
+        AND track_key = ANY($2::text[])
+    `, [quality, keys]);
+
+    for (const item of result.rows) {
+      out.set(item.track_key, {
+        fileId: item.file_id,
+        fileUniqueId: item.file_unique_id,
+        kind: item.kind,
+        bitrate: item.bitrate,
+        fileSize: item.file_size ? Number(item.file_size) : undefined,
+        duration: item.duration_seconds || undefined,
+        source: item.source || undefined,
+        quality: item.quality,
+      });
+    }
+
+    return out;
   }
 
   async setCover(track, media = {}) {
@@ -301,6 +335,7 @@ export class DeepCatalog {
         SELECT quality, file_id, file_unique_id, kind, bitrate, file_size, duration_seconds, source
         FROM deep_track_media
         WHERE track_key = $1
+          AND verified_quality = TRUE
       `, [trackKey]),
       db.query(`
         SELECT a.album_key, a.artist, a.title, a.track_count
@@ -462,7 +497,9 @@ export class DeepCatalog {
     const result = await db.query(`
       SELECT track_key
       FROM deep_track_media
-      WHERE quality = $1 AND track_key = ANY($2::text[])
+      WHERE quality = $1
+        AND verified_quality = TRUE
+        AND track_key = ANY($2::text[])
     `, [quality, keys]);
     const present = new Set(result.rows.map(row => row.track_key));
     return keyed.filter(item => !present.has(item.key)).map(item => item.track);
@@ -709,9 +746,10 @@ export class DeepCatalog {
       `),
       db.query(`
         SELECT
-          COUNT(*)::bigint AS media,
-          COUNT(*) FILTER (WHERE quality = 'hq')::bigint AS hq,
-          COUNT(*) FILTER (WHERE quality = 'normal')::bigint AS normal
+          COUNT(*) FILTER (WHERE verified_quality = TRUE)::bigint AS media,
+          COUNT(*) FILTER (WHERE quality = 'hq' AND verified_quality = TRUE)::bigint AS hq,
+          COUNT(*) FILTER (WHERE quality = 'normal' AND verified_quality = TRUE)::bigint AS normal,
+          COUNT(*) FILTER (WHERE verified_quality = FALSE)::bigint AS unverified
         FROM deep_track_media
       `),
       db.query(`

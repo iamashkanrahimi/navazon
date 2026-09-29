@@ -41,14 +41,18 @@ export function albumButtonLabel(album) {
 function dominantArtist(tracks) {
   const counts = new Map();
   for (const track of tracks || []) {
-    if (!track.artist) continue;
+    if (!track.artist || track.source !== 'melobot') continue;
     const key = normalize(track.artist);
     const current = counts.get(key) || { artist: track.artist, count: 0 };
     current.count += 1;
     counts.set(key, current);
   }
   const best = [...counts.values()].sort((a,b) => b.count - a.count)[0];
-  if (!best || best.count < Math.min(2, tracks.length)) return null;
+
+  // A single search row is not strong enough evidence for a direct Artist-page
+  // shortcut: ambiguous album-like hits have historically surfaced as one
+  // pseudo-track. Require at least two independent MeloBot track rows.
+  if (!best || best.count < 2) return null;
   return best.artist;
 }
 
@@ -139,6 +143,24 @@ export function resultsKeyboard(sessionId, session) {
       text: `صفحه‌ی 🗣 ${truncate(artist,30)}`,
       callback_data: `ar:${sessionId}:${artistSeedIndex}`,
     }]);
+  } else {
+    const albumArtists = new Map();
+    (session.albumOptions || []).forEach((album, index) => {
+      if (!album?.artist) return;
+      const key = normalize(album.artist);
+      if (!key) return;
+      if (!albumArtists.has(key)) {
+        albumArtists.set(key, { artist: album.artist, index });
+      }
+    });
+
+    if (albumArtists.size === 1) {
+      const only = [...albumArtists.values()][0];
+      rows.push([{
+        text: `صفحه‌ی 🗣 ${truncate(only.artist,30)}`,
+        callback_data: `aar:${sessionId}:${only.index}`,
+      }]);
+    }
   }
   if (session.resultsBackAction) {
     rows.push([{

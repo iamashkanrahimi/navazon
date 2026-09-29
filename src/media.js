@@ -69,7 +69,12 @@ export async function bridgeSourceMessages(sourceUsername, messages = []) {
   return wait;
 }
 
-export async function sendMedia(chatId, track, media) {
+export async function sendMedia(
+  chatId,
+  track,
+  media,
+  { cacheHit = false, cacheKey = null } = {}
+) {
   const caption = minimalBrandCaption();
   if (media.kind === 'audio') await bot.sendAudio(chatId,media.fileId,{
     caption,
@@ -78,7 +83,7 @@ export async function sendMedia(chatId, track, media) {
     ...(media.duration ? { duration: media.duration } : {}),
   });
   else await bot.sendDocument(chatId,media.fileId,{ caption });
-  await cache.recordServe(track,{ cacheHit: false });
+  await cache.recordServe(track,{ cacheHit, cacheKey });
 }
 
 function normalizeMatch(value = '') {
@@ -121,9 +126,15 @@ function chooseAhangifyMatch(results, track) {
   return best;
 }
 
-export async function downloadTrackWithSources(track, originalQuery) {
-  const cached = await cache.get(track);
-  if (cached) return { cached, track };
+export async function downloadTrackWithSources(
+  track,
+  originalQuery,
+  { allowLegacyCache = true } = {}
+) {
+  if (allowLegacyCache) {
+    const cached = await cache.get(track);
+    if (cached) return { cached, track };
+  }
 
   if (track.source === 'ahangify' && track.cmd) {
     const result = await downloadAhangifyResult(tg, track);

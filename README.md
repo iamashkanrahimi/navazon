@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.3 — Typed Search & Artist Recovery
+# Navazon Cloud v1.5.4 — Search Hardening & HQ Cache
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -169,3 +169,22 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Artist navigation and sorting use bounded timeouts so a malformed source surface cannot hold the UI for ~18 seconds.
 - Empty artist profiles fail closed and are never written over a healthy catalog artist context.
 - Search telemetry now includes source, exact-probe outcome, track count, album count, and phase timing; artist telemetry includes route and recovered track counts.
+
+
+## Search Hardening & HQ Cache v1.5.4
+
+- Exact low-confidence track-like hits are probed even when the same search also contains album results, fixing mixed queries such as `shayea do be shak`. A same-name Track+Album collision is probed even if the track row has a popularity metric.
+- Probed album data is merged back without dropping visible tracklists, so album-only search results can open from indexed tracks immediately.
+- Explicit track-icon rows with parenthesized titles (for example `Song (2024)`) stay tracks instead of being mistaken for counted album rows.
+- Direct Artist shortcuts require at least two consistent MeloBot track rows; one ambiguous pseudo-track can no longer create a broken Artist-page button.
+- When search results contain albums from one unambiguous artist, Navazon still offers a safe Artist-page shortcut that opens from the album artist (and prefers a live visible album track when available).
+- Artist recovery accepts two exact-artist search rows even when MeloBot omits popularity counters, covering sparse artist surfaces without trusting a single ambiguous row.
+- Search cache namespace is bumped to `v154` so bad mixed-search rows cached by earlier versions cannot survive the fix.
+- Search-result albums open target-first through the direct album route instead of resolving a whole discography first.
+- Followed-artist pages now reject stale/empty cached Artist contexts just like normal Artist pages.
+- Native bulk downloads (album, top, recent) use only explicit `hq` rows from `deep_track_media` when served from cache; untyped legacy cache is never treated as HQ.
+- Media rows now carry a `verified_quality` provenance flag. Existing pre-v1.5.4 rows migrate as unverified and are ignored for quality-labelled delivery until MeloBot refreshes them; every new HQ/normal source fetch is stored as verified.
+- The crawler treats unverified legacy media as missing and can revive completed media tasks, gradually rebuilding a trustworthy quality-aware cache.
+- Explicit single-track HQ requests also bypass untyped legacy cache, so the “quality عالی” label is quality-strict.
+- Batched HQ cache lookup fetches all requested media in one database query to keep cached bulk delivery fast.
+- Regression coverage includes mixed track+album queries, real low-confidence tracks, single-row Artist shortcuts, multi-row Artist recovery, Persian/Latin query shapes, counted albums, and quality-aware media lookup.
