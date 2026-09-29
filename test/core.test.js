@@ -19,6 +19,9 @@ const {
   inspectMeloBotAlbumListing,
   albumQueryMatches,
   resolveMeloBotArtistAlbums,
+  resolveMeloBotAlbumsFromLiveArtistContext,
+  resolveMeloBotArtistAlbumsDirectFirst,
+  openMeloBotArtist,
   openMeloBotAlbumByTitle,
   openMeloBotAlbumDirectByTitle,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
@@ -144,9 +147,12 @@ test('MeloBot parser extracts artist, title and popularity', () => {
   assert.equal(track.sourcePopularityCount, 1_600_000);
 });
 
-test('MeloBot parser rejects navigation controls', () => {
+test('MeloBot parser rejects navigation and artist-sort controls', () => {
   assert.equal(parseTrackButton('بعدی'), null);
   assert.equal(parseTrackButton('صفحه بعد'), null);
+  assert.equal(parseTrackButton('پربازدیدترین‌ها', 'Artist'), null);
+  assert.equal(parseTrackButton('محبوب‌ترین ها', 'Artist'), null);
+  assert.equal(parseTrackButton('نمایش به ترتیب تاریخ انتشار', 'Artist'), null);
 });
 
 test('bulk matching does not shift tracks when a partial response misses one', () => {
@@ -973,4 +979,137 @@ test('failed primary album route opens a temporary circuit before direct fallbac
 
   assert.equal(opened.album.title, 'Circuit Album');
   assert.ok(getMeloBotAlbumPrimaryCircuitRemainingMs('Circuit Artist') > 0);
+});
+
+
+test('live artist album surface resolves with one direct button click', async () => {
+  const client = new FakeTelegramClient({
+    '💿 آلبوم‌ها': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Live One (3)', '💿 Live Two (4)']
+      ),
+    ]],
+  });
+
+  const context = {
+    artist: 'Live Artist',
+    liveAlbumButton: '💿 آلبوم‌ها',
+    liveAlbumList: [],
+    liveAlbumListingConfirmed: false,
+    liveAlbumListingConfirmedEmpty: false,
+    liveAlbumDeclaredCount: null,
+    liveAlbumNextButton: null,
+    liveAlbumSourceStateVersion: getMeloBotStateVersion(),
+  };
+
+  const resolved = await resolveMeloBotAlbumsFromLiveArtistContext(
+    client,
+    context,
+    { allowEmpty: true, maxAlbums: 10 }
+  );
+
+  assert.deepEqual(
+    resolved.albums.map(album => album.title),
+    ['Live One', 'Live Two']
+  );
+  assert.deepEqual(client.sent, ['💿 آلبوم‌ها']);
+  assert.match(resolved.source, /^live_artist_surface:/);
+});
+
+test('stale live artist album surface is never clicked', async () => {
+  const client = new FakeTelegramClient({
+    '💿 آلبوم‌ها': [[
+      fakeBotMessage('آلبوم های خواننده (1) :', ['💿 Should Not Open (1)']),
+    ]],
+  });
+
+  await assert.rejects(
+    () => resolveMeloBotAlbumsFromLiveArtistContext(
+      client,
+      {
+        artist: 'Stale Artist',
+        liveAlbumButton: '💿 آلبوم‌ها',
+        liveAlbumListingConfirmed: false,
+        liveAlbumSourceStateVersion: getMeloBotStateVersion() - 1,
+      },
+      { allowEmpty: true }
+    ),
+    /stale/
+  );
+
+  assert.deepEqual(client.sent, []);
+});
+
+test('artist sorting records only the final reply keyboard as a live album surface', async () => {
+  const exactTrack = '🎵 Surface Artist, Seed Song';
+  const seed = {
+    ...parseTrackButton(exactTrack),
+    source: 'melobot',
+  };
+
+  const client = new FakeTelegramClient({
+    [exactTrack]: [[
+      fakeBotMessage(
+        'track page',
+        ['📥 کیفیت عالی', '🎤 خواننده']
+      ),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'آهنگ های Surface Artist',
+        ['Seed Song', 'نمایش به ترتیب تاریخ انتشار', '💿 stale albums']
+      ),
+    ]],
+    'نمایش به ترتیب تاریخ انتشار': [[
+      fakeBotMessage(
+        'مرتب سازی',
+        ['پربازدیدترین‌ها']
+      ),
+    ]],
+    'پربازدیدترین‌ها': [[
+      fakeBotMessage(
+        'پربازدیدترین آهنگ ها',
+        ['Top Song', '📥 دانلود همه (عالی)', '💿 آلبوم‌ها']
+      ),
+    ]],
+  });
+
+  const opened = await openMeloBotArtist(client, seed);
+
+  assert.equal(opened.liveAlbumButton, '💿 آلبوم‌ها');
+  assert.equal(
+    opened.liveAlbumSourceStateVersion,
+    getMeloBotStateVersion()
+  );
+  assert.notEqual(opened.liveAlbumButton, '💿 stale albums');
+});
+
+test('direct-first album listing returns before attempting artist-page navigation', async () => {
+  const client = new FakeTelegramClient({
+    'Direct Albums Artist': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 First Album (2)', '💿 Second Album (5)']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistAlbumsDirectFirst(
+    client,
+    'Direct Albums Artist',
+    null,
+    {
+      allowEmpty: true,
+      maxAlbums: 10,
+      directTimeoutMs: 650,
+    }
+  );
+
+  assert.deepEqual(
+    resolved.albums.map(album => album.title),
+    ['First Album', 'Second Album']
+  );
+  assert.match(resolved.source, /^direct_first:/);
+  assert.deepEqual(client.sent, ['Direct Albums Artist']);
 });

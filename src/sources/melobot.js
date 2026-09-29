@@ -256,6 +256,15 @@ function isControl(text) {
   const value = clean(text);
   if (!value) return true;
   if (/^[⬅️🔙🏛️🏠🎙️🎤🗣️💿🎵🎶📀🎧]+$/u.test(value)) return true;
+
+  const normalized = normalize(value);
+  if (
+    /^(?:پربازدیدترین(?: ها)?|محبوب ترین(?: ها)?|برترین(?: ها)?|پر.?دانلودترین(?: ها)?|جدیدترین(?: ها)?|نمایش به ترتیب(?: .*)?|ترتیب بر اساس(?: .*)?)$/u
+      .test(normalized)
+  ) {
+    return true;
+  }
+
   return CONTROL_WORDS.some(word => value.includes(word));
 }
 
@@ -1098,7 +1107,28 @@ export async function openMeloBotArtist(client, seedTrack) {
   let bulkHighButton = null;
   let bulkNormalButton = null;
 
+  // The base artist page is the current source surface until we press a sort
+  // control. Keep a separate live-surface snapshot so a later Albums click can
+  // use it only while its source-state token is still current.
+  let liveAlbumButton = base.albumButton || null;
+  let liveAlbumList = base.albumList || [];
+  let liveAlbumListingConfirmed = Boolean(base.albumListingConfirmed);
+  let liveAlbumListingConfirmedEmpty = Boolean(base.albumListingConfirmedEmpty);
+  let liveAlbumDeclaredCount = base.albumDeclaredCount ?? null;
+  let liveAlbumNextButton = base.albumNextButton || null;
+  let liveAlbumSourceStateVersion = base.sourceStateVersion;
+
   if (base.orderButton) {
+    // Sending the sort command invalidates the base reply keyboard even if the
+    // sort ultimately fails, so never expose stale album controls as "live".
+    liveAlbumButton = null;
+    liveAlbumList = [];
+    liveAlbumListingConfirmed = false;
+    liveAlbumListingConfirmedEmpty = false;
+    liveAlbumDeclaredCount = null;
+    liveAlbumNextButton = null;
+    liveAlbumSourceStateVersion = null;
+
     try {
       let ordered = await sendAndCollect(client, base.orderButton, {
         timeoutMs: config.searchTimeoutMs,
@@ -1134,6 +1164,17 @@ export async function openMeloBotArtist(client, seedTrack) {
       bulkNormalButton = findButton(ordered.messages, text =>
         /دانلود همه/u.test(clean(text)) && /معمولی/u.test(clean(text))
       );
+
+      const liveListing = inspectMeloBotAlbumListing(ordered.messages);
+      liveAlbumButton = liveListing.confirmed
+        ? null
+        : albumNavigationButton(ordered.messages);
+      liveAlbumList = liveListing.albums;
+      liveAlbumListingConfirmed = liveListing.confirmed;
+      liveAlbumListingConfirmedEmpty = liveListing.confirmedEmpty;
+      liveAlbumDeclaredCount = liveListing.declaredCount;
+      liveAlbumNextButton = liveListing.nextButton || null;
+      liveAlbumSourceStateVersion = sourceStateVersion;
     } catch (err) {
       console.warn('[melobot artist sort]', err.message);
     }
@@ -1147,6 +1188,13 @@ export async function openMeloBotArtist(client, seedTrack) {
     topTracks,
     bulkHighButton,
     bulkNormalButton,
+    liveAlbumButton,
+    liveAlbumList,
+    liveAlbumListingConfirmed,
+    liveAlbumListingConfirmedEmpty,
+    liveAlbumDeclaredCount,
+    liveAlbumNextButton,
+    liveAlbumSourceStateVersion,
   };
 }
 
@@ -1832,11 +1880,149 @@ export async function resolveMeloBotAlbums(
   };
 }
 
+export async function resolveMeloBotAlbumsFromLiveArtistContext(
+  client,
+  artistContext,
+  { allowEmpty = true, maxAlbums = 60 } = {}
+) {
+  if (
+    Number(artistContext?.liveAlbumSourceStateVersion || -1)
+    !== Number(sourceStateVersion)
+  ) {
+    throw new Error('MeloBot live artist album surface is stale.');
+  }
+
+  const hasLiveSurface = Boolean(
+    artistContext?.liveAlbumListingConfirmed
+    || artistContext?.liveAlbumButton
+  );
+  if (!hasLiveSurface) {
+    throw new Error('MeloBot current artist surface has no album control.');
+  }
+
+  const liveContext = {
+    artist: artistContext.artist,
+    albumButton: artistContext.liveAlbumButton || null,
+    albumList: artistContext.liveAlbumList || [],
+    albumListingConfirmed: Boolean(artistContext.liveAlbumListingConfirmed),
+    albumListingConfirmedEmpty: Boolean(
+      artistContext.liveAlbumListingConfirmedEmpty
+    ),
+    albumDeclaredCount: artistContext.liveAlbumDeclaredCount ?? null,
+    albumNextButton: artistContext.liveAlbumNextButton || null,
+  };
+
+  const resolved = await resolveMeloBotAlbums(
+    client,
+    liveContext,
+    { allowEmpty, maxAlbums }
+  );
+
+  return {
+    artist: artistContext.artist,
+    seed: null,
+    artistContext,
+    ...resolved,
+    source: `live_artist_surface:${resolved.source || 'unknown'}`,
+  };
+}
+
+function normalizeDirectAlbumResolution(direct, artist, preferredSeed = null) {
+  const listing = direct.listing;
+  return {
+    artist: direct.artist || artist,
+    seed: direct.seed || preferredSeed || null,
+    artistContext: direct.artistContext || null,
+    albums: listing.albums || [],
+    complete: Boolean(listing.complete),
+    confirmedEmpty: Boolean(listing.confirmedEmpty),
+    confirmed: Boolean(
+      listing.confirmed || listing.albums?.length || listing.confirmedEmpty
+    ),
+    declaredCount: listing.declaredCount ?? null,
+    source: `direct_first:${direct.route || 'unknown'}`,
+    sourceStateVersion,
+    sourceStateSinglePage: !listing.nextButton,
+  };
+}
+
+export async function resolveMeloBotArtistAlbumsDirectFirst(
+  client,
+  artist,
+  preferredSeed = null,
+  {
+    allowEmpty = true,
+    maxAlbums = 60,
+    directTimeoutMs = 6000,
+  } = {}
+) {
+  let directError = null;
+
+  try {
+    const direct = await openMeloBotAlbumListingDirect(
+      client,
+      artist,
+      {
+        timeoutMs: Math.max(1200, Number(directTimeoutMs || 6000)),
+        allowSeedFallback: true,
+      }
+    );
+
+    const listing = direct.listing.complete || !direct.listing.nextButton
+      ? direct.listing
+      : await collectMeloBotAlbumPages(
+          client,
+          direct.listing,
+          { maxAlbums }
+        );
+
+    const normalized = normalizeDirectAlbumResolution(
+      { ...direct, listing },
+      artist,
+      preferredSeed
+    );
+
+    if (!normalized.albums.length && !normalized.confirmedEmpty && !allowEmpty) {
+      throw new Error('Direct-first album route returned no usable albums.');
+    }
+
+    return normalized;
+  } catch (err) {
+    directError = err;
+    console.warn('[melobot album direct-first]', artist, err.message);
+  }
+
+  try {
+    const primary = await resolveMeloBotArtistAlbums(
+      client,
+      artist,
+      preferredSeed,
+      {
+        allowEmpty,
+        maxAlbums,
+        skipDirectFallback: true,
+      }
+    );
+    return {
+      ...primary,
+      source: `primary_after_direct:${primary.source || 'unknown'}`,
+    };
+  } catch (primaryError) {
+    throw new Error(
+      `MeloBot direct-first album resolution failed. direct=${directError?.message || 'unknown'}; primary=${primaryError.message}`
+    );
+  }
+}
+
 export async function resolveMeloBotArtistAlbums(
   client,
   artist,
   preferredSeed = null,
-  { allowEmpty = true, maxAlbums = 60 } = {}
+  {
+    allowEmpty = true,
+    maxAlbums = 60,
+    skipDirectFallback = false,
+  } = {}
 ) {
   let primaryError = null;
   const circuitRemainingMs = albumPrimaryCircuitRemainingMs(artist);
@@ -1869,6 +2055,10 @@ export async function resolveMeloBotArtistAlbums(
   } else {
     primaryError = new Error(`primary route circuit open for ${circuitRemainingMs}ms`);
     console.log('[melobot album primary circuit]', artist, circuitRemainingMs);
+  }
+
+  if (skipDirectFallback) {
+    throw primaryError || new Error('MeloBot primary album route failed.');
   }
 
   try {
