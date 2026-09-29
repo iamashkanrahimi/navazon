@@ -203,10 +203,14 @@ export async function searchPrimaryTyped(query) {
     // a partial artist/title match merely because two tokens happen to match.
     // If MeloBot does not cover every meaningful query token, blend in the
     // fallback source and re-rank the combined candidates.
-    if (
+    const bestCoverage = rankedMelo[0]?.coverage || 0;
+    const needsRelevanceFallback = (
       meaningful.length >= 3
-      && (rankedMelo[0]?.coverage || 0) < meaningful.length
-    ) {
+        ? bestCoverage < meaningful.length
+        : meaningful.length === 2 && bestCoverage === 0
+    );
+
+    if (needsRelevanceFallback) {
       try {
         const fallback = await searchAhangify(tg, query);
         const fallbackTracks = fallback.map(candidate => applyPolicyDefaults({
