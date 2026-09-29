@@ -166,11 +166,24 @@ async function searchAlbumOptions(query, tracks = []) {
         config.catalogEmptyAlbumsTtlMs
       ).catch(() => null);
       if (Array.isArray(fullCached) && fullCached.length) {
-        return mergeAlbumResults(
-          limit,
-          fullCached.map(album => ({ ...album, artist: artists[0], source: 'catalog' })),
-          albums
+        const fullRows = fullCached.map(album => ({
+          ...album,
+          artist: artists[0],
+          source: 'catalog',
+        }));
+        const specificAlbum = hasSpecificAlbumTitle(
+          query,
+          artists[0],
+          fullRows.map(album => album.title)
         );
+        const visible = specificAlbum
+          ? fullRows.filter(album =>
+              albumTitleAppearsInQuery(query, album.title)
+              || albumQueryMatches(query, artists[0], album.title)
+            )
+          : fullRows;
+
+        return mergeAlbumResults(limit, visible, albums);
       }
     }
   }
