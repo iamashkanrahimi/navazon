@@ -1,4 +1,4 @@
-# Navazon Cloud v1.3 — Agile Deep Catalog
+# Navazon Cloud v1.4.4 — Reliability & Album Hardening
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -98,3 +98,15 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Album-search SQL bindings in both catalog stores are corrected.
 - Album-only search results can open tracks and use native bulk album download without a prior track seed.
 - The crawler now recognizes embedded album-list pages too.
+
+
+## Reliability & album hardening v1.4.4
+
+- Album listings follow MeloBot pagination instead of treating a partial first page as the whole discography.
+- Album opening resets to a fresh artist page and navigates to the page that actually contains the requested album before clicking it.
+- Persian half-space variants such as «آلبوم‌های» use the same canonical normalization as catalog and cache matching.
+- Explicit album-title searches no longer fall back to showing every album when the requested title is missing.
+- Busy interactive sessions stay alive long enough to survive a backed-up serialized source queue.
+- Ahangify fallback is labeled as the best available source quality rather than implying a verified HQ bitrate.
+- Confirmed empty album lists use a shorter default negative-cache TTL.
+- CI now also runs on direct pushes to main.
