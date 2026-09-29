@@ -100,22 +100,10 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
   let cacheHit = Boolean(media);
   let cacheKey = null;
 
-  if (!media && quality === 'hq') {
-    const legacy = await cache.get(track);
-    if (legacy?.fileId) {
-      media = legacy;
-      cacheHit = true;
-      cacheKey = legacy._cacheKey || null;
-      try {
-        await deepCatalog.setMedia(track, 'hq', legacy, {
-          source: legacy.source || track.source || 'cache',
-          satisfiedBy: 'legacy_cache',
-        });
-      } catch {}
-    }
-  }
-
   if (!media) {
+    // Quality buttons are strict: a legacy untyped file-cache entry is never
+    // promoted to HQ. HQ/normal reuse comes only from deep_track_media where
+    // the quality dimension is explicit.
     if (track?.source === 'melobot' && track?.rawText) {
       const result = await downloadMeloBotTrackQuality(tg, track, quality);
       media = await captureForwardedMedia(result.audioMessage);
