@@ -32,8 +32,17 @@ export function sourceCandidateToTrack(candidate) {
 
 export function canonicalTrackFromAudioMetadata(track = {}, media = {}) {
   const performer = String(media?.performer || '').replace(/\s+/g, ' ').trim();
-  const title = String(media?.title || '').replace(/\s+/g, ' ').trim();
-  if (!performer || !title || track?.artistInferred) return track;
+  const mediaTitle = String(media?.title || '').replace(/\s+/g, ' ').trim();
+  if (!performer) return track;
+
+  // For title-only Album/Artist rows the page title is usually the cleaner
+  // catalog identity while Telegram audio metadata is authoritative for the
+  // primary performer. For already-explicit rows (including transliterated
+  // fallback results), performer + title metadata can repair both fields.
+  const title = track?.artistInferred
+    ? String(track?.title || mediaTitle).replace(/\s+/g, ' ').trim()
+    : (mediaTitle || String(track?.title || '').replace(/\s+/g, ' ').trim());
+  if (!title) return track;
 
   return applyPolicyDefaults({
     ...track,
