@@ -3,7 +3,12 @@ import { bot, bridge, cache, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
-import { normalizeText, rankTracksForQuery, meaningfulSearchTokens } from './text.js';
+import {
+  normalizeText,
+  rankTracksForQuery,
+  meaningfulSearchTokens,
+  shouldUseSearchRelevanceFallback,
+} from './text.js';
 import {
   searchMeloBot,
   searchMeloBotTyped,
@@ -211,9 +216,9 @@ export async function searchPrimaryTyped(query) {
     // If MeloBot does not cover every meaningful query token, blend in the
     // fallback source and re-rank the combined candidates.
     const bestCoverage = rankedMelo[0]?.coverage || 0;
-    const needsRelevanceFallback = (
-      meaningful.length >= 2
-      && bestCoverage < meaningful.length
+    const needsRelevanceFallback = shouldUseSearchRelevanceFallback(
+      query,
+      bestCoverage
     );
 
     if (needsRelevanceFallback) {
