@@ -1,18 +1,20 @@
 import { config } from './config.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
+import { cleanText, normalizeText } from './text.js';
 
 export const SESSION_TTL_MS = 12 * 60 * 1000;
+export const BUSY_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 export const MAX_RESULTS = 5;
 export const ALBUMS_PER_PAGE = 7;
 export const ALBUM_TRACKS_PER_PAGE = 10;
 export const TOP_TRACKS_LIMIT = 10;
 
 export function clean(value = '') {
-  return String(value).replace(/\s+/g, ' ').trim();
+  return cleanText(value);
 }
 
 export function normalize(value = '') {
-  return clean(value).toLocaleLowerCase('en-US');
+  return normalizeText(value);
 }
 
 export function numberEmoji(index) {
@@ -195,7 +197,10 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
 
   const qualityRow = [];
   if (media.hq || capabilities.hasHq) {
-    qualityRow.push({ text: '📥 کیفیت عالی', callback_data: `tqh:${sessionId}` });
+    qualityRow.push({
+      text: track?.source === 'ahangify' ? '📥 بهترین کیفیت موجود' : '📥 کیفیت عالی',
+      callback_data: `tqh:${sessionId}`,
+    });
   }
   if (media.normal || capabilities.hasNormal) {
     qualityRow.push({ text: '📥 کیفیت معمولی', callback_data: `tqn:${sessionId}` });
