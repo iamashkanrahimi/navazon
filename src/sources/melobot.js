@@ -1904,11 +1904,14 @@ export async function openMeloBotAlbumContext(client, artist, album) {
 }
 
 export async function prepareMeloBotBulkAlbum(client, artist, albumTitle, preferredSeed = null) {
-  const context = await openMeloBotAlbumByTitle(
+  const context = await openMeloBotAlbumRobustByTitle(
     client,
     artist,
     albumTitle,
-    preferredSeed
+    {
+      timeoutMs: 4500,
+      maxPages: 8,
+    }
   );
   if (!context.bulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the album page.');
