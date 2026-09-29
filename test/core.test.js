@@ -679,3 +679,38 @@ test('Arman-shaped multi-step source flow reaches the live album listing end-to-
   );
   assert.ok(client.sent.includes('💿 آلبوم‌ها'));
 });
+
+
+test('Ebi-style missing artist button falls back to the direct album route', async () => {
+  const exactTrack = '🎵 Ebi, Khalij';
+  const client = new FakeTelegramClient({
+    Ebi: [
+      [fakeBotMessage('search results', [exactTrack])],
+      [fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Shabe Niloufari (9)', '💿 Hasrate Parvaz (8)']
+      )],
+    ],
+    'Ebi Khalij': [[fakeBotMessage('search results', [exactTrack])]],
+    [exactTrack]: [[
+      fakeBotMessage(
+        'صفحه آهنگ بدون دکمه خواننده',
+        ['📥 کیفیت عالی', '📥 کیفیت معمولی']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistAlbums(
+    client,
+    'Ebi',
+    null,
+    { allowEmpty: true, maxAlbums: 20 }
+  );
+
+  assert.equal(resolved.source, 'direct_fallback');
+  assert.deepEqual(
+    resolved.albums.map(album => album.title),
+    ['Shabe Niloufari', 'Hasrate Parvaz']
+  );
+  assert.equal(resolved.complete, true);
+});
