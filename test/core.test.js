@@ -2053,3 +2053,36 @@ test('source-verified track-looking albums survive catalog trust filtering', asy
     db.query = originalQuery;
   }
 });
+
+
+test('capability persistence stores positive evidence only and treats false as unknown', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    if (String(sql).includes('INSERT INTO deep_tracks')) return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: 1 };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setCapabilities(
+      { artist: 'A', title: 'One', source: 'melobot' },
+      {
+        hasHq: true,
+        hasNormal: false,
+        hasLyrics: false,
+        hasCover: true,
+      }
+    );
+  } finally {
+    db.query = originalQuery;
+  }
+
+  const update = calls.find(call => call.sql.includes('capabilitiesCheckedAt'));
+  assert.ok(update);
+  const stored = JSON.parse(update.params[1]);
+  assert.deepEqual(stored, { hasHq: true, hasCover: true });
+  assert.equal('hasNormal' in stored, false);
+  assert.equal('hasLyrics' in stored, false);
+});
