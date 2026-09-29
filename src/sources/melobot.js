@@ -500,29 +500,55 @@ function albumNextButton(messages = []) {
 }
 
 export function inspectMeloBotAlbumListing(messages = []) {
-  const declaration = albumListingDeclaration(messages);
-  const albums = parseAlbumButtons(messages, {
-    allowBareCounted: declaration.declaredCount !== null || declaration.explicitEmpty,
-  }).map(album => ({
-    ...album,
-    verifiedAlbum: true,
-    albumTrustVersion: 2,
-  }));
+  // Keep the declaration and its reply keyboard coupled to the same Telegram
+  // message. A previous implementation joined all response text first, so an
+  // "albums (N)" message could accidentally authorize bare counted buttons
+  // from a later artist/category message in the same collection window.
+  const albums = [];
+  const seen = new Set();
+  let declaredCount = null;
+  let explicitEmpty = false;
+
+  for (const message of messages || []) {
+    const localDeclaration = albumListingDeclaration([message]);
+    if (localDeclaration.declaredCount !== null) {
+      declaredCount = localDeclaration.declaredCount;
+    }
+    explicitEmpty = explicitEmpty || localDeclaration.explicitEmpty;
+
+    const localAlbums = parseAlbumButtons([message], {
+      allowBareCounted:
+        localDeclaration.declaredCount !== null
+        || localDeclaration.explicitEmpty,
+    });
+
+    for (const album of localAlbums) {
+      const key = normalize(album.title);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      albums.push({
+        ...album,
+        verifiedAlbum: true,
+        albumTrustVersion: 2,
+      });
+    }
+  }
+
   const nextButton = albumNextButton(messages);
   const confirmed = albums.length > 0
-    || declaration.declaredCount !== null
-    || declaration.explicitEmpty;
-  const confirmedEmpty = albums.length === 0 && declaration.explicitEmpty;
+    || declaredCount !== null
+    || explicitEmpty;
+  const confirmedEmpty = albums.length === 0 && explicitEmpty;
   const complete = confirmedEmpty
     || (albums.length > 0 && (
-      declaration.declaredCount !== null
-        ? albums.length >= declaration.declaredCount
+      declaredCount !== null
+        ? albums.length >= declaredCount
         : !nextButton
     ));
 
   return {
     albums,
-    declaredCount: declaration.declaredCount,
+    declaredCount,
     confirmed,
     confirmedEmpty,
     complete,
@@ -1169,7 +1195,9 @@ export async function getMeloBotLyrics(
     { timeoutMs: remaining() }
   )).messages;
   const lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
-  if (!lyricsButton) return { available: false, text: '' };
+  if (!lyricsButton) {
+    return { available: false, text: '', checked: true };
+  }
 
   const result = await sendAndCollect(client, lyricsButton, {
     timeoutMs: remaining(),
@@ -1177,10 +1205,21 @@ export async function getMeloBotLyrics(
   });
 
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
-  if (!raw) return { available: false, text: '' };
+  if (!raw) {
+    throw new Error('MeloBot lyrics response was empty.');
+  }
+
+  const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
+    .test(raw);
+  if (unavailable) {
+    return { available: false, text: '', rawText: raw, checked: true };
+  }
 
   const text = sanitizeMeloBotLyricsText(raw, candidate);
-  return { available: Boolean(text), text, rawText: raw };
+  if (!text) {
+    throw new Error('MeloBot lyrics response contained no usable lyrics.');
+  }
+  return { available: true, text, rawText: raw, checked: true };
 }
 
 function parsePopularityValue(text = '') {
@@ -1362,13 +1401,18 @@ export async function enrichMeloBotTrack(
         quietMs: 650,
       });
       const raw = lyricsResult.messages.map(messageText).filter(Boolean).join('\n\n').trim();
-      const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
+      const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
+        .test(raw);
+      const text = unavailable ? '' : sanitizeMeloBotLyricsText(raw, liveCandidate);
       result.lyrics = {
         available: Boolean(text),
         text,
         rawText: raw,
-        checked: true,
+        checked: Boolean(raw && (text || unavailable)),
       };
+      if (!raw) {
+        result.errors.push('lyrics: empty response');
+      }
     } catch (err) {
       result.errors.push(`lyrics: ${err.message}`);
     }
