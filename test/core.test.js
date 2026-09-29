@@ -2044,6 +2044,7 @@ test('source-verified track-looking albums survive catalog trust filtering', asy
           title: 'Mojaz',
           rawText: '🎵 Hichkas, Mojaz',
           verifiedAlbum: true,
+          albumTrustVersion: 2,
         }],
       },
     }],
