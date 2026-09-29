@@ -98,3 +98,8 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Album-search SQL bindings in both catalog stores are corrected.
 - Album-only search results can open tracks and use native bulk album download without a prior track seed.
 - The crawler now recognizes embedded album-list pages too.
+
+
+## Album navigation hotfix v1.4.2
+
+Album discovery now resolves immediately from MeloBot's base artist keyboard before any top-track sorting/navigation changes the reply-keyboard state. The same state-safe path is used by artist album pages, album search, album detail refreshes, and crawler album indexing. Album-loading failures show retry/back controls instead of silently returning to the artist page.
