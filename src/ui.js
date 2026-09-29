@@ -172,13 +172,10 @@ export function resultsKeyboard(sessionId, session) {
 }
 
 export function artistHomeKeyboard(sessionId, artistContext, isFollowing = false, { backAction = 'rs' } = {}) {
-  const rows = [];
-  const hasTop = Boolean(artistContext.topTracks?.length || artistContext.tracks?.length);
-  const hasRecent = Boolean(artistContext.recentTracks?.length);
-  const firstRow = [];
-  if (hasTop) firstRow.push({ text: '🎵 پربازدیدترین‌ها', callback_data: `ars:${sessionId}` });
-  if (hasRecent) firstRow.push({ text: '🆕 جدیدترین‌ها', callback_data: `arn:${sessionId}` });
-  if (firstRow.length) rows.push(firstRow);
+  const rows = [[
+    { text: '🎵 پربازدیدترین آثار', callback_data: `ars:${sessionId}` },
+    { text: '🆕 جدیدترین آثار', callback_data: `arn:${sessionId}` },
+  ]];
 
   const secondRow = [
     { text: '💿 آلبوم‌ها', callback_data: `alb:${sessionId}:0` },
