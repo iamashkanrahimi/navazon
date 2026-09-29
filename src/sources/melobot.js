@@ -1557,6 +1557,9 @@ export async function enrichMeloBotTrack(
         ...parseReleaseDate(raw),
         ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
       };
+      if (!raw) {
+        result.errors.push('metadata: empty response');
+      }
     } catch (err) {
       result.errors.push(`metadata: ${err.message}`);
     }
@@ -1575,7 +1578,11 @@ export async function enrichMeloBotTrack(
         stopWhen: photoMessage,
       });
       const photo = coverResult.messages.find(photoMessage);
-      if (photo) result.cover = { source: 'melobot', photoMessage: photo };
+      if (photo) {
+        result.cover = { source: 'melobot', photoMessage: photo };
+      } else {
+        result.errors.push('cover: photo not delivered');
+      }
     } catch (err) {
       result.errors.push(`cover: ${err.message}`);
     }
