@@ -1937,8 +1937,10 @@ test('derived artist lists use release date for recent and popularity for top', 
     db.query = originalQuery;
   }
 
-  assert.match(sqlCalls[0], /release_date DESC NULLS LAST/i);
-  assert.match(sqlCalls[1], /popularity_count DESC NULLS LAST/i);
+  assert.match(sqlCalls[0], /release_date IS NOT NULL/i);
+  assert.match(sqlCalls[0], /release_date DESC/i);
+  assert.match(sqlCalls[1], /popularity_count IS NOT NULL/i);
+  assert.match(sqlCalls[1], /popularity_count DESC/i);
 });
 
 test('query relevance matrix covers artist title collaboration and Persian album intent', () => {
