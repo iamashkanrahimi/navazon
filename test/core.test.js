@@ -78,6 +78,7 @@ const {
   shouldUseLiveAlbumDiscovery,
   meaningfulSearchTokens,
   rankTracksForQuery,
+  shouldUseSearchRelevanceFallback,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -2718,4 +2719,62 @@ test('refreshing only recent Artist tracks never blesses a legacy top list', asy
   const context = await store.getArtistContext('Haamim', 60_000);
   assert.deepEqual(context.topTracks, []);
   assert.deepEqual(context.recentTracks.map(track => track.title), ['Fresh Recent']);
+});
+
+
+test('two-token partial search coverage triggers relevance fallback', () => {
+  assert.equal(shouldUseSearchRelevanceFallback('Sadegh Khalesaneh', 1), true);
+  assert.equal(shouldUseSearchRelevanceFallback('Reza Bahram', 2), false);
+  assert.equal(shouldUseSearchRelevanceFallback('Hichkas', 0), false);
+});
+
+test('lyrics action can find the lyrics button behind a More submenu', async () => {
+  const raw = '🎵 Artist, Hidden Lyrics';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage(
+        'track menu',
+        ['کیفیت عالی', 'کیفیت معمولی', 'بیشتر']
+      ),
+    ]],
+    'بیشتر': [[
+      fakeBotMessage('more menu', ['متن آهنگ', 'کاور'])
+    ]],
+    'متن آهنگ': [[
+      fakeBotMessage('line one\nline two\n@MeloBot', [])
+    ]],
+  });
+
+  const result = await getMeloBotLyrics(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    { timeoutMs: 1200 }
+  );
+
+  assert.equal(result.available, true);
+  assert.equal(result.text, 'line one\nline two');
+  assert.deepEqual(client.sent, [raw, 'بیشتر', 'متن آهنگ']);
+});
+
+test('track metadata reuses release date already visible on the track menu', async () => {
+  const raw = '🎵 Artist, Menu Metadata x 1.2M';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      {
+        ...fakeBotMessage(
+          'Released: 2024-05-06\n📥 1.2M',
+          ['کیفیت عالی', 'کیفیت معمولی']
+        ),
+      },
+    ]],
+  });
+
+  const metadata = await getMeloBotTrackMetadata(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    { timeoutMs: 1200 }
+  );
+
+  assert.equal(metadata.releaseDate, '2024-05-06');
+  assert.equal(metadata.popularityCount, 1_200_000);
 });
