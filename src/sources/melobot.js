@@ -1134,11 +1134,13 @@ export async function downloadMeloBotTrackQuality(
   } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, config.downloadTimeoutMs);
-  const menuMessages = (await openTrackMenuWithCandidate(
+  const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
     { timeoutMs: Math.min(menuTimeoutMs, remaining()) }
-  )).messages;
+  );
+  const menuMessages = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
   const wantsHigh = quality === 'hq';
   const button = findButton(menuMessages, text => {
     const value = clean(text);
@@ -1165,7 +1167,12 @@ export async function downloadMeloBotTrackQuality(
     throw new Error(`MeloBot did not deliver ${quality} audio. ${response.slice(0, 350)}`);
   }
 
-  return { source: 'melobot', quality, candidate, audioMessage: audio };
+  return {
+    source: 'melobot',
+    quality,
+    candidate: liveCandidate,
+    audioMessage: audio,
+  };
 }
 
 function photoMessage(message) {
@@ -1227,11 +1234,13 @@ export async function getMeloBotLyrics(
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
   const remaining = sourceBudget(timeoutMs);
-  const menuMessages = (await openTrackMenuWithCandidate(
+  const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
     { timeoutMs: remaining() }
-  )).messages;
+  );
+  const menuMessages = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
 
   let lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
   if (!lyricsButton) {
@@ -1246,7 +1255,7 @@ export async function getMeloBotLyrics(
   }
 
   if (!lyricsButton) {
-    return { available: false, text: '', checked: true };
+    return { available: false, text: '', checked: true, candidate: liveCandidate };
   }
 
   const result = await sendAndCollect(client, lyricsButton, {
@@ -1262,14 +1271,26 @@ export async function getMeloBotLyrics(
   const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
     .test(raw);
   if (unavailable) {
-    return { available: false, text: '', rawText: raw, checked: true };
+    return {
+      available: false,
+      text: '',
+      rawText: raw,
+      checked: true,
+      candidate: liveCandidate,
+    };
   }
 
   const text = sanitizeMeloBotLyricsText(raw, candidate);
   if (!text) {
     throw new Error('MeloBot lyrics response contained no usable lyrics.');
   }
-  return { available: true, text, rawText: raw, checked: true };
+  return {
+    available: true,
+    text,
+    rawText: raw,
+    checked: true,
+    candidate: liveCandidate,
+  };
 }
 
 function parsePopularityValue(text = '') {
@@ -1304,11 +1325,13 @@ export async function getMeloBotTrackMetadata(
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
   const remaining = sourceBudget(timeoutMs);
-  const trackMenu = (await openTrackMenuWithCandidate(
+  const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
     { timeoutMs: remaining() }
-  )).messages;
+  );
+  const trackMenu = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
 
   let detailsButton = findButton(
     trackMenu,
@@ -1336,7 +1359,8 @@ export async function getMeloBotTrackMetadata(
     return {
       raw: surfaceRaw,
       ...parseReleaseDate(surfaceRaw),
-      ...parsePopularityValue(surfaceRaw || candidate.rawText || ''),
+      ...parsePopularityValue(surfaceRaw || liveCandidate.rawText || candidate.rawText || ''),
+      candidate: liveCandidate,
     };
   }
 
@@ -1348,7 +1372,8 @@ export async function getMeloBotTrackMetadata(
   return {
     raw,
     ...parseReleaseDate(raw),
-    ...parsePopularityValue(raw || candidate.rawText || ''),
+    ...parsePopularityValue(raw || liveCandidate.rawText || candidate.rawText || ''),
+    candidate: liveCandidate,
   };
 }
 
@@ -1358,11 +1383,13 @@ export async function getMeloBotCover(
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
   const remaining = sourceBudget(timeoutMs);
-  const trackMenu = (await openTrackMenuWithCandidate(
+  const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
     { timeoutMs: remaining() }
-  )).messages;
+  );
+  const trackMenu = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
 
   let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
 
@@ -1386,7 +1413,9 @@ export async function getMeloBotCover(
   });
 
   const photo = result.messages.find(photoMessage);
-  return photo ? { source: 'melobot', photoMessage: photo } : null;
+  return photo
+    ? { source: 'melobot', photoMessage: photo, candidate: liveCandidate }
+    : null;
 }
 
 export async function enrichMeloBotTrack(
