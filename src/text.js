@@ -38,6 +38,17 @@ export function normalizeText(value = '') {
     .trim();
 }
 
+export function hasCompositeArtistSeparators(value = '') {
+  const artist = cleanText(value);
+  if (!artist) return false;
+
+  // Background discovery treats ambiguous multi-name credits conservatively.
+  // This does not redefine the artist identity for interactive navigation; it
+  // only gives the crawler a cheap way to avoid manufacturing artist profiles
+  // from track-level collaboration credits such as "Drake & Yeat".
+  return /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
+}
+
 export function hasAlbumIntent(query = '') {
   const tokens = normalizeText(query).split(' ').filter(Boolean);
   return tokens.some(token => ALBUM_INTENT_WORDS.has(token));
