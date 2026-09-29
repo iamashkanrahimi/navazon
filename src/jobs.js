@@ -534,6 +534,7 @@ export const sourceQueue = new SerialQueue(async job => {
         let sourceAlbumOptions = [];
         let primarySource = cachedOptions ? 'catalog' : 'none';
         let primaryProbe = cachedOptions ? 'cache' : 'not_run';
+        let primaryCoverage = cachedOptions ? null : 0;
         searchCacheHit = Boolean(cachedOptions);
 
         if (!albumIntent && !cachedOptions) {
@@ -546,6 +547,7 @@ export const sourceQueue = new SerialQueue(async job => {
             );
             primarySource = primary.source || 'unknown';
             primaryProbe = primary.exactProbe || 'not_needed';
+            primaryCoverage = Number(primary.relevanceCoverage || 0);
 
             for (const album of sourceAlbumOptions) {
               await syncAlbumIndex(album.artist, [album], { complete: false });
@@ -601,7 +603,8 @@ export const sourceQueue = new SerialQueue(async job => {
 
         console.log(
           `[perf.search] query=${JSON.stringify(job.query)} cache_hit=${searchCacheHit} `
-          + `source=${primarySource} exact_probe=${primaryProbe} tracks=${options.length} albums=${albumOptions.length} `
+          + `source=${primarySource} exact_probe=${primaryProbe} relevance_coverage=${primaryCoverage ?? 'cache'} `
+          + `tracks=${options.length} albums=${albumOptions.length} `
           + `primary_ms=${primaryMs} album_options_ms=${albumOptionsMs} `
           + `phase_total_ms=${Date.now() - searchPhaseStartedAt}`
         );
