@@ -310,7 +310,11 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
     capabilities.hasMetadata
   );
   if (isMeloBot || hasInfo) infoRow.push({ text: '📋 مشخصات', callback_data: `tif:${sessionId}` });
-  if (track?.artist && (isMeloBot || capabilities.hasArtistPage)) {
+  if (
+    track?.artist
+    && !track?.artistInferred
+    && (isMeloBot || capabilities.hasArtistPage)
+  ) {
     infoRow.push({ text: '🗣 صفحه‌ی خواننده', callback_data: `tar:${sessionId}` });
   }
   if (infoRow.length) rows.push(infoRow);
