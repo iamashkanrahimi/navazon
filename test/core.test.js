@@ -147,9 +147,12 @@ test('MeloBot parser extracts artist, title and popularity', () => {
   assert.equal(track.sourcePopularityCount, 1_600_000);
 });
 
-test('MeloBot parser rejects navigation controls', () => {
+test('MeloBot parser rejects navigation and artist-sort controls', () => {
   assert.equal(parseTrackButton('بعدی'), null);
   assert.equal(parseTrackButton('صفحه بعد'), null);
+  assert.equal(parseTrackButton('پربازدیدترین‌ها', 'Artist'), null);
+  assert.equal(parseTrackButton('محبوب‌ترین ها', 'Artist'), null);
+  assert.equal(parseTrackButton('نمایش به ترتیب تاریخ انتشار', 'Artist'), null);
 });
 
 test('bulk matching does not shift tracks when a partial response misses one', () => {
