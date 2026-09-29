@@ -788,10 +788,21 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
             artist: probed.album.artist || exact.artist,
           };
           const key = `${normalize(promoted.artist || '')}|${normalize(promoted.title || '')}`;
-          const existing = new Set(albums.map(album =>
-            `${normalize(album.artist || '')}|${normalize(album.title || '')}`
-          ));
-          if (!existing.has(key)) albums.unshift(promoted);
+          const existingIndex = albums.findIndex(album =>
+            `${normalize(album.artist || '')}|${normalize(album.title || '')}` === key
+          );
+          if (existingIndex >= 0) {
+            albums[existingIndex] = {
+              ...albums[existingIndex],
+              ...promoted,
+              trackCount: promoted.trackCount || albums[existingIndex].trackCount,
+              tracks: promoted.tracks?.length
+                ? promoted.tracks
+                : albums[existingIndex].tracks,
+            };
+          } else {
+            albums.unshift(promoted);
+          }
         }
       } catch (err) {
         exactProbe = 'failed';
