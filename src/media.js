@@ -166,7 +166,7 @@ export async function searchPrimaryTyped(query) {
       applyPolicyDefaults({ ...track, source: 'melobot' })
     );
     const albums = (typed.albums || [])
-      .filter(album => album?.title)
+      .filter(album => album?.artist && album?.title)
       .slice(0, MAX_RESULTS)
       .map(album => ({ ...album, source: 'melobot' }));
 
