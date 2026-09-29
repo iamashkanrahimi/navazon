@@ -165,20 +165,54 @@ export class CatalogStore {
   }
 
   async getArtistContext(name, maxAgeMs) {
-    const { node } = await this.readArtist(name);
+    const { key, node } = await this.readArtist(name);
     if (!node || !freshEnough(node.artistUpdatedAt, maxAgeMs)) return null;
+
+    const targetArtist = normalize(node.name || name);
+    const legacyListIsTrustworthy = list => Boolean(
+      Array.isArray(list)
+      && list.length
+      && list.every(track => {
+        const repaired = markLegacyInferredArtist(track);
+        return (
+          !repaired.artistInferred
+          && normalize(repaired.artist || '') === targetArtist
+          && Boolean(normalize(repaired.title || ''))
+        );
+      })
+    );
+
+    let healed = false;
+    if (
+      Number(node.topTracksVersion || 0) < 1
+      && legacyListIsTrustworthy(node.topTracks)
+    ) {
+      node.topTracksVersion = 1;
+      healed = true;
+    }
+    if (
+      Number(node.recentTracksVersion || 0) < 1
+      && legacyListIsTrustworthy(node.recentTracks)
+    ) {
+      node.recentTracksVersion = 1;
+      healed = true;
+    }
+    if (healed) {
+      node.artistListVersion = 1;
+      try { await this.writeArtist(key, node); } catch {}
+    }
 
     const topTracks = (
       Number(node.topTracksVersion || 0) >= 1
       && Array.isArray(node.topTracks)
     )
-      ? node.topTracks.map(markLegacyInferredArtist)
+      ? node.topTracks.map(markLegacyInferredArtist).filter(track => !track.artistInferred)
       : [];
     const recentTracks = (
       Number(node.recentTracksVersion || 0) >= 1
       && Array.isArray(node.recentTracks)
     )
-      ? node.recentTracks.map(markLegacyInferredArtist)
+      ? node.recentTracks.map(markLegacyInferredArtist).filter(track => !track.artistInferred)
       : [];
 
     if (!topTracks.length && !recentTracks.length) return null;
@@ -192,6 +226,7 @@ export class CatalogStore {
         : null,
       albumsAvailable: Array.isArray(node.albumList) && node.albumList.length > 0,
       fromCatalog: true,
+      healedLegacyLists: healed,
     };
   }
 
