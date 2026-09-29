@@ -1198,9 +1198,36 @@ export async function getMeloBotTrackMetadata(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
-  const moreMessages = await openMoreMenu(client, candidate, { timeoutMs });
-  const detailsButton = findButton(moreMessages, text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text)));
-  if (!detailsButton) return { raw: '', ...parsePopularityValue(candidate.rawText || '') };
+  const trackMenu = (await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs }
+  )).messages;
+
+  let detailsButton = findButton(
+    trackMenu,
+    text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+  );
+  let surface = trackMenu;
+
+  if (!detailsButton) {
+    const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
+    if (moreButton) {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs,
+        quietMs: 600,
+      });
+      surface = more.messages;
+      detailsButton = findButton(
+        surface,
+        text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+      );
+    }
+  }
+
+  if (!detailsButton) {
+    return { raw: '', ...parsePopularityValue(candidate.rawText || '') };
+  }
 
   const result = await sendAndCollect(client, detailsButton, {
     timeoutMs,
@@ -1219,8 +1246,25 @@ export async function getMeloBotCover(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
-  const moreMessages = await openMoreMenu(client, candidate, { timeoutMs });
-  const coverButton = findButton(moreMessages, text => /کاور/u.test(clean(text)));
+  const trackMenu = (await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs }
+  )).messages;
+
+  let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
+
+  if (!coverButton) {
+    const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
+    if (moreButton) {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs,
+        quietMs: 600,
+      });
+      coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
+    }
+  }
+
   if (!coverButton) return null;
 
   const result = await sendAndCollect(client, coverButton, {
