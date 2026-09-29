@@ -616,6 +616,7 @@ function mergeAlbumPages(current = [], incoming = [], maxAlbums = 60) {
 async function collectMeloBotAlbumPages(client, initial, {
   maxAlbums = 60,
   maxPages = 12,
+  timeoutMs = Math.min(config.searchTimeoutMs, 6000),
 } = {}) {
   let albums = mergeAlbumPages([], initial?.albums || [], maxAlbums);
   let declaredCount = initial?.declaredCount ?? null;
@@ -627,7 +628,7 @@ async function collectMeloBotAlbumPages(client, initial, {
 
   while (!complete && nextButton && pages < maxPages && albums.length < maxAlbums) {
     const page = await sendAndCollect(client, nextButton, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs,
       quietMs: 650,
     });
     const state = inspectMeloBotAlbumListing(page.messages);
@@ -2303,12 +2304,13 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
 
 export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   maxAlbums = 12,
+  timeoutMs = Math.min(config.searchTimeoutMs, 6000),
 } = {}) {
   const artistQuery = stripAlbumIntent(query);
   if (!artistQuery) return { artist: '', albums: [] };
 
   const first = await sendAndCollect(client, artistQuery, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 750,
   });
 
@@ -2321,7 +2323,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     if (picker) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs,
         quietMs: 750,
       });
       contextMessages = selected.messages;
@@ -2332,7 +2334,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   if (listing.confirmed) {
     const resolved = listing.complete || !listing.nextButton
       ? listing
-      : await collectMeloBotAlbumPages(client, listing, { maxAlbums });
+      : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs });
     return {
       artist,
       albums: resolved.albums,
@@ -2346,14 +2348,14 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   const navButton = albumNavigationButton(contextMessages);
   if (navButton) {
     const page = await sendAndCollect(client, navButton, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs,
       quietMs: 750,
     });
     listing = inspectMeloBotAlbumListing(page.messages);
     if (listing.confirmed) {
       const resolved = listing.complete || !listing.nextButton
         ? listing
-        : await collectMeloBotAlbumPages(client, listing, { maxAlbums });
+        : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs });
       return {
         artist,
         albums: resolved.albums,
@@ -2371,7 +2373,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   let seedTracks = parseTracksFromMessages(first.messages);
   if (!seedTracks.length) {
     try {
-      seedTracks = await searchMeloBot(client, artistQuery, { maxRefinements: 3 });
+      seedTracks = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs });
     } catch (err) {
       console.warn(
         '[melobot album seed search]',
