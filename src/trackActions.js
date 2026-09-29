@@ -127,7 +127,12 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
       const { downloadTrackWithSources } = await import('./media.js');
       const outcome = await downloadTrackWithSources(track, [track.artist, track.title].filter(Boolean).join(' '));
       media = outcome.cached || outcome.media;
-      if (media) await deepCatalog.setMedia(track, 'hq', media, { source: track.source || 'ahangify' });
+      if (media) {
+        await deepCatalog.setMedia(track, 'hq', media, {
+          source: track.source || 'ahangify',
+          bitrate: Number(track.bitrate || 0) || undefined,
+        });
+      }
     } else {
       throw new Error('Requested quality is not available for this track source.');
     }
@@ -248,7 +253,13 @@ export async function getTrackInfoText(track) {
 
   const qualities = Object.keys(details?.media || {});
   if (qualities.length) {
-    const labels = qualities.map(q => q === 'hq' ? 'عالی' : q === 'normal' ? 'معمولی' : q);
+    const labels = qualities.map(q =>
+      q === 'hq'
+        ? (track?.source === 'ahangify' ? 'بهترین کیفیت منبع' : 'عالی')
+        : q === 'normal'
+          ? 'معمولی'
+          : q
+    );
     lines.push(`🎧 کیفیت‌های آماده: ${labels.join('، ')}`);
   }
 
