@@ -378,6 +378,10 @@ export class DeepCatalog {
         FROM deep_album_tracks dat
         JOIN deep_albums a ON a.album_key = dat.album_key
         WHERE dat.track_key = $1
+          AND (
+            COALESCE((a.metadata->>'verifiedAlbum')::boolean, FALSE) = TRUE
+            OR COALESCE(a.metadata->>'rawText', '') ~ '^[💿📀]'
+          )
         ORDER BY a.updated_at DESC
         LIMIT 1
       `, [trackKey]),
