@@ -1479,7 +1479,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     if (picker) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
-        timeoutMs,
+        timeoutMs: config.searchTimeoutMs,
         quietMs: 750,
       });
       contextMessages = selected.messages;
@@ -1705,7 +1705,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const lateNav = albumNavigationButton(messages);
     if (lateNav) {
       const page = await sendAndCollect(client, lateNav, {
-        timeoutMs,
+        timeoutMs: config.searchTimeoutMs,
         quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
@@ -1727,7 +1727,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const navButton = albumNavigationButton(more.messages);
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
-        timeoutMs,
+        timeoutMs: config.searchTimeoutMs,
         quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
