@@ -41,6 +41,7 @@ export function albumButtonLabel(album) {
 }
 
 function artistShortcutMatchesQuery(query = '', artist = '') {
+  if (!clean(query)) return true;
   const queryTokens = meaningfulSearchTokens(query);
   const artistTokens = new Set(normalize(artist).split(' ').filter(Boolean));
   if (!queryTokens.length || !artistTokens.size) return false;
