@@ -1154,6 +1154,51 @@ function chooseArtistPicker(items = [], requested = '') {
     || null;
 }
 
+async function openMeloBotAlbumListingDirect(client, artistQuery) {
+  const first = await sendAndCollect(client, artistQuery, {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 2100,
+  });
+
+  let artist = artistQuery;
+  let messages = first.messages;
+  let listing = inspectMeloBotAlbumListing(messages);
+
+  if (!listing.confirmed) {
+    const picker = chooseArtistPicker(artistPickerItems(messages), artistQuery);
+    if (picker) {
+      artist = picker.name;
+      const selected = await sendAndCollect(client, picker.rawText, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 2200,
+      });
+      messages = selected.messages;
+      listing = inspectMeloBotAlbumListing(messages);
+    }
+  }
+
+  if (!listing.confirmed) {
+    const navButton = albumNavigationButton(messages);
+    if (navButton) {
+      const page = await sendAndCollect(client, navButton, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 2200,
+      });
+      messages = page.messages;
+      listing = inspectMeloBotAlbumListing(messages);
+    }
+  }
+
+  if (!listing.confirmed) {
+    const response = messages.map(messageText).filter(Boolean).join('\n');
+    throw new Error(
+      `MeloBot could not open an album listing for: ${artistQuery}. ${response.slice(0, 350)}`
+    );
+  }
+
+  return { artist, listing };
+}
+
 export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   maxAlbums = 12,
 } = {}) {
@@ -1417,48 +1462,62 @@ export async function openMeloBotAlbumByTitle(
   preferredSeed = null,
   { maxPages = 12 } = {}
 ) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  const artistContext = await openMeloBotArtistBase(client, seed);
-
+  let seed = null;
+  let resolvedArtist = artist;
   let state;
-  if (artistContext.albumListingConfirmed) {
-    state = {
-      albums: artistContext.albumList || [],
-      confirmed: true,
-      confirmedEmpty: Boolean(artistContext.albumListingConfirmedEmpty),
-      declaredCount: artistContext.albumDeclaredCount ?? null,
-      complete: Boolean(artistContext.albumListingComplete),
-      nextButton: artistContext.albumNextButton || null,
-    };
-  } else {
-    const albumControl = clean(artistContext.albumButton || '');
-    if (!albumControl) {
-      throw new Error('MeloBot album listing is not available for this artist.');
+
+  try {
+    seed = await findArtistSeed(client, artist, preferredSeed);
+    const artistContext = await openMeloBotArtistBase(client, seed);
+    resolvedArtist = artistContext.artist;
+
+    if (artistContext.albumListingConfirmed) {
+      state = {
+        albums: artistContext.albumList || [],
+        confirmed: true,
+        confirmedEmpty: Boolean(artistContext.albumListingConfirmedEmpty),
+        declaredCount: artistContext.albumDeclaredCount ?? null,
+        complete: Boolean(artistContext.albumListingComplete),
+        nextButton: artistContext.albumNextButton || null,
+      };
+    } else {
+      const albumControl = clean(artistContext.albumButton || '');
+      if (!albumControl) {
+        throw new Error('MeloBot album listing is not available for this artist.');
+      }
+      const page = await sendAndCollect(client, albumControl, {
+        timeoutMs: config.searchTimeoutMs,
+        quietMs: 2200,
+      });
+      state = inspectMeloBotAlbumListing(page.messages);
     }
-    const page = await sendAndCollect(client, albumControl, {
-      timeoutMs: config.searchTimeoutMs,
-      quietMs: 2200,
-    });
-    state = inspectMeloBotAlbumListing(page.messages);
+  } catch (seedRouteError) {
+    // Album-only searches can be valid even when MeloBot does not return a
+    // usable track seed for the artist. Fall back to the source's direct
+    // artist/picker album route and keep the album opening stateful.
+    const direct = await openMeloBotAlbumListingDirect(client, artist);
+    resolvedArtist = direct.artist || artist;
+    state = direct.listing;
+    seed = preferredSeed || null;
   }
 
   const targetTitle = normalize(albumTitle);
   const seenPages = new Set();
 
   for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
-    const target = (state.albums || []).find(album =>
+    const target = (state?.albums || []).find(album =>
       normalize(album.title) === targetTitle
     );
     if (target) {
       const context = await openMeloBotAlbumContext(
         client,
-        artistContext.artist,
+        resolvedArtist,
         target
       );
       return { ...context, seed };
     }
 
-    if (!state.nextButton) break;
+    if (!state?.nextButton) break;
 
     const page = await sendAndCollect(client, state.nextButton, {
       timeoutMs: config.searchTimeoutMs,
