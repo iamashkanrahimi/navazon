@@ -615,8 +615,15 @@ export const sourceQueue = new SerialQueue(async job => {
         if (!artist) throw new Error('Followed artist is missing.');
 
         const cachedArtist = await catalog.getArtistContext(artist, config.catalogArtistTtlMs);
-        session.artistContext = cachedArtist || await openMeloBotArtistFresh(tg, artist, null);
-        session.artistSeed = (
+        session.artistContext = cachedArtist && isUsableArtistContext(cachedArtist)
+          ? cachedArtist
+          : await openMeloBotArtistFresh(tg, artist, null);
+
+        if (!isUsableArtistContext(session.artistContext)) {
+          throw new Error('MeloBot returned an empty followed-artist context.');
+        }
+
+        session.artistSeed = session.artistContext.seedTrack || (
           session.artistContext.recentTracks?.[0] ||
           session.artistContext.topTracks?.[0] ||
           session.artistContext.tracks?.[0] ||
@@ -691,59 +698,34 @@ export const sourceQueue = new SerialQueue(async job => {
             normalize(track.artist) === normalize(album.artist)
           ) || null;
 
-          let liveArtistName = album.artist;
-          let liveAlbums = [];
-
-          if (seed) {
-            const resolved = await resolveMeloBotArtistAlbums(
-              tg,
-              album.artist,
-              seed,
-              { allowEmpty: true }
-            );
-            liveArtistName = resolved.artist;
-            liveAlbums = resolved.albums;
-            session.artistSeed = resolved.seed || seed;
-
-            await syncAlbumIndex(resolved.artist, liveAlbums, {
-              complete: Boolean(resolved.complete),
-              emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
-            });
-          } else {
-            // Album-only searches deliberately skip track search. Re-open the
-            // source's artist picker/list directly so an album can still be
-            // opened even when no seed track exists in the session.
-            const direct = await discoverMeloBotAlbumsByArtistQuery(
-              tg,
-              `album ${album.artist}`,
-              { maxAlbums: 30 }
-            );
-            liveArtistName = direct.artist || album.artist;
-            liveAlbums = direct.albums || [];
-            await syncAlbumIndex(liveArtistName, liveAlbums, {
-              complete: Boolean(direct.complete),
-              emptyConfirmed: Boolean(direct.confirmedEmpty && direct.complete),
-            });
-          }
-
-          liveAlbum = liveAlbums.find(item =>
-            normalize(item.title) === normalize(album.title)
-          ) || null;
-          if (!liveAlbum) {
-            throw new Error(`Album disappeared from live source: ${album.title}`);
-          }
-
-          const opened = await openMeloBotAlbumByTitle(
+          const directStartedAt = Date.now();
+          const opened = await openMeloBotAlbumDirectByTitle(
             tg,
-            liveArtistName,
-            liveAlbum.title,
-            session.artistSeed || seed || null
+            album.artist,
+            album.title,
+            {
+              timeoutMs: 6000,
+              maxPages: 12,
+              allowSeedFallback: true,
+            }
           );
+
           liveAlbum = opened.album;
           tracks = opened.tracks;
+          resolvedArtistName = opened.artist || album.artist;
           session.artistSeed = opened.seed || session.artistSeed || seed || null;
-          await syncAlbumTracks(opened.artist, liveAlbum, tracks);
-          resolvedArtistName = opened.artist;
+
+          await Promise.all([
+            syncAlbumIndex(resolvedArtistName, [{
+              ...liveAlbum,
+              artist: resolvedArtistName,
+            }], { complete: false }),
+            syncAlbumTracks(resolvedArtistName, liveAlbum, tracks),
+          ]);
+
+          console.log(
+            `[fastpath] search_album=direct_title direct_ms=${Date.now() - directStartedAt}`
+          );
         }
 
         session.currentAlbum = {
