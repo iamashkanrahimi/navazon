@@ -20,6 +20,8 @@ const {
   albumQueryMatches,
   resolveMeloBotArtistAlbums,
   openMeloBotAlbumByTitle,
+  openMeloBotAlbumDirectByTitle,
+  getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
   searchMeloBot,
   chooseMeloBotSearchRefinement,
@@ -52,6 +54,7 @@ const {
   hasAlbumIntent,
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
+  shouldUseLiveAlbumDiscovery,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -857,4 +860,117 @@ test('matching preferred artist seed skips a redundant artist search before navi
     '🎤 خواننده',
     '💿 آلبوم‌ها',
   ]);
+});
+
+
+test('ordinary artist and track searches never trigger live album discovery', () => {
+  assert.equal(shouldUseLiveAlbumDiscovery('Arman Garshasbi'), false);
+  assert.equal(shouldUseLiveAlbumDiscovery('Arman Garshasbi Hezar Omid'), false);
+  assert.equal(shouldUseLiveAlbumDiscovery('album Arman Garshasbi'), true);
+  assert.equal(shouldUseLiveAlbumDiscovery('آلبوم‌های آرمان گرشاسبی'), true);
+});
+
+test('direct album-title opener clicks the live target without artist-page navigation', async () => {
+  const client = new FakeTelegramClient({
+    'Fast Direct Artist': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (1) :',
+        ['💿 Fast Direct Album (2)']
+      ),
+    ]],
+    '💿 Fast Direct Album (2)': [[
+      fakeBotMessage(
+        'Fast Direct Album',
+        ['Track One', 'Track Two', '📥 دانلود همه (عالی)']
+      ),
+    ]],
+  });
+
+  const opened = await openMeloBotAlbumDirectByTitle(
+    client,
+    'Fast Direct Artist',
+    'Fast Direct Album',
+    { timeoutMs: 650, maxPages: 3 }
+  );
+
+  assert.equal(opened.album.title, 'Fast Direct Album');
+  assert.deepEqual(opened.tracks.map(track => track.title), ['Track One', 'Track Two']);
+  assert.equal(opened.bulkHighButton, '📥 دانلود همه (عالی)');
+  assert.deepEqual(client.sent, [
+    'Fast Direct Artist',
+    '💿 Fast Direct Album (2)',
+  ]);
+});
+
+test('direct album-title opener follows pagination and clicks only when target page is live', async () => {
+  const client = new FakeTelegramClient({
+    'Paged Direct Artist': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Album One (1)', 'بعدی']
+      ),
+    ]],
+    'بعدی': [[
+      fakeBotMessage(
+        'آلبوم های خواننده (2) :',
+        ['💿 Album Two (1)']
+      ),
+    ]],
+    '💿 Album Two (1)': [[
+      fakeBotMessage(
+        'Album Two',
+        ['Only Track', '📥 دانلود همه (عالی)']
+      ),
+    ]],
+  });
+
+  const opened = await openMeloBotAlbumDirectByTitle(
+    client,
+    'Paged Direct Artist',
+    'Album Two',
+    { timeoutMs: 650, maxPages: 3 }
+  );
+
+  assert.equal(opened.album.title, 'Album Two');
+  assert.deepEqual(client.sent, [
+    'Paged Direct Artist',
+    'بعدی',
+    '💿 Album Two (1)',
+  ]);
+});
+
+test('failed primary album route opens a temporary circuit before direct fallback', async () => {
+  const exactTrack = '🎵 Circuit Artist, Seed';
+  const client = new FakeTelegramClient({
+    'Circuit Artist': [
+      [fakeBotMessage('search results', [exactTrack])],
+      [fakeBotMessage(
+        'آلبوم های خواننده (1) :',
+        ['💿 Circuit Album (1)']
+      )],
+    ],
+    [exactTrack]: [[
+      fakeBotMessage(
+        'track page without artist control',
+        ['📥 کیفیت عالی', '📥 کیفیت معمولی']
+      ),
+    ]],
+    '💿 Circuit Album (1)': [[
+      fakeBotMessage(
+        'Circuit Album',
+        ['Only Track', '📥 دانلود همه (عالی)']
+      ),
+    ]],
+  });
+
+  const opened = await openMeloBotAlbumByTitle(
+    client,
+    'Circuit Artist',
+    'Circuit Album',
+    null,
+    { maxPages: 3 }
+  );
+
+  assert.equal(opened.album.title, 'Circuit Album');
+  assert.ok(getMeloBotAlbumPrimaryCircuitRemainingMs('Circuit Artist') > 0);
 });

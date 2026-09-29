@@ -23,6 +23,7 @@ import {
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, openMeloBotAlbumContext, openMeloBotAlbumByTitle,
+  openMeloBotAlbumDirectByTitle,
   downloadMeloBotTrack, discoverMeloBotHome, getMeloBotStateVersion,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
@@ -41,6 +42,7 @@ import {
   hasAlbumIntent,
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
+  shouldUseLiveAlbumDiscovery,
 } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
@@ -199,7 +201,7 @@ async function searchAlbumOptions(query, tracks = []) {
 
   // Explicit "album + artist" queries should work even when track search
   // returns no usable MeloBot seed. Resolve the source's artist picker directly.
-  if (albumIntent) {
+  if (shouldUseLiveAlbumDiscovery(query)) {
     try {
       const direct = await discoverMeloBotAlbumsByArtistQuery(tg, query, {
         maxAlbums: limit,
@@ -230,49 +232,12 @@ async function searchAlbumOptions(query, tracks = []) {
     } catch (err) {
       console.warn('[direct album search]', err.message);
     }
-
-    return albums;
   }
 
-  if (albums.length >= limit) return albums;
-
-  const q = normalize(query);
-  const melobotSeeds = (tracks || []).filter(track =>
-    track?.source === 'melobot' && track?.rawText && track?.artist
-  );
-  const artistMentioned = melobotSeeds.some(track =>
-    q.includes(normalize(track.artist))
-  );
-  const shouldTryLive = melobotSeeds.length && (
-    artistMentioned || q.split(/\s+/).filter(Boolean).length >= 2
-  );
-
-  if (shouldTryLive) {
-    try {
-      const liveAlbums = await discoverMeloBotAlbumsForQuery(
-        tg,
-        query,
-        melobotSeeds,
-        { maxArtists: 2, maxAlbums: limit }
-      );
-
-      const grouped = new Map();
-      for (const album of liveAlbums) {
-        const key = normalize(album.artist);
-        const group = grouped.get(key) || { artist: album.artist, albums: [] };
-        group.albums.push(album);
-        grouped.set(key, group);
-      }
-      await Promise.all([...grouped.values()].map(group =>
-        syncAlbumIndex(group.artist, group.albums, { complete: false })
-      ));
-
-      albums = mergeAlbumResults(limit, albums, liveAlbums);
-    } catch (err) {
-      console.warn('[album search discovery]', err.message);
-    }
-  }
-
+  // Ordinary track/artist searches must stay instant. They may show album
+  // suggestions already present in the catalogs above, but they never spend a
+  // live MeloBot round-trip trying to discover extra albums. Users who want
+  // live discography discovery can ask explicitly with "album / آلبوم".
   return albums;
 }
 
@@ -428,23 +393,33 @@ export const sourceQueue = new SerialQueue(async job => {
   const session = job.sessionId ? await sessions.get(job.sessionId) : null;
   try {
     if (job.type === 'search') {
+      const searchPhaseStartedAt = Date.now();
+      let primaryMs = 0;
+      let albumOptionsMs = 0;
+      let searchCacheHit = false;
       try {
         const albumIntent = hasAlbumIntent(job.query);
         const cachedOptions = albumIntent
           ? null
           : await catalog.getSearch(job.query, config.catalogSearchTtlMs);
         let options = cachedOptions || [];
+        searchCacheHit = Boolean(cachedOptions);
 
         if (!albumIntent && !cachedOptions) {
+          const primaryStartedAt = Date.now();
           try {
             options = await searchPrimary(job.query);
           } catch (err) {
             console.warn('[track search]', err.message);
             options = [];
+          } finally {
+            primaryMs = Date.now() - primaryStartedAt;
           }
         }
 
+        const albumOptionsStartedAt = Date.now();
         const albumOptions = await searchAlbumOptions(job.query, options);
+        albumOptionsMs = Date.now() - albumOptionsStartedAt;
         if (!options.length && !albumOptions.length) throw new Error('No results');
 
         const albumFirst = albumIntent && albumOptions.length > 0;
@@ -472,6 +447,12 @@ export const sourceQueue = new SerialQueue(async job => {
             }
           }));
         }
+
+        console.log(
+          `[perf.search] query=${JSON.stringify(job.query)} cache_hit=${searchCacheHit} `
+          + `primary_ms=${primaryMs} album_options_ms=${albumOptionsMs} `
+          + `phase_total_ms=${Date.now() - searchPhaseStartedAt}`
+        );
       } catch (err) {
         console.error('[search]',err.message);
         await bot.editMessageText(job.chatId,job.statusMessageId,'نتیجه‌ای پیدا نشد.');
@@ -1464,42 +1445,54 @@ export const sourceQueue = new SerialQueue(async job => {
               normalize(x.artist) === normalize(session.artistContext.artist)
             ) || null;
 
-            const resolved = seed
-              ? await resolveMeloBotArtistAlbums(
-                  tg,
-                  session.artistContext.artist,
-                  seed,
-                  { allowEmpty: true }
-                )
-              : await resolveArtistAlbumsDirect(
-                  session.artistContext.artist,
-                  { maxAlbums: 30 }
-                );
+            const directStartedAt = Date.now();
+            try {
+              openedAlbumContext = await openMeloBotAlbumDirectByTitle(
+                tg,
+                session.artistContext.artist,
+                album.title,
+                { timeoutMs: 6000, maxPages: 12 }
+              );
+              resolvedArtist = openedAlbumContext.artist;
+              liveAlbum = openedAlbumContext.album;
+              tracks = openedAlbumContext.tracks;
+              session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
+              await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
+              console.log(
+                `[fastpath] album_open=direct_title direct_ms=${Date.now() - directStartedAt}`
+              );
+            } catch (directError) {
+              const directMs = Date.now() - directStartedAt;
+              console.warn('[album direct title fastpath]', album.title, directError.message);
 
-            session.artistSeed = resolved.seed || session.artistSeed || seed || null;
-            resolvedArtist = resolved.artist;
-            liveAlbum = resolved.albums.find(item =>
-              normalize(item.title) === normalize(album.title)
-            );
-            if (!liveAlbum) {
-              throw new Error(`Album not found in current MeloBot listing: ${album.title}`);
+              const fallbackStartedAt = Date.now();
+
+              // Stay on the direct-first route even for the robust fallback.
+              // This avoids the known slow Artist -> Albums primary path and,
+              // unlike resolving a whole discography first, clicks the target
+              // row while the correct source page is still live.
+              openedAlbumContext = await openMeloBotAlbumDirectByTitle(
+                tg,
+                session.artistContext.artist,
+                album.title,
+                {
+                  timeoutMs: config.searchTimeoutMs,
+                  maxPages: 12,
+                  allowSeedFallback: true,
+                }
+              );
+
+              resolvedArtist = openedAlbumContext.artist;
+              liveAlbum = openedAlbumContext.album;
+              tracks = openedAlbumContext.tracks;
+              session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
+              await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
+
+              console.log(
+                `[perf.album_open] direct_ms=${directMs} `
+                + `robust_direct_ms=${Date.now() - fallbackStartedAt}`
+              );
             }
-
-            openedAlbumContext = await openMeloBotAlbumByTitle(
-              tg,
-              resolvedArtist,
-              liveAlbum.title,
-              session.artistSeed || seed || null
-            );
-            resolvedArtist = openedAlbumContext.artist;
-            liveAlbum = openedAlbumContext.album;
-            tracks = openedAlbumContext.tracks;
-            session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
-            await syncAlbumIndex(resolvedArtist, resolved.albums, {
-              complete: Boolean(resolved.complete),
-              emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
-            });
-            await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
           }
         }
 

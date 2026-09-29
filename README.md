@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.0 — Fast Path Architecture
+# Navazon Cloud v1.5.1 — Instant Search & Album Open
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -135,3 +135,13 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Event-driven response quiet windows are reduced from multi-second waits to sub-second settling.
 - Source jobs emit `[perf]` timing logs with queue wait, run time, and total latency for before/after measurement.
 - Polling remains as a compatibility fallback for tests or clients where the event inbox is not installed.
+
+
+## Instant Search & Album Open v1.5.1
+
+- Ordinary artist/track searches never perform hidden live album discovery; only explicit `album / آلبوم` queries may use the live discography path.
+- Cached album rows open through a direct title-targeted MeloBot route instead of repeating Artist → Albums navigation.
+- The direct title opener clicks the target while its reply-keyboard page is still live, including paginated discographies.
+- If the quick direct route is unavailable, the robust fallback remains direct-first and performs at most one seed-navigation recovery path.
+- Repeatedly failing primary Artist → Albums routes are circuit-broken per artist for 10 minutes to avoid paying the same timeout again.
+- Search and album-open phase telemetry is emitted so live latency can be measured separately from queue time.

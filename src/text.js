@@ -73,3 +73,8 @@ export function hasSpecificAlbumTitle(query = '', artist = '', albumTitles = [])
   // above) is strong enough to classify the query as title-specific.
   return false;
 }
+
+
+export function shouldUseLiveAlbumDiscovery(query = '') {
+  return hasAlbumIntent(query);
+}
