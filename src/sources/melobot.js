@@ -1011,7 +1011,12 @@ export async function downloadMeloBotTrack(client, candidate) {
 }
 
 
-export async function downloadMeloBotTrackQuality(client, candidate, quality = 'hq') {
+export async function downloadMeloBotTrackQuality(
+  client,
+  candidate,
+  quality = 'hq',
+  { timeoutMs = config.downloadTimeoutMs } = {}
+) {
   const menuMessages = await openTrackMenu(client, candidate);
   const wantsHigh = quality === 'hq';
   const button = findButton(menuMessages, text => {
@@ -1025,7 +1030,7 @@ export async function downloadMeloBotTrackQuality(client, candidate, quality = '
   }
 
   const result = await sendAndCollect(client, button, {
-    timeoutMs: config.downloadTimeoutMs,
+    timeoutMs,
     quietMs: 650,
     stopWhen: isAudioMessage,
   });
