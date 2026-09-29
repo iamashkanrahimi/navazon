@@ -394,6 +394,50 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
   return { complete: true, sent, quality: 'hq' };
 }
 
+function structuralNativeBulkFailure(err) {
+  return /bulk HQ button was not found|artist button not found|no usable .* tracks/i.test(
+    err?.message || ''
+  );
+}
+
+async function deliverBulkIndividuallyHq(session, tracks, {
+  sourceTimeoutMs = 6000,
+  label = 'bulk individual',
+} = {}) {
+  const sourceTracks = (tracks || []).slice(0, TOP_TRACKS_LIMIT);
+  let sent = 0;
+  let missing = 0;
+
+  for (let index = 0; index < sourceTracks.length; index += 1) {
+    if (hasPendingForegroundSourceWork()) {
+      missing += sourceTracks.length - index;
+      console.warn(`[${label}] paused for foreground work remaining=${sourceTracks.length - index}`);
+      break;
+    }
+
+    const track = applyPolicyDefaults({
+      ...sourceTracks[index],
+      source: sourceTracks[index].source || 'melobot',
+    });
+
+    try {
+      await sendTrackQuality(
+        session.chatId,
+        track,
+        'hq',
+        session.userRegion || 'unknown',
+        { sourceTimeoutMs }
+      );
+      sent += 1;
+    } catch (err) {
+      console.warn(`[${label}]`, track.artist, track.title, err.message);
+      missing += 1;
+    }
+  }
+
+  return { sent, missing, quality: 'hq' };
+}
+
 function bulkFallbackMessage(kind, sent, missing) {
   if (!missing) return null;
 
@@ -1154,8 +1198,14 @@ export const sourceQueue = new SerialQueue(async job => {
             } catch (err) {
               lastError = err;
               console.warn('[native bulk recent retry]', attempt + 1, err.message);
-              if (attempt === 0 && hasPendingForegroundSourceWork()) {
-                console.warn('[bulk guard] recent retry skipped: foreground work is waiting');
+              if (
+                attempt === 0
+                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork())
+              ) {
+                console.warn(
+                  '[bulk guard] recent retry skipped:',
+                  structuralNativeBulkFailure(err) ? 'structural source failure' : 'foreground work is waiting'
+                );
                 break;
               }
             }
@@ -1183,7 +1233,9 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       } catch (err) {
         console.warn('[native bulk recent failed]', err.message);
-        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        const fallback = await deliverBulkIndividuallyHq(session, requestedTracks, {
+          label: 'recent individual HQ',
+        });
         sent = fallback.sent;
         missing = fallback.missing;
         const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
@@ -1272,8 +1324,14 @@ export const sourceQueue = new SerialQueue(async job => {
             } catch (err) {
               lastError = err;
               console.warn('[native bulk top retry]', attempt + 1, err.message);
-              if (attempt === 0 && hasPendingForegroundSourceWork()) {
-                console.warn('[bulk guard] top retry skipped: foreground work is waiting');
+              if (
+                attempt === 0
+                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork())
+              ) {
+                console.warn(
+                  '[bulk guard] top retry skipped:',
+                  structuralNativeBulkFailure(err) ? 'structural source failure' : 'foreground work is waiting'
+                );
                 break;
               }
             }
@@ -1293,7 +1351,9 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       } catch (err) {
         console.warn('[native bulk top failed]', err.message);
-        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        const fallback = await deliverBulkIndividuallyHq(session, requestedTracks, {
+          label: 'top individual HQ',
+        });
         sent = fallback.sent;
         missing = fallback.missing;
         const fallbackMessage = bulkFallbackMessage('top', sent, missing);
@@ -1389,8 +1449,14 @@ export const sourceQueue = new SerialQueue(async job => {
             } catch (err) {
               lastError = err;
               console.warn('[native bulk album retry]', attempt + 1, err.message);
-              if (attempt === 0 && hasPendingForegroundSourceWork()) {
-                console.warn('[bulk guard] album retry skipped: foreground work is waiting');
+              if (
+                attempt === 0
+                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork())
+              ) {
+                console.warn(
+                  '[bulk guard] album retry skipped:',
+                  structuralNativeBulkFailure(err) ? 'structural source failure' : 'foreground work is waiting'
+                );
                 break;
               }
             }
