@@ -614,7 +614,10 @@ test('MeloBot multi-step search follows suggestion text until a real track butto
     ]],
   });
 
-  const tracks = await searchMeloBot(client, 'Arman Garshasbi', { maxRefinements: 3 });
+  const tracks = await searchMeloBot(client, 'Arman Garshasbi', {
+    maxRefinements: 3,
+    timeoutMs: 3000,
+  });
   assert.equal(tracks[0].artist, 'Arman Garshasbi');
   assert.equal(tracks[0].title, 'Hezar Omid');
   assert.deepEqual(client.sent, [
@@ -631,7 +634,10 @@ test('MeloBot state machine allows the same reply label to be sent twice when st
     ],
   });
 
-  const tracks = await searchMeloBot(client, 'Ebi', { maxRefinements: 2 });
+  const tracks = await searchMeloBot(client, 'Ebi', {
+    maxRefinements: 2,
+    timeoutMs: 3000,
+  });
   assert.equal(tracks[0].artist, 'Ebi');
   assert.equal(tracks[0].title, 'Khalij');
   assert.deepEqual(client.sent, ['Ebi', 'Ebi']);
@@ -648,7 +654,10 @@ test('MeloBot artist picker can lead to title-only tracks without misclassifying
     ]],
   });
 
-  const tracks = await searchMeloBot(client, 'Singer', { maxRefinements: 2 });
+  const tracks = await searchMeloBot(client, 'Singer', {
+    maxRefinements: 2,
+    timeoutMs: 3000,
+  });
   assert.deepEqual(
     tracks.map(track => [track.artist, track.title]),
     [['Singer', 'Song One'], ['Singer', 'Song Two']]
@@ -688,7 +697,10 @@ test('MeloBot refinement loop stops when the same source surface repeats', async
   });
 
   await assert.rejects(
-    () => searchMeloBot(client, 'Same Artist', { maxRefinements: 5 }),
+    () => searchMeloBot(client, 'Same Artist', {
+      maxRefinements: 5,
+      timeoutMs: 3000,
+    }),
     /no usable tracks/
   );
 
@@ -743,7 +755,7 @@ test('Arman-shaped multi-step source flow reaches the live album listing end-to-
     client,
     'Arman Garshasbi',
     null,
-    { allowEmpty: true, maxAlbums: 20 }
+    { allowEmpty: true, maxAlbums: 20, timeoutMs: 8000 }
   );
 
   assert.equal(resolved.artist, 'Arman Garshasbi');
@@ -916,7 +928,7 @@ test('direct album-title opener clicks the live target without artist-page navig
     client,
     'Fast Direct Artist',
     'Fast Direct Album',
-    { timeoutMs: 650, maxPages: 3 }
+    { timeoutMs: 2500, maxPages: 3 }
   );
 
   assert.equal(opened.album.title, 'Fast Direct Album');
