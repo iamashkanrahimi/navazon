@@ -386,6 +386,22 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
   return { complete: true, sent, quality: 'hq' };
 }
 
+function bulkFallbackMessage(kind, sent, missing) {
+  if (!missing) return null;
+
+  const label = kind === 'album'
+    ? 'آلبوم'
+    : kind === 'top'
+      ? 'پربازدیدترین‌ها'
+      : 'جدیدترین‌ها';
+
+  if (sent > 0) {
+    return `بخشی از ${label} دانلود شد؛ ${missing} آهنگ فعلاً دریافت نشد. دوباره امتحان کن.`;
+  }
+
+  return `دانلود یکجای ${label} فعلاً انجام نشد. دوباره امتحان کن.`;
+}
+
 async function deliverAvailableBulkCache(session, tracks) {
   const sourceTracks = (tracks || []).slice();
   const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
@@ -1019,11 +1035,9 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
-        if (missing) {
-          await bot.sendMessage(
-            session.chatId,
-            'دانلود یکجای جدیدترین‌ها با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
-          );
+        const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
+        if (fallbackMessage) {
+          await bot.sendMessage(session.chatId, fallbackMessage);
         }
       }
 
@@ -1131,11 +1145,9 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
-        if (missing) {
-          await bot.sendMessage(
-            session.chatId,
-            'دانلود یکجای پربازدیدترین‌ها با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
-          );
+        const fallbackMessage = bulkFallbackMessage('top', sent, missing);
+        if (fallbackMessage) {
+          await bot.sendMessage(session.chatId, fallbackMessage);
         }
       }
 
@@ -1264,11 +1276,9 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
-        if (missing) {
-          await bot.sendMessage(
-            session.chatId,
-            'دانلود یکجای آلبوم با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
-          );
+        const fallbackMessage = bulkFallbackMessage('album', sent, missing);
+        if (fallbackMessage) {
+          await bot.sendMessage(session.chatId, fallbackMessage);
         }
       }
 
