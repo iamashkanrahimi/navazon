@@ -91,6 +91,12 @@ function clean(value = '') {
   return cleanText(value);
 }
 
+function sourceBudget(timeoutMs, fallbackMs = config.searchTimeoutMs) {
+  const total = Math.max(800, Number(timeoutMs || fallbackMs));
+  const deadline = Date.now() + total;
+  return () => Math.max(450, deadline - Date.now());
+}
+
 function normalize(value = '') {
   return normalizeText(value);
 }
@@ -997,11 +1003,16 @@ async function openTrackMenuWithCandidate(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
-  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
+  const remaining = sourceBudget(timeoutMs);
+  const liveCandidate = await resolveMeloBotTrackCandidate(
+    client,
+    candidate,
+    { timeoutMs: remaining() }
+  );
   if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 550,
     stopWhen: m => replyButtons(m).some(text =>
       (text.includes('کیفیت عالی') || text.includes('کیفیت معمولی'))
@@ -1099,16 +1110,17 @@ async function openMoreMenu(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs);
   const menuMessages = (await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs }
+    { timeoutMs: remaining() }
   )).messages;
   const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
   if (!moreButton) throw new Error('MeloBot more button not found.');
 
   const more = await sendAndCollect(client, moreButton, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 600,
   });
   return more.messages;
@@ -1147,16 +1159,17 @@ export async function getMeloBotLyrics(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs);
   const menuMessages = (await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs }
+    { timeoutMs: remaining() }
   )).messages;
   const lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
   if (!lyricsButton) return { available: false, text: '' };
 
   const result = await sendAndCollect(client, lyricsButton, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
   });
 
@@ -1198,10 +1211,11 @@ export async function getMeloBotTrackMetadata(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs);
   const trackMenu = (await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs }
+    { timeoutMs: remaining() }
   )).messages;
 
   let detailsButton = findButton(
@@ -1214,7 +1228,7 @@ export async function getMeloBotTrackMetadata(
     const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 600,
       });
       surface = more.messages;
@@ -1230,7 +1244,7 @@ export async function getMeloBotTrackMetadata(
   }
 
   const result = await sendAndCollect(client, detailsButton, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
   });
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
@@ -1246,10 +1260,11 @@ export async function getMeloBotCover(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs);
   const trackMenu = (await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs }
+    { timeoutMs: remaining() }
   )).messages;
 
   let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
@@ -1258,7 +1273,7 @@ export async function getMeloBotCover(
     const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 600,
       });
       coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
@@ -1268,7 +1283,7 @@ export async function getMeloBotCover(
   if (!coverButton) return null;
 
   const result = await sendAndCollect(client, coverButton, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
     stopWhen: photoMessage,
   });
