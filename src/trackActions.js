@@ -62,7 +62,7 @@ export async function resolveTrackIdentity(track) {
     const resolved = await resolveMeloBotTrackCandidate(
       tg,
       track,
-      { timeoutMs: 5000 }
+      { timeoutMs: 5000, forceIdentity: true }
     );
     if (!resolved?.title) return track;
     return {
