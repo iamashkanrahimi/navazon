@@ -2541,3 +2541,81 @@ test('deep album track replacement marks provenance only after replacing rows', 
   assert.ok(deleteIndex >= 0);
   assert.ok(markIndex > deleteIndex);
 });
+
+
+test('deep album relations stay untrusted when any track artist is inferred', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('INSERT INTO deep_tracks')) return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: 1 };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setAlbumTracks(
+      'T-Dey',
+      {
+        title: 'Example Album',
+        verifiedAlbum: true,
+        albumTrustVersion: 2,
+      },
+      [
+        {
+          artist: 'T-Dey',
+          title: 'Khalesaneh (feat. T-Dey)',
+          artistInferred: true,
+          source: 'melobot',
+        },
+      ]
+    );
+  } finally {
+    db.query = originalQuery;
+  }
+
+  assert.equal(
+    calls.some(call => call.sql.includes('INSERT INTO deep_album_tracks')),
+    false
+  );
+  assert.equal(
+    calls.some(call =>
+      call.sql.includes('metadata = metadata ||') && call.sql.includes('trackListVersion')
+    ),
+    false
+  );
+  assert.equal(
+    calls.some(call =>
+      call.sql.includes("metadata = metadata - 'trackListVersion'")
+    ),
+    true
+  );
+});
+
+test('track details expose an album only through current album and track-list provenance', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  let n = 0;
+  db.query = async (sql, params) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    n += 1;
+    if (text.includes('FROM deep_tracks') && !text.includes('deep_album_tracks')) {
+      return { rows: [{ track_key: 'a|one', artist: 'A', title: 'One', metadata: {} }] };
+    }
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const details = await catalog.getTrackDetails({ artist: 'A', title: 'One' });
+    assert.equal(details.albumInfo, null);
+  } finally {
+    db.query = originalQuery;
+  }
+
+  const albumSql = calls.find(call => call.sql.includes('FROM deep_album_tracks'))?.sql || '';
+  assert.match(albumSql, /albumTrustVersion/);
+  assert.match(albumSql, /trackListVersion/);
+});
