@@ -162,3 +162,12 @@ export function rankTracksForQuery(query = '', tracks = []) {
       || a.index - b.index
     );
 }
+
+export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
+  const tokens = meaningfulSearchTokens(query);
+  if (tokens.length < 2 || !(tracks || []).length) return tracks || [];
+
+  const ranked = rankTracksForQuery(query, tracks);
+  const full = ranked.filter(item => item.total > 0 && item.coverage === item.total);
+  return (full.length ? full : ranked).map(item => item.track);
+}
