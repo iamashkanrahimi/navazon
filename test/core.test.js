@@ -2425,3 +2425,119 @@ test('query ranking prefers full collaboration coverage over a featured-artist-o
   assert.equal(ranked[0].track.title, 'Ma (Ft T-Dey)');
   assert.ok(ranked[0].coverage > ranked[1].coverage);
 });
+
+
+test('legacy JSON Artist lists are ignored until rewritten with current semantics', async () => {
+  const store = new CatalogStore();
+  const now = new Date().toISOString();
+  const canonicalTrack = { artist: 'Haamim', title: 'Track One', source: 'melobot' };
+
+  store.readArtist = async () => ({
+    key: 'haamim',
+    node: {
+      name: 'Haamim',
+      artistUpdatedAt: now,
+      topTracks: [canonicalTrack],
+      recentTracks: [],
+    },
+  });
+  assert.equal(await store.getArtistContext('Haamim', 60_000), null);
+
+  store.readArtist = async () => ({
+    key: 'haamim',
+    node: {
+      name: 'Haamim',
+      artistListVersion: 1,
+      artistUpdatedAt: now,
+      topTracks: [canonicalTrack],
+      recentTracks: [],
+    },
+  });
+  const current = await store.getArtistContext('Haamim', 60_000);
+  assert.equal(current.artist, 'Haamim');
+  assert.equal(current.topTracks.length, 1);
+});
+
+test('legacy JSON album tracklists are ignored until rebuilt', async () => {
+  const store = new CatalogStore();
+  const now = new Date().toISOString();
+
+  store.readArtist = async () => ({
+    key: 'hichkas',
+    node: {
+      albums: {
+        mojaz: {
+          title: 'Mojaz',
+          updatedAt: now,
+          tracks: [{ artist: 'Hichkas', title: 'Ye Rooze Khoob' }],
+        },
+      },
+    },
+  });
+  assert.equal(await store.getAlbumTracks('Hichkas', 'Mojaz', 60_000), null);
+
+  store.readArtist = async () => ({
+    key: 'hichkas',
+    node: {
+      albums: {
+        mojaz: {
+          title: 'Mojaz',
+          trackListVersion: 1,
+          updatedAt: now,
+          tracks: [{ artist: 'Hichkas', title: 'Ye Rooze Khoob' }],
+        },
+      },
+    },
+  });
+  const tracks = await store.getAlbumTracks('Hichkas', 'Mojaz', 60_000);
+  assert.equal(tracks.length, 1);
+});
+
+test('deep album track reads require a rebuilt track-list provenance marker', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const tracks = await catalog.getAlbumTracksByKey('hichkas|mojaz');
+    assert.deepEqual(tracks, []);
+  } finally {
+    db.query = originalQuery;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /trackListVersion/);
+});
+
+test('deep album track replacement marks provenance only after replacing rows', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('INSERT INTO deep_tracks')) return { rows: [], rowCount: 1 };
+    return { rows: [], rowCount: 1 };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    // Avoid coupling the test to upsertAlbum SQL details; exercise the
+    // replacement/provenance sequence directly through the public method.
+    await catalog.setAlbumTracks(
+      'Hichkas',
+      { title: 'Mojaz', verifiedAlbum: true, albumTrustVersion: 2 },
+      []
+    );
+  } finally {
+    db.query = originalQuery;
+  }
+
+  const deleteIndex = calls.findIndex(call => call.sql.includes('DELETE FROM deep_album_tracks'));
+  const markIndex = calls.findIndex(call => call.sql.includes('"trackListVersion":1'));
+  assert.ok(deleteIndex >= 0);
+  assert.ok(markIndex > deleteIndex);
+});
