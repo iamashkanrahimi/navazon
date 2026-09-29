@@ -9,7 +9,10 @@ function normalize(value = '') {
 function stableVariant(track = {}) {
   let value = String(track.rawText || track.cmd || track.duration || track.bitrate || '');
   if (track.rawText) {
-    value = value.replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '').trim();
+    value = value
+      .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
+      .replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '')
+      .trim();
   }
   return normalize(value);
 }
