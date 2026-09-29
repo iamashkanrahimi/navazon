@@ -644,6 +644,7 @@ async function collectMeloBotAlbumPages(client, initial, {
   maxPages = 12,
   timeoutMs = Math.min(config.searchTimeoutMs, 6000),
 } = {}) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   let albums = mergeAlbumPages([], initial?.albums || [], maxAlbums);
   let declaredCount = initial?.declaredCount ?? null;
   let confirmedEmpty = Boolean(initial?.confirmedEmpty);
@@ -652,9 +653,15 @@ async function collectMeloBotAlbumPages(client, initial, {
   let complete = Boolean(initial?.complete);
   const seenPages = new Set();
 
-  while (!complete && nextButton && pages < maxPages && albums.length < maxAlbums) {
+  while (
+    !complete
+    && nextButton
+    && pages < maxPages
+    && albums.length < maxAlbums
+    && !remaining.expired()
+  ) {
     const page = await sendAndCollect(client, nextButton, {
-      timeoutMs,
+      timeoutMs: remaining(),
       quietMs: 650,
     });
     const state = inspectMeloBotAlbumListing(page.messages);
@@ -700,6 +707,7 @@ export async function searchMeloBotTyped(client, query, {
   timeoutMs = config.searchTimeoutMs,
 } = {}) {
   const requested = clean(query);
+  const remaining = sourceBudget(timeoutMs, config.searchTimeoutMs);
   if (!requested) throw new Error('MeloBot search query is empty.');
 
   let command = requested;
@@ -708,10 +716,10 @@ export async function searchMeloBotTyped(client, query, {
   const allMessages = [];
 
   for (let step = 0; step <= Math.max(0, Number(maxRefinements || 0)); step += 1) {
-    if (!normalize(command)) break;
+    if (!normalize(command) || remaining.expired()) break;
 
     const result = await sendAndCollect(client, command, {
-      timeoutMs,
+      timeoutMs: remaining(),
       quietMs: 650,
     });
     allMessages.push(...(result.messages || []));
