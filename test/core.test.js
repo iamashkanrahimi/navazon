@@ -2531,7 +2531,7 @@ test('deep album track replacement marks provenance only after replacing rows', 
     await catalog.setAlbumTracks(
       'Hichkas',
       { title: 'Mojaz', verifiedAlbum: true, albumTrustVersion: 2 },
-      []
+      [{ artist: 'Hichkas', title: 'Ye Rooze Khoob', source: 'melobot' }]
     );
   } finally {
     db.query = originalQuery;
