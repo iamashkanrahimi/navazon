@@ -49,8 +49,7 @@ import {
   albumTitleAppearsInQuery,
   shouldUseLiveAlbumDiscovery,
   cleanText,
-  meaningfulSearchTokens,
-  rankTracksForQuery,
+  keepFullCoverageTracksWhenAvailable,
 } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
@@ -83,15 +82,6 @@ function artistContextTracks(context = {}) {
 
 function isUsableArtistContext(context = {}) {
   return Boolean(context?.artist && artistContextTracks(context).length);
-}
-
-function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
-  const tokens = meaningfulSearchTokens(query);
-  if (tokens.length < 2 || !(tracks || []).length) return tracks || [];
-
-  const ranked = rankTracksForQuery(query, tracks);
-  const full = ranked.filter(item => item.total > 0 && item.coverage === item.total);
-  return (full.length ? full : ranked).map(item => item.track);
 }
 
 const BULK_JOB_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
