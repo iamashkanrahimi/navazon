@@ -1,0 +1,110 @@
+name: Radio Javan Full Metadata Archive
+
+on:
+  push:
+    branches: [archive-builder-cloud]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: radiojavan-full-archive
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: contains(github.event.head_commit.message, '[archive-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm test
+      - run: npm run check
+      - name: Rebuild exact frozen universe
+        run: node src/build-snapshot.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-full-snapshot
+          path: archive-builder/runtime
+          retention-days: 30
+          if-no-files-found: error
+
+  plan:
+    needs: gate
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.make.outputs.shards }}
+    steps:
+      - id: make
+        shell: bash
+        run: echo 'shards='"$(node -e 'console.log(JSON.stringify(Array.from({length:128},(_,i)=>i)))')" >> "$GITHUB_OUTPUT"
+
+  harvest:
+    needs: [gate, plan]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-full-snapshot
+          path: archive-builder/runtime
+      - name: Harvest metadata-only shard
+        env:
+          RJ_REQUEST_DELAY_MS: '1400'
+          RJ_MAX_ATTEMPTS: '4'
+          RJ_TIMEOUT_MS: '20000'
+          RJ_SYSTEMIC_FAILURE_THRESHOLD: '5'
+        run: node src/run-shard.js --shard-index "${{ matrix.shard }}" --shard-count 128
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rj-full-shard-${{ matrix.shard }}
+          path: archive-builder/out/shard-*
+          retention-days: 30
+          if-no-files-found: error
+
+  merge:
+    needs: [gate, harvest]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-full-snapshot
+          path: archive-builder/runtime
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rj-full-shard-*
+          path: archive-builder/artifacts
+      - name: Merge and audit
+        run: node src/merge.js --in ./artifacts --out ./out/final --manifest ./runtime/snapshot-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-full-final
+          path: archive-builder/out/final
+          retention-days: 30
+          if-no-files-found: error
