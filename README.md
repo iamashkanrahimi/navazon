@@ -173,9 +173,11 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 
 ## Search Hardening & HQ Cache v1.5.4
 
-- Exact low-confidence track-like hits are probed even when the same search also contains album results, fixing mixed queries such as `shayea do be shak`.
+- Exact low-confidence track-like hits are probed even when the same search also contains album results, fixing mixed queries such as `shayea do be shak`. A same-name Track+Album collision is probed even if the track row has a popularity metric.
 - Probed album data is merged back without dropping visible tracklists, so album-only search results can open from indexed tracks immediately.
+- Explicit track-icon rows with parenthesized titles (for example `Song (2024)`) stay tracks instead of being mistaken for counted album rows.
 - Direct Artist shortcuts require at least two consistent MeloBot track rows; one ambiguous pseudo-track can no longer create a broken Artist-page button.
+- When search results contain albums from one unambiguous artist, Navazon still offers a safe Artist-page shortcut that opens from the album artist (and prefers a live visible album track when available).
 - Artist recovery accepts two exact-artist search rows even when MeloBot omits popularity counters, covering sparse artist surfaces without trusting a single ambiguous row.
 - Search cache namespace is bumped to `v154` so bad mixed-search rows cached by earlier versions cannot survive the fix.
 - Search-result albums open target-first through the direct album route instead of resolving a whole discography first.
