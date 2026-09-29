@@ -166,7 +166,11 @@ export class CatalogStore {
 
   async getArtistContext(name, maxAgeMs) {
     const { node } = await this.readArtist(name);
-    if (!node || !freshEnough(node.artistUpdatedAt, maxAgeMs)) return null;
+    if (
+      !node
+      || Number(node.artistListVersion || 0) < 1
+      || !freshEnough(node.artistUpdatedAt, maxAgeMs)
+    ) return null;
     const topTracks = Array.isArray(node.topTracks)
       ? node.topTracks.map(markLegacyInferredArtist)
       : [];
@@ -237,7 +241,7 @@ export class CatalogStore {
         NULLIF(album->>'trackCount','')::int AS track_count,
         album->>'rawText' AS raw_text,
         COALESCE((album->>'verifiedAlbum')::boolean, FALSE) AS verified_album,
-        COALESCE(NULLIF(album->>'albumTrustVersion','')::int, 0) AS album_trust_version
+        album->>'albumTrustVersion' AS album_trust_version
       FROM artists a
       CROSS JOIN LATERAL jsonb_array_elements(
         COALESCE(a.data->'albumList','[]'::jsonb)
@@ -268,7 +272,11 @@ export class CatalogStore {
   async getAlbumTracks(name, albumTitle, maxAgeMs) {
     const { node } = await this.readArtist(name);
     const album = node?.albums?.[normalize(albumTitle)];
-    if (!album || !freshEnough(album.updatedAt, maxAgeMs)) return null;
+    if (
+      !album
+      || Number(album.trackListVersion || 0) < 1
+      || !freshEnough(album.updatedAt, maxAgeMs)
+    ) return null;
     return Array.isArray(album.tracks) && album.tracks.length ? album.tracks : null;
   }
 
@@ -318,6 +326,7 @@ export class CatalogStore {
     if (hasTop) node.topTracks = topTracks.map(track => this.compactTrack(track));
     if (hasRecent) node.recentTracks = recentTracks.map(track => this.compactTrack(track));
     node.albumButton = clean(albumButton || node.albumButton || '') || null;
+    node.artistListVersion = 1;
     node.artistUpdatedAt = new Date().toISOString();
 
     const observedTracks = [
@@ -410,6 +419,7 @@ export class CatalogStore {
     node.albums ||= {};
     node.albums[albumKey] ||= { title: clean(album.title) };
     node.albums[albumKey].tracks = tracks.map(track => this.compactTrack(track));
+    node.albums[albumKey].trackListVersion = 1;
     node.albums[albumKey].updatedAt = new Date().toISOString();
     this.addTracksToNode(node, tracks);
     await this.writeArtist(key, node);
