@@ -1054,9 +1054,16 @@ export async function downloadMeloBotTrackQuality(
   client,
   candidate,
   quality = 'hq',
-  { timeoutMs = config.downloadTimeoutMs } = {}
+  {
+    timeoutMs = config.downloadTimeoutMs,
+    menuTimeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
 ) {
-  const menuMessages = await openTrackMenu(client, candidate);
+  const menuMessages = (await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs: menuTimeoutMs }
+  )).messages;
   const wantsHigh = quality === 'hq';
   const button = findButton(menuMessages, text => {
     const value = clean(text);
