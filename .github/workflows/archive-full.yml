@@ -48,7 +48,7 @@ jobs:
     needs: [gate, plan]
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
           path: archive-builder/runtime
       - name: Harvest metadata-only shard
         env:
-          RJ_REQUEST_DELAY_MS: '1400'
+          RJ_REQUEST_DELAY_MS: '250'
           RJ_MAX_ATTEMPTS: '4'
           RJ_TIMEOUT_MS: '20000'
           RJ_SYSTEMIC_FAILURE_THRESHOLD: '5'
