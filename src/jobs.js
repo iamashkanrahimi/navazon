@@ -17,7 +17,7 @@ import {
 } from './media.js';
 import {
   openMeloBotArtist, openMeloBotArtistFresh,
-  prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks, prepareMeloBotBulkAlbum,
+  prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
   matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums,
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
