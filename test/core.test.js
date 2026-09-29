@@ -1985,3 +1985,71 @@ test('query relevance matrix covers artist title collaboration and Persian album
   assert.equal(hasAlbumIntent('آلبوم‌های هیچکس'), true);
   assert.equal(hasAlbumIntent('البوم های شایع'), true);
 });
+
+
+test('track-specific collaboration queries do not offer a misleading dominant Artist shortcut', () => {
+  const keyboard = resultsKeyboard('rel1', {
+    query: 'Shayea Ma Ft T-Dey',
+    options: [
+      { source: 'melobot', artist: 'T-Dey', title: 'Ghorooha' },
+      { source: 'melobot', artist: 'T-Dey', title: 'Ye Ja Dige' },
+      { source: 'melobot', artist: 'Shayea', title: 'Ma (Ft T-Dey)' },
+    ],
+    albumOptions: [],
+  });
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.some(value => value?.startsWith('ar:')), false);
+});
+
+test('artist-only partial-name queries still offer the matching Artist shortcut', () => {
+  const keyboard = resultsKeyboard('rel2', {
+    query: 'bahram',
+    options: [
+      { source: 'melobot', artist: 'Reza Bahram', title: 'Gole Eshgh' },
+      { source: 'melobot', artist: 'Reza Bahram', title: 'Hamsafar' },
+    ],
+    albumOptions: [],
+  });
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.includes('ar:rel2:0'), true);
+});
+
+test('explicit album intent can still offer the unique album Artist shortcut', () => {
+  const keyboard = resultsKeyboard('rel3', {
+    query: 'آلبوم های هیچکس',
+    options: [],
+    albumOptions: [
+      { source: 'melobot', artist: 'Hichkas', title: 'Mojaz' },
+    ],
+  });
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.includes('aar:rel3:0'), true);
+});
+
+test('source-verified track-looking albums survive catalog trust filtering', async () => {
+  const originalQuery = db.query;
+  db.query = async () => ({
+    rowCount: 1,
+    rows: [{
+      name: 'Hichkas',
+      data: {
+        name: 'Hichkas',
+        albumsUpdatedAt: new Date().toISOString(),
+        albumList: [{
+          title: 'Mojaz',
+          rawText: '🎵 Hichkas, Mojaz',
+          verifiedAlbum: true,
+        }],
+      },
+    }],
+  });
+
+  try {
+    const store = new CatalogStore();
+    const albums = await store.getAlbums('Hichkas', 7 * 24 * 60 * 60 * 1000);
+    assert.equal(albums.length, 1);
+    assert.equal(albums[0].title, 'Mojaz');
+  } finally {
+    db.query = originalQuery;
+  }
+});
