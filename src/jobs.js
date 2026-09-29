@@ -753,6 +753,20 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'deep_crawl') {
       try {
+        // Background navigation gets a short grace window. If a user request
+        // arrived just after the crawler was claimed, give the stateful
+        // MeloBot lane back before starting the crawl instead of making that
+        // foreground request wait several seconds.
+        await new Promise(resolve => setTimeout(resolve, 600));
+        if (hasPendingForegroundSourceWork()) {
+          await deepCatalog.deferTask(
+            job.task?.id,
+            60_000,
+            'foreground request arrived during crawler grace window'
+          );
+          console.log('[deep crawler] deferred_for_foreground', job.task?.kind || 'unknown');
+          return;
+        }
         await executeDeepTask(job.task);
       } catch (err) {
         console.warn('[deep crawl job]', err.message);
