@@ -1401,9 +1401,14 @@ export async function openMeloBotArtist(client, seedTrack) {
     try {
       const fallback = await searchMeloBot(client, base.artist, { maxRefinements: 2 });
       const target = normalize(base.artist);
-      const exactTracks = fallback.filter(track =>
+      const exactArtistTracks = fallback.filter(track =>
         normalize(track.artist) === target
-      ).slice(0, 10);
+      );
+      const confidentTracks = exactArtistTracks.filter(track =>
+        Number.isFinite(track.sourcePopularityCount)
+        || /\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u.test(track.rawText || '')
+      );
+      const exactTracks = confidentTracks.slice(0, 10);
 
       if (exactTracks.length) {
         topTracks = exactTracks;
