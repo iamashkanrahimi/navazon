@@ -238,9 +238,9 @@ export class CatalogStore {
       SELECT
         a.name AS artist,
         album->>'title' AS title,
-        NULLIF(album->>'trackCount','')::int AS track_count,
+        album->>'trackCount' AS track_count,
         album->>'rawText' AS raw_text,
-        COALESCE((album->>'verifiedAlbum')::boolean, FALSE) AS verified_album,
+        album->>'verifiedAlbum' AS verified_album,
         album->>'albumTrustVersion' AS album_trust_version
       FROM artists a
       CROSS JOIN LATERAL jsonb_array_elements(
@@ -255,15 +255,15 @@ export class CatalogStore {
       .filter(row =>
         row.artist
         && row.title
-        && row.verified_album === true
+        && String(row.verified_album || '').toLowerCase() === 'true'
         && Number(row.album_trust_version || 0) >= 2
       )
       .map(row => ({
         artist: row.artist,
         title: row.title,
-        trackCount: row.track_count || undefined,
+        trackCount: Number(row.track_count || 0) || undefined,
         rawText: row.raw_text || undefined,
-        verifiedAlbum: Boolean(row.verified_album),
+        verifiedAlbum: String(row.verified_album || '').toLowerCase() === 'true',
         albumTrustVersion: Number(row.album_trust_version || 0) || undefined,
         source: 'catalog',
       }));
@@ -421,7 +421,7 @@ export class CatalogStore {
     node.albums[albumKey].tracks = tracks.map(track => this.compactTrack(track));
     node.albums[albumKey].trackListVersion = 1;
     node.albums[albumKey].updatedAt = new Date().toISOString();
-    this.addTracksToNode(node, tracks);
+    this.addTracksToNode(node, tracks.filter(track => !track?.artistInferred));
     await this.writeArtist(key, node);
     await this.seedArtistsFromTracks(tracks, `album:${clean(album.title)}`);
   }
