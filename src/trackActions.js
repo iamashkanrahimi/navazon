@@ -113,7 +113,11 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
       }
     } else if (quality === 'hq') {
       const { downloadTrackWithSources } = await import('./media.js');
-      const outcome = await downloadTrackWithSources(track, [track.artist, track.title].filter(Boolean).join(' '));
+      const outcome = await downloadTrackWithSources(
+        track,
+        [track.artist, track.title].filter(Boolean).join(' '),
+        { allowLegacyCache: false }
+      );
       media = outcome.cached || outcome.media;
       if (outcome.cached) {
         cacheHit = true;
