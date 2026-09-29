@@ -24,8 +24,13 @@ async function captureForwardedMedia(message) {
 }
 
 export async function prepareTrackPage(track) {
-  await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
-  try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
+  // A title-only Artist-page row may carry a page-context artist that is not
+  // the primary artist. Do not create more durable catalog state until a
+  // source-backed action has canonicalized that identity.
+  if (!track?.artistInferred) {
+    await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
+    try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
+  }
 
   const details = await deepCatalog.getTrackDetails(track);
   const snapshot = details?.metadata?.capabilities || {};
