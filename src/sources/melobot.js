@@ -1540,8 +1540,6 @@ export async function openMeloBotArtist(client, seedTrack) {
     }
   }
 
-  if (!topTracks.length) topTracks = base.recentTracks;
-
   if (!topTracks.length && !base.recentTracks.length) {
     try {
       const fallback = await searchMeloBot(client, base.artist, {
@@ -1585,7 +1583,7 @@ export async function openMeloBotArtist(client, seedTrack) {
 
   return {
     ...base,
-    tracks: topTracks,
+    tracks: topTracks.length ? topTracks : base.recentTracks,
     topTracks,
     bulkHighButton,
     bulkNormalButton,
@@ -1610,7 +1608,28 @@ export async function resolveMeloBotArtistTrackList(
 
   if (wantedMode === 'top') {
     const context = await openMeloBotArtist(client, seed);
-    const tracks = (context.topTracks || context.tracks || []).slice(0, 10);
+    let tracks = (context.topTracks || []).slice(0, 10);
+    let route = 'artist_top';
+
+    if (!tracks.length) {
+      try {
+        const searched = await searchMeloBot(client, context.artist || artist, {
+          maxRefinements: 2,
+          timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+        });
+        const target = normalize(context.artist || artist);
+        tracks = searched
+          .filter(track => normalize(track.artist) === target)
+          .sort((a, b) =>
+            Number(b.sourcePopularityCount || 0) - Number(a.sourcePopularityCount || 0)
+          )
+          .slice(0, 10);
+        if (tracks.length) route = 'artist_search_popularity';
+      } catch (err) {
+        console.warn('[melobot top list]', artist, err.message);
+      }
+    }
+
     if (!tracks.length) {
       throw new Error(`MeloBot returned no top tracks for: ${context.artist || artist}`);
     }
@@ -1619,8 +1638,12 @@ export async function resolveMeloBotArtistTrackList(
       mode: 'top',
       tracks,
       seed: context.seedTrack || seed,
-      context,
-      route: 'artist_top',
+      context: {
+        ...context,
+        topTracks: tracks,
+        tracks,
+      },
+      route,
     };
   }
 
