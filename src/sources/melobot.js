@@ -1544,8 +1544,12 @@ export async function inspectMeloBotTrack(client, candidate) {
   };
 }
 
-async function openMeloBotArtistBase(client, seedTrack) {
-  const remaining = sourceBudget(9000, 9000);
+async function openMeloBotArtistBase(
+  client,
+  seedTrack,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
   let openedMenu = await openTrackMenuWithCandidate(
     client,
     seedTrack,
@@ -2260,11 +2264,12 @@ function chooseArtistPicker(items = [], requested = '') {
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
-  timeoutMs = config.searchTimeoutMs,
+  timeoutMs = Math.min(config.searchTimeoutMs, 6000),
   allowSeedFallback = true,
 } = {}) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const first = await sendAndCollect(client, artistQuery, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 750,
   });
 
@@ -2277,7 +2282,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
     if (picker) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       messages = selected.messages;
@@ -2289,7 +2294,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
     const navButton = albumNavigationButton(messages);
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       messages = page.messages;
@@ -2318,7 +2323,9 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
   // Search-only layouts may require one or more suggestion selections before
   // a real track exists. Use that live track to enter the artist page, while
   // preserving the album-page state returned by getInitialMeloBotAlbumListing.
-  const seeds = await searchMeloBot(client, artistQuery, { maxRefinements: 3 });
+  if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
+
+  const seeds = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs: remaining() });
   const target = normalize(artistQuery);
   const seed = seeds.find(track => normalize(track.artist) === target)
     || seeds.find(track =>
@@ -2334,8 +2341,9 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
     );
   }
 
-  const artistContext = await openMeloBotArtistBase(client, seed);
-  const initial = await getInitialMeloBotAlbumListing(client, artistContext);
+  if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
+  const artistContext = await openMeloBotArtistBase(client, seed, { timeoutMs: remaining() });
+  const initial = await getInitialMeloBotAlbumListing(client, artistContext, { timeoutMs: remaining() });
   return {
     artist: artistContext.artist,
     listing: initial.listing,
@@ -2538,7 +2546,12 @@ function embeddedMeloBotAlbumListing(artistContext) {
   };
 }
 
-async function getInitialMeloBotAlbumListing(client, artistContext) {
+async function getInitialMeloBotAlbumListing(
+  client,
+  artistContext,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 6000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const embedded = embeddedMeloBotAlbumListing(artistContext);
   if (embedded) {
     return { listing: embedded, route: 'embedded' };
@@ -2547,7 +2560,7 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
   const albumControl = clean(artistContext?.albumButton || '');
   if (albumControl) {
     const page = await sendAndCollect(client, albumControl, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     const listing = inspectMeloBotAlbumListing(page.messages);
@@ -2561,7 +2574,7 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
     );
   }
 
-  const probed = await probeMeloBotAlbumSurface(client, artistContext);
+  const probed = await probeMeloBotAlbumSurface(client, artistContext, { timeoutMs: remaining() });
   if (probed.listing?.confirmed) {
     return { listing: probed.listing, route: probed.route };
   }
@@ -2571,7 +2584,12 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
   );
 }
 
-async function probeMeloBotAlbumSurface(client, artistContext) {
+async function probeMeloBotAlbumSurface(
+  client,
+  artistContext,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 6000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const artist = artistContext?.artist || 'unknown';
   let messages = [];
   let listing = inspectMeloBotAlbumListing(messages);
@@ -2583,7 +2601,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const late = await collectLateMeloBotMessages(
       client,
       Number(artistContext.sourceAfterId),
-      { timeoutMs: 3600, quietMs: 500 }
+      { timeoutMs: Math.min(3600, remaining()), quietMs: 500 }
     );
     messages = mergeMessageSets(messages, late);
     listing = inspectMeloBotAlbumListing(messages);
@@ -2593,7 +2611,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const lateNav = albumNavigationButton(messages);
     if (lateNav) {
       const page = await sendAndCollect(client, lateNav, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
@@ -2605,7 +2623,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
   const moreButton = clean(artistContext?.moreButton || '');
   if (moreButton) {
     const more = await sendAndCollect(client, moreButton, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     messages = mergeMessageSets(messages, more.messages);
@@ -2615,7 +2633,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const navButton = albumNavigationButton(more.messages);
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
@@ -2643,10 +2661,11 @@ export async function openMeloBotAlbumDirectByTitle(
     allowSeedFallback = false,
   } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const direct = await openMeloBotAlbumListingDirect(
     client,
     artist,
-    { timeoutMs, allowSeedFallback }
+    { timeoutMs: remaining(), allowSeedFallback }
   );
 
   let state = direct.listing;
@@ -2664,7 +2683,7 @@ export async function openMeloBotAlbumDirectByTitle(
         client,
         resolvedArtist,
         target,
-        { timeoutMs }
+        { timeoutMs: remaining() }
       );
       return {
         ...context,
@@ -2673,10 +2692,10 @@ export async function openMeloBotAlbumDirectByTitle(
       };
     }
 
-    if (!state?.nextButton) break;
+    if (!state?.nextButton || remaining.expired()) break;
 
     const page = await sendAndCollect(client, state.nextButton, {
-      timeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     const nextState = inspectMeloBotAlbumListing(page.messages);
@@ -2699,11 +2718,15 @@ export async function openMeloBotAlbumRobustByTitle(
   {
     album = null,
     timeoutMs = 4500,
+    totalTimeoutMs = 10000,
     maxPages = 12,
   } = {}
 ) {
   const errors = [];
   const targetTitle = normalize(albumTitle);
+  const remaining = sourceBudget(totalTimeoutMs, 10000);
+  const stepTimeout = (cap = timeoutMs) =>
+    Math.min(Math.max(450, Number(cap || timeoutMs)), remaining());
 
   if (
     album?.rawText
@@ -2714,7 +2737,7 @@ export async function openMeloBotAlbumRobustByTitle(
         client,
         artist,
         album,
-        { timeoutMs }
+        { timeoutMs: stepTimeout() }
       );
       return { ...context, route: 'live_album_row' };
     } catch (err) {
@@ -2728,7 +2751,7 @@ export async function openMeloBotAlbumRobustByTitle(
       artist,
       albumTitle,
       {
-        timeoutMs,
+        timeoutMs: stepTimeout(),
         maxPages,
         allowSeedFallback: true,
       }
@@ -2737,19 +2760,24 @@ export async function openMeloBotAlbumRobustByTitle(
     errors.push(`direct=${err.message}`);
   }
 
+  if (remaining.expired()) {
+    throw new Error(`MeloBot robust album open timed out: ${artist} — ${albumTitle}`);
+  }
+
   const exactQueries = [
     [artist, albumTitle].filter(Boolean).join(' '),
     albumTitle,
   ].filter(Boolean);
 
   for (const query of [...new Set(exactQueries)]) {
+    if (remaining.expired()) break;
     try {
       const typed = await classifyMeloBotTypedSearchExact(
         client,
         query,
         await searchMeloBotTyped(client, query, {
           maxRefinements: 2,
-          timeoutMs,
+          timeoutMs: stepTimeout(),
         })
       );
 
@@ -2762,7 +2790,7 @@ export async function openMeloBotAlbumRobustByTitle(
           client,
           resolvedArtist,
           candidate,
-          { timeoutMs }
+          { timeoutMs: stepTimeout() }
         );
         return {
           ...context,
@@ -2780,6 +2808,7 @@ export async function openMeloBotAlbumRobustByTitle(
     .filter(Boolean);
 
   for (const part of [...new Set(artistParts)]) {
+    if (remaining.expired()) break;
     if (normalize(part) === normalize(artist)) continue;
     try {
       const opened = await openMeloBotAlbumDirectByTitle(
@@ -2787,7 +2816,7 @@ export async function openMeloBotAlbumRobustByTitle(
         part,
         albumTitle,
         {
-          timeoutMs: Math.min(timeoutMs, 3500),
+          timeoutMs: stepTimeout(Math.min(timeoutMs, 3500)),
           maxPages,
           allowSeedFallback: true,
         }
