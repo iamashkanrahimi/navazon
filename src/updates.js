@@ -278,14 +278,26 @@ export async function handleUpdate(update) {
         });
       } else if (action === 'ars' && session.artistContext) {
         const tracks = session.artistContext.topTracks || session.artistContext.tracks || [];
-        await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🎵 پربازدیدترین آهنگ‌ها`,{
-          reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'top' }),
-        });
+        if (tracks.length) {
+          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,{
+            reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'top' }),
+          });
+        } else {
+          session.busy = true;
+          await bot.editMessageText(session.chatId,messageId,'در حال دریافت پربازدیدترین آثار…');
+          sourceQueue.push({ type: 'artist_list', mode: 'top', sessionId, messageId });
+        }
       } else if (action === 'arn' && session.artistContext) {
         const tracks = session.artistContext.recentTracks || [];
-        await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🆕 جدیدترین آهنگ‌ها`,{
-          reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'recent' }),
-        });
+        if (tracks.length) {
+          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🆕 جدیدترین آثار`,{
+            reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'recent' }),
+          });
+        } else {
+          session.busy = true;
+          await bot.editMessageText(session.chatId,messageId,'در حال دریافت جدیدترین آثار…');
+          sourceQueue.push({ type: 'artist_list', mode: 'recent', sessionId, messageId });
+        }
       } else if (action === 'ata' && session.artistContext?.tracks?.length) {
         session.busy = true;
         const tracks = session.artistContext.topTracks || session.artistContext.tracks || [];
