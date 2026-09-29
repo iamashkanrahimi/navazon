@@ -930,33 +930,62 @@ export async function resolveMeloBotTrackCandidate(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
-  const query = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
+  const primaryQuery = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
     || candidate?.title
     || candidate?.rawText;
 
-  if (!query) throw new Error('MeloBot track candidate is incomplete.');
+  if (!primaryQuery) throw new Error('MeloBot track candidate is incomplete.');
 
   if (
     candidate?.rawText
     && Number(candidate.sourceStateVersion || -1) === sourceStateVersion
+    && !candidate.artistInferred
   ) {
     return candidate;
   }
 
-  try {
-    const results = await searchMeloBot(client, query, { timeoutMs });
-    const artist = normalize(candidate?.artist || '');
-    const title = normalize(candidate?.title || '');
+  const title = normalize(candidate?.title || '');
+  const artist = normalize(candidate?.artist || '');
+  const queries = candidate?.artistInferred && candidate?.title
+    ? [candidate.title, primaryQuery]
+    : [primaryQuery, candidate?.title].filter(Boolean);
 
-    return results.find(track =>
-      normalize(track.artist) === artist && normalize(track.title) === title
-    ) || results.find(track =>
-      title && normalize(track.title) === title
-    ) || results[0] || candidate;
-  } catch (err) {
-    console.warn('[melobot resolve track]', err.message);
-    return candidate;
+  let lastError = null;
+  for (const query of [...new Set(queries.map(clean).filter(Boolean))]) {
+    try {
+      const results = await searchMeloBot(client, query, {
+        timeoutMs: Math.min(timeoutMs, config.searchTimeoutMs),
+        maxRefinements: 2,
+      });
+
+      const exactTitle = results.filter(track =>
+        title && normalize(track.title) === title
+      );
+
+      const exactArtistTitle = exactTitle.find(track =>
+        artist && normalize(track.artist) === artist
+      );
+
+      // For inferred artist rows, an explicit source artist is more trustworthy
+      // than the page-context fallback. This repairs cases like a T-Dey page
+      // containing "Khalesaneh (feat. T-Dey)" whose primary artist is Sadegh.
+      const resolved = candidate?.artistInferred
+        ? (exactTitle.find(track => track.artist && !track.artistInferred) || exactTitle[0])
+        : (exactArtistTitle || exactTitle[0] || results[0]);
+
+      if (resolved) {
+        return {
+          ...resolved,
+          artistInferred: false,
+        };
+      }
+    } catch (err) {
+      lastError = err;
+    }
   }
+
+  if (lastError) console.warn('[melobot resolve track]', lastError.message);
+  return candidate;
 }
 
 async function openTrackMenuWithCandidate(
