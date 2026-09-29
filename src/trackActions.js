@@ -33,7 +33,7 @@ export async function prepareTrackPage(track) {
   const snapshotFresh = checkedAt > 0 && (Date.now() - checkedAt) < 7 * 24 * 60 * 60 * 1000;
 
   let capabilities = {
-    hasHq: Boolean(details?.media?.hq) || Boolean(snapshot.hasHq) || track?.source !== 'melobot',
+    hasHq: Boolean(details?.media?.hq) || Boolean(snapshot.hasHq) || track?.source === 'ahangify',
     hasNormal: Boolean(details?.media?.normal) || Boolean(snapshot.hasNormal),
     hasLyrics: Boolean(details?.lyrics_text) || Boolean(snapshot.hasLyrics),
     hasCover: Boolean(details?.cover_file_id) || Boolean(snapshot.hasCover),
@@ -127,6 +127,10 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
       const { downloadTrackWithSources } = await import('./media.js');
       const outcome = await downloadTrackWithSources(track, [track.artist, track.title].filter(Boolean).join(' '));
       media = outcome.cached || outcome.media;
+      if (outcome.cached) {
+        cacheHit = true;
+        cacheKey = outcome.cached._cacheKey || null;
+      }
       if (media) {
         await deepCatalog.setMedia(track, 'hq', media, {
           source: track.source || 'ahangify',
