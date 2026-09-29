@@ -158,6 +158,9 @@ export async function initDb() {
       PRIMARY KEY (artist_key, list_type, track_key)
     );
 
+    ALTER TABLE deep_artist_tracks
+      ADD COLUMN IF NOT EXISTS list_version INTEGER NOT NULL DEFAULT 0;
+
     CREATE TABLE IF NOT EXISTS crawl_tasks (
       id BIGSERIAL PRIMARY KEY,
       task_key TEXT NOT NULL UNIQUE,
