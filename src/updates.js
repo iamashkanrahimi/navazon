@@ -199,6 +199,18 @@ export async function handleUpdate(update) {
           messageId,
           seedIndex: Number(parts[2]),
         });
+      } else if (action === 'aar') {
+        const albumIndex = Number(parts[2]);
+        const album = session.albumOptions?.[albumIndex];
+        if (!album?.artist) return;
+        session.busy = true;
+        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن خواننده…');
+        sourceQueue.push({
+          type: 'artist_from_album',
+          sessionId,
+          messageId,
+          albumIndex,
+        });
       } else if (action === 'rs') {
         await showResults(sessionId,session,messageId);
       } else if (action === 'trt') {
