@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.6 — Cleaner User-Facing Status
+# Navazon Cloud v1.5.7 — Artist Lists & Album Recovery
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -208,3 +208,16 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Partial bulk fallback now reports only how many songs could not be received; complete failure uses a short retry message.
 - Track info label `محبوبیت` is renamed to `بازدید حدودی`.
 - Track info label `کیفیت‌های آماده` is renamed to `کیفیت‌های موجود`.
+
+
+## Artist Lists & Album Recovery v1.5.7
+
+- Artist pages always show both `پربازدیدترین آثار` and `جدیدترین آثار`.
+- Missing artist lists are loaded lazily: first from the deep catalog, then from a bounded live MeloBot resolver.
+- Top and recent lists are kept semantically separate; recent tracks are no longer reused as a fake top list.
+- Artist sync no longer erases a previously healthy top/recent list when the current MeloBot surface exposes only the other mode.
+- Recent tracks can be recovered from MeloBot's release-date sort surface, including its native bulk controls.
+- Search-result albums use a robust opener: live row -> direct artist listing -> exact album search -> collaborator component fallback.
+- Collaborative album rows such as `Bahram & Ali Sorena — Khoone Khorshid` no longer depend only on the combined artist key.
+- Transient Telegram Bot API network/5xx failures are retried before surfacing an update error.
+- Includes the cleaner user-facing labels and bulk fallback copy from v1.5.6.
