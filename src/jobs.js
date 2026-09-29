@@ -328,10 +328,16 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     try {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
-      const media = mediaByTrack.get(bulkTrackKey(track))
-        || hqCache.get(deepTrackKey(track));
+      const bridgedMedia = mediaByTrack.get(bulkTrackKey(track));
+      const cachedHq = hqCache.get(deepTrackKey(track));
+      const media = bridgedMedia || cachedHq;
       if (media) {
-        await sendMedia(session.chatId, track, media);
+        await sendMedia(
+          session.chatId,
+          track,
+          media,
+          { cacheHit: !bridgedMedia && Boolean(cachedHq) }
+        );
         sent += 1;
       } else {
         missing += 1;
@@ -357,7 +363,12 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
   for (const sourceTrack of sourceTracks) {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     assertDeliveryAllowed(track, session.userRegion || 'unknown');
-    await sendMedia(session.chatId, track, hqCache.get(deepTrackKey(track)));
+    await sendMedia(
+      session.chatId,
+      track,
+      hqCache.get(deepTrackKey(track)),
+      { cacheHit: true }
+    );
     sent += 1;
   }
 
@@ -380,7 +391,7 @@ async function deliverAvailableBulkCache(session, tracks) {
         missing += 1;
         continue;
       }
-      await sendMedia(session.chatId, track, cachedHq);
+      await sendMedia(session.chatId, track, cachedHq, { cacheHit: true });
       sent += 1;
     } catch {
       missing += 1;
