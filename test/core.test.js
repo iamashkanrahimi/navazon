@@ -2302,3 +2302,102 @@ test('quality download shares one bounded source budget across menu and media', 
   );
   assert.ok(Date.now() - startedAt < 1500);
 });
+
+
+test('fresh MeloBot album evidence carries the current trust version', () => {
+  const listing = inspectMeloBotAlbumListing([
+    fakeBotMessage('آلبوم های خواننده (1) :', ['💿 Mojaz (14)']),
+  ]);
+  assert.equal(listing.albums.length, 1);
+  assert.equal(listing.albums[0].verifiedAlbum, true);
+  assert.equal(listing.albums[0].albumTrustVersion, 2);
+
+  const search = parseMeloBotSearchSurface([
+    fakeBotMessage('search', ['💿 Hichkas, Mojaz']),
+  ]);
+  assert.equal(search.albums.length, 1);
+  assert.equal(search.albums[0].verifiedAlbum, true);
+  assert.equal(search.albums[0].albumTrustVersion, 2);
+});
+
+test('legacy album rows are invalidated even when they previously looked verified', async () => {
+  const store = new CatalogStore();
+  const now = new Date().toISOString();
+
+  store.readArtist = async () => ({
+    key: 'hichkas',
+    node: {
+      name: 'Hichkas',
+      albumsUpdatedAt: now,
+      albumList: [{
+        title: 'Zedbazi',
+        rawText: '💿 Zedbazi (23)',
+        verifiedAlbum: true,
+      }],
+    },
+  });
+
+  assert.equal(await store.getAlbums('Hichkas', 60_000), null);
+
+  store.readArtist = async () => ({
+    key: 'hichkas',
+    node: {
+      name: 'Hichkas',
+      albumsUpdatedAt: now,
+      albumList: [{
+        title: 'Mojaz',
+        rawText: '💿 Mojaz (14)',
+        verifiedAlbum: true,
+        albumTrustVersion: 2,
+      }],
+    },
+  });
+
+  const trusted = await store.getAlbums('Hichkas', 60_000);
+  assert.equal(trusted.length, 1);
+  assert.equal(trusted[0].title, 'Mojaz');
+});
+
+test('deep Artist lists ignore pre-v1.5.8 relation rows', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const tracks = await catalog.getArtistList('Haamim', 'recent', 10);
+    assert.deepEqual(tracks, []);
+  } finally {
+    db.query = originalQuery;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /list_version\s*>=\s*1/i);
+});
+
+test('track pages never expose Artist navigation for an inferred primary artist', () => {
+  const keyboard = trackPageKeyboard(
+    'infer1',
+    {
+      source: 'melobot',
+      artist: 'T-Dey',
+      title: 'Khalesaneh (feat. T-Dey)',
+      artistInferred: true,
+    },
+    { media: {}, metadata: {} },
+    { hasArtistPage: true }
+  );
+
+  const callbacks = keyboard.inline_keyboard
+    .flat()
+    .map(button => button.callback_data);
+
+  assert.equal(callbacks.includes('tar:infer1'), false);
+  assert.equal(callbacks.includes('tqh:infer1'), true);
+  assert.equal(callbacks.includes('tqn:infer1'), true);
+  assert.equal(callbacks.includes('tcv:infer1'), true);
+  assert.equal(callbacks.includes('tly:infer1'), true);
+});
