@@ -1772,7 +1772,7 @@ test('robust album opener falls back to a collaborator component when combined a
     'Bahram & Ali Sorena': [[fakeBotMessage('albums', ['💿 Other Album (1)'])]],
     'Bahram & Ali Sorena Khoone Khorshid': [[]],
     'Khoone Khorshid': [[]],
-    'bahram': [[fakeBotMessage('albums', [targetRow])]],
+    'Bahram': [[fakeBotMessage('albums', [targetRow])]],
     [targetRow]: [[
       fakeBotMessage(
         'album page',
