@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
-import { cleanText, normalizeText, meaningfulSearchTokens } from './text.js';
+import { cleanText, normalizeText, meaningfulSearchTokens, hasAlbumIntent } from './text.js';
 
 export const SESSION_TTL_MS = 12 * 60 * 1000;
 export const BUSY_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -168,7 +168,10 @@ export function resultsKeyboard(sessionId, session) {
 
     if (albumArtists.size === 1) {
       const only = [...albumArtists.values()][0];
-      if (!artistShortcutMatchesQuery(session.query, only.artist)) {
+      if (
+        !hasAlbumIntent(session.query)
+        && !artistShortcutMatchesQuery(session.query, only.artist)
+      ) {
         if (session.resultsBackAction) {
           rows.push([{
             text: session.resultsBackText || '🔙 برگشت',
