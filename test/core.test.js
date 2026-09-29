@@ -44,6 +44,8 @@ const {
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
 const { trackCacheKey } = await import('../src/cache.js');
+const { DeepCatalog, deepTrackKey } = await import('../src/deepCatalog.js');
+const { db } = await import('../src/db.js');
 const {
   resultsKeyboard,
   albumTracksKeyboard,
@@ -1318,4 +1320,227 @@ test('exact high-confidence track rows skip the album probe for lower latency', 
   assert.equal(classified.tracks.length, 1);
   assert.equal(classified.albums.length, 0);
   assert.deepEqual(client.sent, []);
+});
+
+
+test('mixed exact search probes ambiguous track even when an album result already exists', async () => {
+  const ambiguous = '🎵 Shayea, Do Be Shak';
+  const albumRow = '💿 Shayea, Do Be Shak';
+  const client = new FakeTelegramClient({
+    'shayea do be shak': [[
+      fakeBotMessage('نتیجه جستجو', [ambiguous, albumRow]),
+    ]],
+    [ambiguous]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آلبوم چه کنی ؟',
+        [
+          'دانلود همه (عالی)',
+          '🎵 Track One x 1.1M',
+          '🎵 Track Two x 900K',
+        ]
+      ),
+    ]],
+  });
+
+  const typed = await searchMeloBotTyped(client, 'shayea do be shak');
+  assert.equal(typed.tracks.length, 1);
+  assert.equal(typed.albums.length, 1);
+
+  const classified = await classifyMeloBotTypedSearchExact(
+    client,
+    'shayea do be shak',
+    typed
+  );
+
+  assert.equal(classified.exactProbe, 'album');
+  assert.equal(classified.tracks.length, 0);
+  assert.equal(classified.albums.length, 1);
+  assert.equal(classified.albums[0].artist, 'Shayea');
+  assert.equal(classified.albums[0].title, 'Do Be Shak');
+});
+
+test('mixed exact search keeps a genuine low-confidence track even when albums are also present', async () => {
+  const exactTrack = '🎵 Artist, Real Song';
+  const client = new FakeTelegramClient({
+    [exactTrack]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آهنگ چه کنی ؟',
+        ['کیفیت عالی', 'کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+  });
+
+  const classified = await classifyMeloBotTypedSearchExact(
+    client,
+    'Artist Real Song',
+    {
+      tracks: [parseTrackButton(exactTrack)],
+      albums: [{ type: 'album', artist: 'Artist', title: 'Other Album' }],
+    }
+  );
+
+  assert.equal(classified.exactProbe, 'track');
+  assert.equal(classified.tracks.length, 1);
+  assert.equal(classified.albums.length, 1);
+});
+
+test('single MeloBot search row never creates a direct artist-page shortcut', () => {
+  const session = {
+    options: [
+      { source: 'melobot', artist: 'Shayea', title: 'Do Be Shak' },
+    ],
+    albumOptions: [
+      { source: 'melobot', artist: 'Shayea', title: 'Do Be Shak' },
+    ],
+  };
+
+  const keyboard = resultsKeyboard('single1', session);
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.some(value => value?.startsWith('ar:single1:')), false);
+});
+
+test('two consistent MeloBot track rows still create the direct artist-page shortcut', () => {
+  const session = {
+    options: [
+      { source: 'melobot', artist: 'Shayea', title: 'One' },
+      { source: 'melobot', artist: 'Shayea', title: 'Two' },
+    ],
+    albumOptions: [],
+  };
+
+  const keyboard = resultsKeyboard('multi2', session);
+  const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
+  assert.equal(callbacks.includes('ar:multi2:0'), true);
+});
+
+test('artist recovery accepts two exact-artist rows without popularity metadata', async () => {
+  const seedRaw = '🎵 Shayea, Odd Seed';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آهنگ چه کنی ؟',
+        ['کیفیت عالی', 'کیفیت معمولی', '🎤 خواننده']
+      ),
+    ]],
+    '🎤 خواننده': [[
+      fakeBotMessage(
+        'Shayea',
+        ['نمایش به ترتیب تاریخ انتشار']
+      ),
+    ]],
+    'نمایش به ترتیب تاریخ انتشار': [[
+      fakeBotMessage('مرتب سازی', ['پربازدیدترین‌ها']),
+    ]],
+    'پربازدیدترین‌ها': [[
+      fakeBotMessage('بدون ردیف آهنگ', []),
+    ]],
+    'Shayea': [[
+      fakeBotMessage(
+        'نتیجه جستجو',
+        ['🎵 Shayea, Search One', '🎵 Shayea, Search Two']
+      ),
+    ]],
+  });
+
+  const artist = await openMeloBotArtist(client, {
+    ...parseTrackButton(seedRaw),
+    source: 'melobot',
+  });
+
+  assert.equal(artist.artist, 'Shayea');
+  assert.deepEqual(
+    artist.topTracks.map(track => track.title),
+    ['Search One', 'Search Two']
+  );
+});
+
+test('quality-aware media lookup returns only the requested HQ rows in one query', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    return {
+      rows: [{
+        track_key: deepTrackKey({ artist: 'A', title: 'One' }),
+        quality: 'hq',
+        file_id: 'hq-file',
+        file_unique_id: 'u1',
+        kind: 'audio',
+        bitrate: 320,
+        file_size: 1234,
+        duration_seconds: 180,
+        source: 'melobot',
+      }],
+    };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const media = await catalog.getMediaMap([
+      { artist: 'A', title: 'One' },
+      { artist: 'A', title: 'Two' },
+    ], 'hq');
+
+    assert.equal(media.size, 1);
+    assert.equal(media.get('a|one').fileId, 'hq-file');
+    assert.equal(media.get('a|one').quality, 'hq');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].params[0], 'hq');
+    assert.deepEqual(calls[0].params[1].sort(), ['a|one', 'a|two']);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('query-shape regression matrix keeps track album and artist-only cases distinct', async () => {
+  const cases = [
+    {
+      name: 'artist only',
+      query: 'Hichkas',
+      buttons: [
+        '🎵 Hichkas, Track One x 2M',
+        '🎵 Hichkas, Track Two x 1M',
+        '💿 Hichkas, Mojaz',
+      ],
+      expectedTracks: 2,
+      expectedAlbums: 1,
+    },
+    {
+      name: 'exact popular track',
+      query: 'Hichkas Track One',
+      buttons: ['🎵 Hichkas, Track One x 2M'],
+      expectedTracks: 1,
+      expectedAlbums: 0,
+    },
+    {
+      name: 'disc album',
+      query: 'Bahram Eshtebahe Khoob',
+      buttons: ['💿 Bahram, Eshtebahe Khoob'],
+      expectedTracks: 0,
+      expectedAlbums: 1,
+    },
+    {
+      name: 'counted disc album',
+      query: 'Hichkas Mojaz',
+      buttons: ['💿 Hichkas, Mojaz (14)'],
+      expectedTracks: 0,
+      expectedAlbums: 1,
+    },
+    {
+      name: 'persian artist search',
+      query: 'هیچکس',
+      buttons: ['🎵 هیچکس, آهنگ یک x 1M', '🎵 هیچکس, آهنگ دو x 900K'],
+      expectedTracks: 2,
+      expectedAlbums: 0,
+    },
+  ];
+
+  for (const item of cases) {
+    const client = new FakeTelegramClient({
+      [item.query]: [[fakeBotMessage(item.name, item.buttons)]],
+    });
+    const typed = await searchMeloBotTyped(client, item.query);
+    assert.equal(typed.tracks.length, item.expectedTracks, item.name);
+    assert.equal(typed.albums.length, item.expectedAlbums, item.name);
+  }
 });
