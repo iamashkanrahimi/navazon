@@ -29,6 +29,7 @@ const {
   resolveMeloBotArtistTrackList,
   resolveMeloBotTrackCandidate,
   getMeloBotCover,
+  getMeloBotLyrics,
   getMeloBotTrackMetadata,
   downloadMeloBotTrackQuality,
   downloadMeloBotAlbumTracks,
@@ -2618,4 +2619,52 @@ test('track details expose an album only through current album and track-list pr
   const albumSql = calls.find(call => call.sql.includes('FROM deep_album_tracks'))?.sql || '';
   assert.match(albumSql, /albumTrustVersion/);
   assert.match(albumSql, /trackListVersion/);
+});
+
+
+test('album declarations never authorize counted buttons from another response message', () => {
+  const listing = inspectMeloBotAlbumListing([
+    fakeBotMessage('آلبوم های خواننده (1) :', ['💿 Mojaz (14)']),
+    fakeBotMessage('خواننده های مرتبط', ['Zedbazi (23)', 'Bahram (18)']),
+  ]);
+
+  assert.deepEqual(listing.albums.map(album => album.title), ['Mojaz']);
+  assert.equal(listing.declaredCount, 1);
+  assert.equal(listing.complete, true);
+});
+
+test('lyrics button with an empty response is unknown rather than confirmed unavailable', async () => {
+  const raw = '🎵 Artist, Song';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage('track menu', ['کیفیت عالی', 'متن آهنگ'])
+    ]],
+    'متن آهنگ': [[]],
+  });
+
+  await assert.rejects(
+    () => getMeloBotLyrics(
+      client,
+      { ...parseTrackButton(raw), source: 'melobot' },
+      { timeoutMs: 40 }
+    ),
+    /lyrics response was empty/i
+  );
+});
+
+test('missing Lyrics button is a confirmed unavailable result', async () => {
+  const raw = '🎵 Artist, Song';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage('track menu', ['کیفیت عالی', 'کیفیت معمولی'])
+    ]],
+  });
+
+  const result = await getMeloBotLyrics(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    { timeoutMs: 40 }
+  );
+  assert.equal(result.available, false);
+  assert.equal(result.checked, true);
 });
