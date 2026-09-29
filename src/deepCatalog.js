@@ -18,6 +18,19 @@ export function deepAlbumKey(artist = '', title = '') {
   return `${deepNormalize(artist)}|${deepNormalize(title)}`;
 }
 
+function inferredArtistFromFeaturedTitle(artist = '', title = '') {
+  const artistKey = deepNormalize(artist);
+  const titleKey = deepNormalize(title);
+  return Boolean(
+    artistKey
+    && (
+      titleKey.includes(`feat ${artistKey}`)
+      || titleKey.includes(`ft ${artistKey}`)
+      || titleKey.includes(`featuring ${artistKey}`)
+    )
+  );
+}
+
 function safeJson(value) {
   return JSON.stringify(value ?? {});
 }
@@ -32,6 +45,7 @@ export class DeepCatalog {
       rawText: policy.rawText || undefined,
       cmd: policy.cmd || undefined,
       source: policy.source || undefined,
+      artistInferred: Boolean(policy.artistInferred) || undefined,
       sourcePopularityText: policy.sourcePopularityText || undefined,
       sourcePopularityCount: Number.isFinite(policy.sourcePopularityCount)
         ? policy.sourcePopularityCount
@@ -87,19 +101,25 @@ export class DeepCatalog {
   async setArtistList(artist, listType, tracks = []) {
     const artistKey = deepNormalize(artist);
     if (!artistKey) return;
+    const durableTracks = (tracks || []).filter(track => !track?.artistInferred);
+    if (!durableTracks.length) return;
+
     await db.query('DELETE FROM deep_artist_tracks WHERE artist_key = $1 AND list_type = $2', [artistKey, listType]);
 
-    const rows = await Promise.all((tracks || []).map(async (track, index) => {
+    const rows = await Promise.all(durableTracks.map(async (track, index) => {
       const trackKey = await this.upsertTrack(track, { discoveredFrom: `artist:${listType}` });
       return trackKey ? { trackKey, rank: index + 1 } : null;
     }));
 
     await Promise.all(rows.filter(Boolean).map(row => db.query(`
-      INSERT INTO deep_artist_tracks (artist_key, artist_name, list_type, track_key, rank, observed_at)
-      VALUES ($1,$2,$3,$4,$5,NOW())
+      INSERT INTO deep_artist_tracks (
+        artist_key, artist_name, list_type, track_key, rank, observed_at, list_version
+      )
+      VALUES ($1,$2,$3,$4,$5,NOW(),1)
       ON CONFLICT (artist_key, list_type, track_key) DO UPDATE SET
         rank = EXCLUDED.rank,
-        observed_at = NOW()
+        observed_at = NOW(),
+        list_version = 1
     `, [artistKey, clean(artist), listType, row.trackKey, row.rank])));
   }
 
@@ -118,7 +138,11 @@ export class DeepCatalog {
       clean(artist),
       clean(album.title),
       Number(album.trackCount || 0) || null,
-      safeJson({ rawText: album.rawText || undefined }),
+      safeJson({
+        rawText: album.rawText || undefined,
+        verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+        albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
+      }),
     ]);
     return albumKey;
   }
@@ -126,9 +150,30 @@ export class DeepCatalog {
   async setAlbumTracks(artist, album, tracks = []) {
     const albumKey = await this.upsertAlbum(artist, album);
     if (!albumKey) return;
-    await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
 
-    const rows = await Promise.all((tracks || []).map(async (track, index) => {
+    const sourceTracks = tracks || [];
+    const durableTracks = sourceTracks.filter(track => !track?.artistInferred);
+
+    await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
+    await db.query(`
+      UPDATE deep_albums
+      SET metadata = metadata - 'trackListVersion',
+          updated_at = NOW()
+      WHERE album_key = $1
+    `, [albumKey]);
+
+    // A title-only album row can inherit the page artist even when the real
+    // primary artist is a collaborator. Keep that live list in the session/
+    // legacy JSON cache, but do not certify a partial or misattributed deep
+    // relation. It will be rebuilt once all identities are canonical.
+    if (
+      !sourceTracks.length
+      || durableTracks.length !== sourceTracks.length
+    ) {
+      return;
+    }
+
+    const rows = await Promise.all(durableTracks.map(async (track, index) => {
       const trackKey = await this.upsertTrack(track, {
         album: album.title,
         discoveredFrom: 'album',
@@ -136,11 +181,22 @@ export class DeepCatalog {
       return trackKey ? { trackKey, position: index + 1 } : null;
     }));
 
-    await Promise.all(rows.filter(Boolean).map(row => db.query(`
+    const validRows = rows.filter(Boolean);
+    if (validRows.length !== durableTracks.length) return;
+
+    await Promise.all(validRows.map(row => db.query(`
       INSERT INTO deep_album_tracks (album_key, track_key, position)
       VALUES ($1,$2,$3)
       ON CONFLICT (album_key, track_key) DO UPDATE SET position = EXCLUDED.position
     `, [albumKey, row.trackKey, row.position])));
+
+    // Only mark the relation trusted after the full canonical replacement.
+    await db.query(`
+      UPDATE deep_albums
+      SET metadata = metadata || '{"trackListVersion":1}'::jsonb,
+          updated_at = NOW()
+      WHERE album_key = $1
+    `, [albumKey]);
   }
 
   async setMedia(track, quality, media = {}, extra = {}) {
@@ -296,24 +352,36 @@ export class DeepCatalog {
   async setCapabilities(track, capabilities = {}) {
     const trackKey = await this.upsertTrack(track);
     if (!trackKey) return;
+
+    // Capability discovery is best-effort. Persist positive evidence only;
+    // a timeout/empty source surface means "unknown", not "unavailable".
+    const positive = Object.fromEntries(
+      Object.entries({
+        hasHq: capabilities.hasHq,
+        hasNormal: capabilities.hasNormal,
+        hasLyrics: capabilities.hasLyrics,
+        hasCover: capabilities.hasCover,
+        hasMetadata: capabilities.hasMetadata,
+        hasArtistPage: capabilities.hasArtistPage,
+      }).filter(([, value]) => value === true)
+    );
+
+    if (!Object.keys(positive).length) return;
+
     await db.query(`
       UPDATE deep_tracks
-      SET metadata = metadata || $2::jsonb,
+      SET metadata = metadata
+          || jsonb_build_object(
+            'capabilities',
+            COALESCE(metadata->'capabilities', '{}'::jsonb) || $2::jsonb,
+            'capabilitiesCheckedAt',
+            to_jsonb(NOW()::text)
+          ),
           updated_at = NOW()
       WHERE track_key = $1
     `, [
       trackKey,
-      safeJson({
-        capabilities: {
-          hasHq: Boolean(capabilities.hasHq),
-          hasNormal: Boolean(capabilities.hasNormal),
-          hasLyrics: Boolean(capabilities.hasLyrics),
-          hasCover: Boolean(capabilities.hasCover),
-          hasMetadata: Boolean(capabilities.hasMetadata),
-          hasArtistPage: Boolean(capabilities.hasArtistPage),
-        },
-        capabilitiesCheckedAt: new Date().toISOString(),
-      }),
+      safeJson(positive),
     ]);
   }
 
@@ -342,6 +410,7 @@ export class DeepCatalog {
         FROM deep_album_tracks dat
         JOIN deep_albums a ON a.album_key = dat.album_key
         WHERE dat.track_key = $1
+          AND a.metadata @> '{"verifiedAlbum":true,"albumTrustVersion":2,"trackListVersion":1}'::jsonb
         ORDER BY a.updated_at DESC
         LIMIT 1
       `, [trackKey]),
@@ -390,24 +459,82 @@ export class DeepCatalog {
         at.rank
       FROM deep_artist_tracks at
       JOIN deep_tracks t ON t.track_key = at.track_key
-      WHERE at.artist_key = $1 AND at.list_type = $2
+      WHERE at.artist_key = $1
+        AND at.list_type = $2
+        AND at.list_version >= 1
       ORDER BY at.rank ASC NULLS LAST, at.observed_at DESC
       LIMIT $3
     `, [artistKey, listType, Math.max(1, Number(limit || 10))]);
 
-    return result.rows.map(row => ({
-      artist: row.artist,
-      title: row.title,
-      album: row.album || undefined,
-      durationSeconds: row.duration_seconds || undefined,
-      sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
-      sourcePopularityText: row.popularity_text || undefined,
-      contentOrigin: row.content_origin || 'unknown',
-      availabilityPolicy: row.availability_policy || 'unknown',
-      ...(row.source_data || {}),
-      source: row.source_data?.source || 'melobot',
-      rawText: row.source_data?.rawText || undefined,
-    }));
+    return result.rows
+      .map(row => ({
+        artist: row.artist,
+        title: row.title,
+        album: row.album || undefined,
+        durationSeconds: row.duration_seconds || undefined,
+        sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+        sourcePopularityText: row.popularity_text || undefined,
+        contentOrigin: row.content_origin || 'unknown',
+        availabilityPolicy: row.availability_policy || 'unknown',
+        ...(row.source_data || {}),
+        source: row.source_data?.source || 'melobot',
+        rawText: row.source_data?.rawText || undefined,
+        artistInferred: Boolean(row.source_data?.artistInferred)
+          || inferredArtistFromFeaturedTitle(row.artist, row.title),
+      }))
+      .filter(track => !track.artistInferred);
+  }
+
+  async deriveArtistList(artist, listType = 'top', limit = 10) {
+    const artistName = clean(artist);
+    if (!artistName) return [];
+
+    const recentMode = listType === 'recent';
+    const evidenceClause = recentMode
+      ? 't.release_date IS NOT NULL'
+      : 't.popularity_count IS NOT NULL';
+    const order = recentMode
+      ? 't.release_date DESC, t.updated_at DESC'
+      : 't.popularity_count DESC, t.updated_at DESC';
+
+    const result = await db.query(`
+      SELECT
+        t.track_key,
+        t.artist,
+        t.title,
+        t.album,
+        t.duration_seconds,
+        t.release_date,
+        t.popularity_count,
+        t.popularity_text,
+        t.content_origin,
+        t.availability_policy,
+        t.source_data
+      FROM deep_tracks t
+      WHERE LOWER(t.artist) = LOWER($1)
+        AND ${evidenceClause}
+      ORDER BY ${order}
+      LIMIT $2
+    `, [artistName, Math.max(1, Number(limit || 10))]);
+
+    return result.rows
+      .map(row => ({
+        artist: row.artist,
+        title: row.title,
+        album: row.album || undefined,
+        durationSeconds: row.duration_seconds || undefined,
+        releaseDate: row.release_date || undefined,
+        sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+        sourcePopularityText: row.popularity_text || undefined,
+        contentOrigin: row.content_origin || 'unknown',
+        availabilityPolicy: row.availability_policy || 'unknown',
+        ...(row.source_data || {}),
+        source: row.source_data?.source || 'melobot',
+        rawText: row.source_data?.rawText || undefined,
+        artistInferred: Boolean(row.source_data?.artistInferred)
+          || inferredArtistFromFeaturedTitle(row.artist, row.title),
+      }))
+      .filter(track => !track.artistInferred);
   }
 
   async searchAlbums(query, limit = 4) {
@@ -440,14 +567,21 @@ export class DeepCatalog {
       LIMIT ${limitParam}
     `, params);
 
-    return result.rows.map(row => ({
-      albumKey: row.album_key,
-      artist: row.artist,
-      title: row.title,
-      trackCount: row.track_count || undefined,
-      rawText: row.metadata?.rawText || undefined,
-      source: 'catalog',
-    }));
+    return result.rows
+      .filter(row =>
+        row.metadata?.verifiedAlbum === true
+        && Number(row.metadata?.albumTrustVersion || 0) >= 2
+      )
+      .map(row => ({
+        albumKey: row.album_key,
+        artist: row.artist,
+        title: row.title,
+        trackCount: row.track_count || undefined,
+        rawText: row.metadata?.rawText || undefined,
+        verifiedAlbum: Boolean(row.metadata?.verifiedAlbum),
+        albumTrustVersion: Number(row.metadata?.albumTrustVersion || 0) || undefined,
+        source: 'catalog',
+      }));
   }
 
   async getAlbumTracksByKey(albumKey) {
@@ -456,7 +590,9 @@ export class DeepCatalog {
       SELECT t.*, dat.position
       FROM deep_album_tracks dat
       JOIN deep_tracks t ON t.track_key = dat.track_key
+      JOIN deep_albums da ON da.album_key = dat.album_key
       WHERE dat.album_key = $1
+        AND da.metadata @> '{"trackListVersion":1}'::jsonb
       ORDER BY dat.position ASC NULLS LAST
     `, [albumKey]);
     return result.rows.map(row => ({
@@ -763,8 +899,9 @@ export class DeepCatalog {
       db.query('SELECT COUNT(*)::bigint AS albums FROM deep_albums'),
       db.query(`
         SELECT
-          COUNT(*) FILTER (WHERE list_type = 'recent')::bigint AS recent_rows,
-          COUNT(*) FILTER (WHERE list_type = 'top')::bigint AS top_rows
+          COUNT(*) FILTER (WHERE list_type = 'recent' AND list_version >= 1)::bigint AS recent_rows,
+          COUNT(*) FILTER (WHERE list_type = 'top' AND list_version >= 1)::bigint AS top_rows,
+          COUNT(*) FILTER (WHERE list_version = 0)::bigint AS legacy_rows
         FROM deep_artist_tracks
       `),
     ]);

@@ -91,6 +91,14 @@ function clean(value = '') {
   return cleanText(value);
 }
 
+function sourceBudget(timeoutMs, fallbackMs = config.searchTimeoutMs) {
+  const total = Math.max(800, Number(timeoutMs || fallbackMs));
+  const deadline = Date.now() + total;
+  const remaining = () => Math.max(450, deadline - Date.now());
+  remaining.expired = () => Date.now() >= deadline;
+  return remaining;
+}
+
 function normalize(value = '') {
   return normalizeText(value);
 }
@@ -351,6 +359,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
         type: 'track',
         rawText: original,
         artist: fallbackArtist,
+        artistInferred: true,
         title,
         sourcePopularityText: popularity.text,
         sourcePopularityCount: popularity.count,
@@ -362,13 +371,13 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
   return null;
 }
 
-export function parseAlbumButton(rawText) {
+export function parseAlbumButton(rawText, { allowBareCounted = false } = {}) {
   const original = clean(rawText);
   if (!original || isControl(original)) return null;
 
   const value = toAsciiDigits(stripLeadingEmoji(original));
   const counted = value.match(/^(.+?)\s*\((\d+)\)\s*$/u);
-  if (counted) {
+  if (counted && (allowBareCounted || /^[💿📀]/u.test(original))) {
     return {
       type: 'album',
       rawText: original,
@@ -453,11 +462,11 @@ function parseSearchAlbumButton(rawText) {
   return album;
 }
 
-function parseAlbumButtons(messages = []) {
+function parseAlbumButtons(messages = [], { allowBareCounted = false } = {}) {
   const albums = [];
   const seen = new Set();
   for (const rawText of buttonsFromMessages(messages)) {
-    const album = parseAlbumButton(rawText);
+    const album = parseAlbumButton(rawText, { allowBareCounted });
     if (!album) continue;
     const key = normalize(album.title);
     if (!key || seen.has(key)) continue;
@@ -491,23 +500,55 @@ function albumNextButton(messages = []) {
 }
 
 export function inspectMeloBotAlbumListing(messages = []) {
-  const albums = parseAlbumButtons(messages);
-  const declaration = albumListingDeclaration(messages);
+  // Keep the declaration and its reply keyboard coupled to the same Telegram
+  // message. A previous implementation joined all response text first, so an
+  // "albums (N)" message could accidentally authorize bare counted buttons
+  // from a later artist/category message in the same collection window.
+  const albums = [];
+  const seen = new Set();
+  let declaredCount = null;
+  let explicitEmpty = false;
+
+  for (const message of messages || []) {
+    const localDeclaration = albumListingDeclaration([message]);
+    if (localDeclaration.declaredCount !== null) {
+      declaredCount = localDeclaration.declaredCount;
+    }
+    explicitEmpty = explicitEmpty || localDeclaration.explicitEmpty;
+
+    const localAlbums = parseAlbumButtons([message], {
+      allowBareCounted:
+        localDeclaration.declaredCount !== null
+        || localDeclaration.explicitEmpty,
+    });
+
+    for (const album of localAlbums) {
+      const key = normalize(album.title);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      albums.push({
+        ...album,
+        verifiedAlbum: true,
+        albumTrustVersion: 2,
+      });
+    }
+  }
+
   const nextButton = albumNextButton(messages);
   const confirmed = albums.length > 0
-    || declaration.declaredCount !== null
-    || declaration.explicitEmpty;
-  const confirmedEmpty = albums.length === 0 && declaration.explicitEmpty;
+    || declaredCount !== null
+    || explicitEmpty;
+  const confirmedEmpty = albums.length === 0 && explicitEmpty;
   const complete = confirmedEmpty
     || (albums.length > 0 && (
-      declaration.declaredCount !== null
-        ? albums.length >= declaration.declaredCount
+      declaredCount !== null
+        ? albums.length >= declaredCount
         : !nextButton
     ));
 
   return {
     albums,
-    declaredCount: declaration.declaredCount,
+    declaredCount,
     confirmed,
     confirmedEmpty,
     complete,
@@ -550,7 +591,11 @@ export function parseMeloBotSearchSurface(messages = [], fallbackArtist = '') {
     const key = `${normalize(album.artist || '')}|${normalize(album.title)}`;
     if (!normalize(album.title) || albumSeen.has(key)) continue;
     albumSeen.add(key);
-    albums.push(album);
+    albums.push({
+      ...album,
+      verifiedAlbum: true,
+      albumTrustVersion: 2,
+    });
   }
 
   return {
@@ -597,7 +642,9 @@ function mergeAlbumPages(current = [], incoming = [], maxAlbums = 60) {
 async function collectMeloBotAlbumPages(client, initial, {
   maxAlbums = 60,
   maxPages = 12,
+  timeoutMs = Math.min(config.searchTimeoutMs, 6000),
 } = {}) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   let albums = mergeAlbumPages([], initial?.albums || [], maxAlbums);
   let declaredCount = initial?.declaredCount ?? null;
   let confirmedEmpty = Boolean(initial?.confirmedEmpty);
@@ -606,9 +653,15 @@ async function collectMeloBotAlbumPages(client, initial, {
   let complete = Boolean(initial?.complete);
   const seenPages = new Set();
 
-  while (!complete && nextButton && pages < maxPages && albums.length < maxAlbums) {
+  while (
+    !complete
+    && nextButton
+    && pages < maxPages
+    && albums.length < maxAlbums
+    && !remaining.expired()
+  ) {
     const page = await sendAndCollect(client, nextButton, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 650,
     });
     const state = inspectMeloBotAlbumListing(page.messages);
@@ -654,6 +707,7 @@ export async function searchMeloBotTyped(client, query, {
   timeoutMs = config.searchTimeoutMs,
 } = {}) {
   const requested = clean(query);
+  const remaining = sourceBudget(timeoutMs, config.searchTimeoutMs);
   if (!requested) throw new Error('MeloBot search query is empty.');
 
   let command = requested;
@@ -662,10 +716,10 @@ export async function searchMeloBotTyped(client, query, {
   const allMessages = [];
 
   for (let step = 0; step <= Math.max(0, Number(maxRefinements || 0)); step += 1) {
-    if (!normalize(command)) break;
+    if (!normalize(command) || remaining.expired()) break;
 
     const result = await sendAndCollect(client, command, {
-      timeoutMs,
+      timeoutMs: remaining(),
       quietMs: 650,
     });
     allMessages.push(...(result.messages || []));
@@ -774,7 +828,12 @@ function exactSearchTrackMatch(query, tracks = []) {
   }) || null;
 }
 
-export async function classifyMeloBotTypedSearchExact(client, query, typedResult = {}) {
+export async function classifyMeloBotTypedSearchExact(
+  client,
+  query,
+  typedResult = {},
+  { probeTimeoutMs = EXACT_SEARCH_PROBE_TIMEOUT_MS } = {}
+) {
   let tracks = [...(typedResult.tracks || [])];
   let albums = [...(typedResult.albums || [])];
   let exactProbe = 'not_needed';
@@ -795,7 +854,11 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
       exactProbe = 'skipped_confident_track';
     } else {
       try {
-        const probed = await probeMeloBotCandidateSurface(client, exact);
+        const probed = await probeMeloBotCandidateSurface(
+          client,
+          exact,
+          { timeoutMs: probeTimeoutMs }
+        );
         exactProbe = probed.kind || 'unknown';
         if (probed.kind === 'album' && probed.album?.title) {
           tracks = tracks.filter(track => track !== exact);
@@ -866,6 +929,8 @@ export async function probeMeloBotCandidateSurface(
         bulkHighButton: inspected.bulkHighButton,
         bulkNormalButton: inspected.bulkNormalButton,
         tracks: inspected.tracks,
+        verifiedAlbum: true,
+        albumTrustVersion: 2,
       },
       messages: selected.messages,
       sourceStateVersion,
@@ -880,7 +945,12 @@ export async function probeMeloBotCandidateSurface(
   };
 }
 
-async function findArtistSeed(client, artist, preferredSeed = null) {
+async function findArtistSeed(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
   const target = normalize(artist);
   const preferredArtist = normalize(preferredSeed?.artist || '');
 
@@ -902,7 +972,10 @@ async function findArtistSeed(client, artist, preferredSeed = null) {
 
   let seed = null;
   try {
-    const results = await searchMeloBot(client, artist);
+    const results = await searchMeloBot(client, artist, {
+      timeoutMs,
+      maxRefinements: 3,
+    });
     seed = results.find(track => normalize(track.artist) === target)
       || results.find(track => {
         const candidateArtist = normalize(track.artist);
@@ -917,39 +990,88 @@ async function findArtistSeed(client, artist, preferredSeed = null) {
   return seed;
 }
 
-export async function openMeloBotArtistFresh(client, artist, preferredSeed = null) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  return openMeloBotArtist(client, seed);
+export async function openMeloBotArtistFresh(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  return openMeloBotArtist(client, seed, { timeoutMs: remaining() });
 }
 
-async function resolveMeloBotTrackCandidate(client, candidate) {
-  const query = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
+export async function resolveMeloBotTrackCandidate(
+  client,
+  candidate,
+  {
+    timeoutMs = config.searchTimeoutMs,
+    forceIdentity = false,
+  } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, config.searchTimeoutMs);
+  const primaryQuery = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
     || candidate?.title
     || candidate?.rawText;
 
-  if (!query) throw new Error('MeloBot track candidate is incomplete.');
+  if (!primaryQuery) throw new Error('MeloBot track candidate is incomplete.');
 
   if (
     candidate?.rawText
     && Number(candidate.sourceStateVersion || -1) === sourceStateVersion
+    && (!candidate.artistInferred || !forceIdentity)
   ) {
     return candidate;
   }
 
-  try {
-    const results = await searchMeloBot(client, query);
-    const artist = normalize(candidate?.artist || '');
-    const title = normalize(candidate?.title || '');
+  const title = normalize(candidate?.title || '');
+  const artist = normalize(candidate?.artist || '');
+  const queries = candidate?.artistInferred && candidate?.title
+    ? [candidate.title, primaryQuery]
+    : [primaryQuery, candidate?.title].filter(Boolean);
 
-    return results.find(track =>
-      normalize(track.artist) === artist && normalize(track.title) === title
-    ) || results.find(track =>
-      title && normalize(track.title) === title
-    ) || results[0] || candidate;
-  } catch (err) {
-    console.warn('[melobot resolve track]', err.message);
-    return candidate;
+  let lastError = null;
+  for (const query of [...new Set(queries.map(clean).filter(Boolean))]) {
+    if (remaining.expired()) break;
+    try {
+      const results = await searchMeloBot(client, query, {
+        timeoutMs: remaining(),
+        maxRefinements: 2,
+      });
+
+      const exactTitle = results.filter(track =>
+        title && normalize(track.title) === title
+      );
+
+      const exactArtistTitle = exactTitle.find(track =>
+        artist && normalize(track.artist) === artist
+      );
+
+      // For inferred artist rows, an explicit source artist is more trustworthy
+      // than the page-context fallback. This repairs cases like a T-Dey page
+      // containing "Khalesaneh (feat. T-Dey)" whose primary artist is Sadegh.
+      const resolved = candidate?.artistInferred
+        ? (exactTitle.find(track => track.artist && !track.artistInferred) || exactTitle[0])
+        : (exactArtistTitle || exactTitle[0] || results[0]);
+
+      if (resolved) {
+        return {
+          ...resolved,
+          artistInferred: false,
+        };
+      }
+    } catch (err) {
+      lastError = err;
+    }
   }
+
+  if (lastError) console.warn('[melobot resolve track]', lastError.message);
+  return candidate;
 }
 
 async function openTrackMenuWithCandidate(
@@ -957,11 +1079,16 @@ async function openTrackMenuWithCandidate(
   candidate,
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
-  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
+  const remaining = sourceBudget(timeoutMs);
+  const liveCandidate = await resolveMeloBotTrackCandidate(
+    client,
+    candidate,
+    { timeoutMs: remaining() }
+  );
   if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 550,
     stopWhen: m => replyButtons(m).some(text =>
       (text.includes('کیفیت عالی') || text.includes('کیفیت معمولی'))
@@ -975,43 +1102,45 @@ async function openTrackMenu(client, candidate) {
   return (await openTrackMenuWithCandidate(client, candidate)).messages;
 }
 
-export async function downloadMeloBotTrack(client, candidate) {
-  const menuMessages = await openTrackMenu(client, candidate);
-
-  const highQualityButton = findButton(menuMessages, text =>
-    text.includes('کیفیت عالی') && !text.includes('خرید اشتراک')
-  );
-
-  if (!highQualityButton) {
-    const response = menuMessages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot HQ button not found. ${response.slice(0, 350)}`);
-  }
-
-  const download = await sendAndCollect(client, highQualityButton, {
-    timeoutMs: config.downloadTimeoutMs,
-    quietMs: 600,
-    stopWhen: isAudioMessage,
-  });
-
-  const audio = download.messages.find(isAudioMessage);
-  if (!audio) {
-    const response = download.messages.map(messageText).filter(Boolean).join('\n');
-    if (/خرید اشتراک|premium|اشتراک/i.test(response)) {
-      throw new Error('MeloBot Premium/HQ access was not recognized for the proxy account.');
+export async function downloadMeloBotTrack(
+  client,
+  candidate,
+  { timeoutMs = 15000 } = {}
+) {
+  const result = await downloadMeloBotTrackQuality(
+    client,
+    candidate,
+    'hq',
+    {
+      timeoutMs,
+      menuTimeoutMs: Math.min(5000, timeoutMs),
     }
-    throw new Error(`MeloBot did not deliver HQ audio. ${response.slice(0, 350)}`);
-  }
-
+  );
   return {
     source: 'melobot',
-    candidate,
-    audioMessage: audio,
+    candidate: result.candidate || candidate,
+    audioMessage: result.audioMessage,
   };
 }
 
 
-export async function downloadMeloBotTrackQuality(client, candidate, quality = 'hq') {
-  const menuMessages = await openTrackMenu(client, candidate);
+export async function downloadMeloBotTrackQuality(
+  client,
+  candidate,
+  quality = 'hq',
+  {
+    timeoutMs = config.downloadTimeoutMs,
+    menuTimeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, config.downloadTimeoutMs);
+  const openedMenu = await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs: Math.min(menuTimeoutMs, remaining()) }
+  );
+  const menuMessages = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
   const wantsHigh = quality === 'hq';
   const button = findButton(menuMessages, text => {
     const value = clean(text);
@@ -1022,9 +1151,12 @@ export async function downloadMeloBotTrackQuality(client, candidate, quality = '
   if (!button) {
     throw new Error(`MeloBot ${quality} quality button not found.`);
   }
+  if (remaining.expired()) {
+    throw new Error(`MeloBot ${quality} quality request exceeded its source budget.`);
+  }
 
   const result = await sendAndCollect(client, button, {
-    timeoutMs: config.downloadTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
     stopWhen: isAudioMessage,
   });
@@ -1035,20 +1167,34 @@ export async function downloadMeloBotTrackQuality(client, candidate, quality = '
     throw new Error(`MeloBot did not deliver ${quality} audio. ${response.slice(0, 350)}`);
   }
 
-  return { source: 'melobot', quality, candidate, audioMessage: audio };
+  return {
+    source: 'melobot',
+    quality,
+    candidate: liveCandidate,
+    audioMessage: audio,
+  };
 }
 
 function photoMessage(message) {
   return Boolean(message?.media?.photo);
 }
 
-async function openMoreMenu(client, candidate) {
-  const menuMessages = await openTrackMenu(client, candidate);
+async function openMoreMenu(
+  client,
+  candidate,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
+  const remaining = sourceBudget(timeoutMs);
+  const menuMessages = (await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs: remaining() }
+  )).messages;
   const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
   if (!moreButton) throw new Error('MeloBot more button not found.');
 
   const more = await sendAndCollect(client, moreButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 600,
   });
   return more.messages;
@@ -1082,21 +1228,75 @@ export function sanitizeMeloBotLyricsText(raw = '', candidate = {}) {
   return kept.join('\n').trim();
 }
 
-export async function getMeloBotLyrics(client, candidate) {
-  const menuMessages = await openTrackMenu(client, candidate);
-  const lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
-  if (!lyricsButton) return { available: false, text: '' };
+export async function getMeloBotLyrics(
+  client,
+  candidate,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
+  const remaining = sourceBudget(timeoutMs);
+  const openedMenu = await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs: remaining() }
+  );
+  const menuMessages = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
+
+  let lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
+  if (!lyricsButton) {
+    const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
+    if (moreButton) {
+      if (remaining.expired()) {
+        throw new Error('MeloBot lyrics submenu budget exhausted.');
+      }
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+      });
+      if (!more.messages?.length) {
+        throw new Error('MeloBot lyrics submenu returned no response.');
+      }
+      lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
+    }
+  }
+
+  if (!lyricsButton) {
+    return { available: false, text: '', checked: true, candidate: liveCandidate };
+  }
 
   const result = await sendAndCollect(client, lyricsButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
   });
 
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
-  if (!raw) return { available: false, text: '' };
+  if (!raw) {
+    throw new Error('MeloBot lyrics response was empty.');
+  }
 
-  const text = sanitizeMeloBotLyricsText(raw, candidate);
-  return { available: Boolean(text), text, rawText: raw };
+  const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
+    .test(raw);
+  if (unavailable) {
+    return {
+      available: false,
+      text: '',
+      rawText: raw,
+      checked: true,
+      candidate: liveCandidate,
+    };
+  }
+
+  const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
+  if (!text) {
+    throw new Error('MeloBot lyrics response contained no usable lyrics.');
+  }
+  return {
+    available: true,
+    text,
+    rawText: raw,
+    checked: true,
+    candidate: liveCandidate,
+  };
 }
 
 function parsePopularityValue(text = '') {
@@ -1125,44 +1325,128 @@ function parseReleaseDate(text = '') {
   return {};
 }
 
-export async function getMeloBotTrackMetadata(client, candidate) {
-  const moreMessages = await openMoreMenu(client, candidate);
-  const detailsButton = findButton(moreMessages, text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text)));
-  if (!detailsButton) return { raw: '', ...parsePopularityValue(candidate.rawText || '') };
+export async function getMeloBotTrackMetadata(
+  client,
+  candidate,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
+  const remaining = sourceBudget(timeoutMs);
+  const openedMenu = await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs: remaining() }
+  );
+  const trackMenu = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
+
+  let detailsButton = findButton(
+    trackMenu,
+    text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+  );
+  let surface = trackMenu;
+
+  if (!detailsButton) {
+    const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
+    if (moreButton) {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+      });
+      surface = more.messages;
+      detailsButton = findButton(
+        surface,
+        text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+      );
+    }
+  }
+
+  if (!detailsButton) {
+    const surfaceRaw = trackMenu.map(messageText).filter(Boolean).join('\n\n').trim();
+    return {
+      raw: surfaceRaw,
+      ...parseReleaseDate(surfaceRaw),
+      ...parsePopularityValue(surfaceRaw || liveCandidate.rawText || candidate.rawText || ''),
+      candidate: liveCandidate,
+    };
+  }
 
   const result = await sendAndCollect(client, detailsButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
   });
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
   return {
     raw,
     ...parseReleaseDate(raw),
-    ...parsePopularityValue(raw || candidate.rawText || ''),
+    ...parsePopularityValue(raw || liveCandidate.rawText || candidate.rawText || ''),
+    candidate: liveCandidate,
   };
 }
 
-export async function getMeloBotCover(client, candidate) {
-  const moreMessages = await openMoreMenu(client, candidate);
-  const coverButton = findButton(moreMessages, text => /کاور/u.test(clean(text)));
+export async function getMeloBotCover(
+  client,
+  candidate,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
+  const remaining = sourceBudget(timeoutMs);
+  const openedMenu = await openTrackMenuWithCandidate(
+    client,
+    candidate,
+    { timeoutMs: remaining() }
+  );
+  const trackMenu = openedMenu.messages;
+  const liveCandidate = openedMenu.candidate || candidate;
+
+  let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
+
+  if (!coverButton) {
+    const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
+    if (moreButton) {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+      });
+      coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
+    }
+  }
+
   if (!coverButton) return null;
 
   const result = await sendAndCollect(client, coverButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
     stopWhen: photoMessage,
   });
 
   const photo = result.messages.find(photoMessage);
-  return photo ? { source: 'melobot', photoMessage: photo } : null;
+  return photo
+    ? { source: 'melobot', photoMessage: photo, candidate: liveCandidate }
+    : null;
 }
 
-export async function enrichMeloBotTrack(client, candidate) {
-  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
-  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+export async function enrichMeloBotTrack(
+  client,
+  candidate,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const liveCandidate = await resolveMeloBotTrackCandidate(
+    client,
+    candidate,
+    {
+      timeoutMs: remaining(),
+      forceIdentity: Boolean(candidate?.artistInferred),
+    }
+  );
+  if (!liveCandidate?.rawText) {
+    throw new Error('MeloBot live track button was not found.');
+  }
+  if (liveCandidate.artistInferred) {
+    throw new Error('MeloBot primary artist identity is still inferred.');
+  }
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 550,
     stopWhen: message => replyButtons(message).some(text =>
       text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
@@ -1177,7 +1461,7 @@ export async function enrichMeloBotTrack(client, candidate) {
       raw: '',
       ...parsePopularityValue(liveCandidate.rawText || candidate?.rawText || ''),
     },
-    lyrics: { available: false, text: '' },
+    lyrics: { available: false, text: '', checked: false },
     cover: null,
     capabilities: {
       hasHq: menuButtons.some(text =>
@@ -1187,8 +1471,8 @@ export async function enrichMeloBotTrack(client, candidate) {
         clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
       ),
       hasLyrics: menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text))),
-      hasCover: false,
-      hasMetadata: false,
+      hasCover: menuButtons.some(text => /کاور/u.test(clean(text))),
+      hasMetadata: menuButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))),
       hasArtistPage: menuButtons.some(text =>
         /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
       ),
@@ -1196,81 +1480,130 @@ export async function enrichMeloBotTrack(client, candidate) {
     errors: [],
   };
 
-  const lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
-  if (lyricsButton) {
+  let lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+  let extraMessages = menuMessages;
+  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
+  let secondaryMenuConfirmed = !moreButton;
+
+  if (moreButton && !remaining.expired()) {
+    try {
+      const more = await sendAndCollect(client, moreButton, {
+        timeoutMs: remaining(),
+        quietMs: 550,
+      });
+      if (!more.messages?.length) {
+        result.errors.push('more: empty response');
+      } else {
+        secondaryMenuConfirmed = true;
+        extraMessages = more.messages;
+        const moreButtons = buttonsFromMessages(more.messages);
+        result.capabilities.hasCover ||= moreButtons.some(text => /کاور/u.test(clean(text)));
+        result.capabilities.hasMetadata ||= moreButtons.some(text =>
+          /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
+        );
+        result.capabilities.hasLyrics ||= moreButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
+        lyricsButton ||= moreButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
+      }
+    } catch (err) {
+      result.errors.push(`more: ${err.message}`);
+    }
+  } else if (moreButton && remaining.expired()) {
+    result.errors.push('more: enrichment budget exhausted');
+  }
+
+  if (!lyricsButton) {
+    // Absence is durable only when every menu that could contain Lyrics was
+    // actually observed. A failed/empty More request remains "unknown".
+    result.lyrics.checked = secondaryMenuConfirmed;
+  } else if (!remaining.expired()) {
     try {
       const lyricsResult = await sendAndCollect(client, lyricsButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 650,
       });
       const raw = lyricsResult.messages.map(messageText).filter(Boolean).join('\n\n').trim();
-      const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
+      const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
+        .test(raw);
+      const text = unavailable ? '' : sanitizeMeloBotLyricsText(raw, liveCandidate);
       result.lyrics = {
         available: Boolean(text),
         text,
         rawText: raw,
+        checked: Boolean(raw && (text || unavailable)),
       };
+      if (!raw) {
+        result.errors.push('lyrics: empty response');
+      }
     } catch (err) {
       result.errors.push(`lyrics: ${err.message}`);
     }
   }
 
-  const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
-  if (moreButton) {
+  const extraButtons = buttonsFromMessages(extraMessages);
+  const detailsButton = [
+    ...menuButtons,
+    ...extraButtons,
+  ].find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
+
+  if (detailsButton && !remaining.expired()) {
     try {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: config.searchTimeoutMs,
-        quietMs: 550,
+      const details = await sendAndCollect(client, detailsButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
       });
-      const moreButtons = buttonsFromMessages(more.messages);
-      result.capabilities.hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
-      result.capabilities.hasMetadata = moreButtons.some(text =>
-        /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
-      );
-
-      const detailsButton = moreButtons.find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
-      if (detailsButton) {
-        try {
-          const details = await sendAndCollect(client, detailsButton, {
-            timeoutMs: config.searchTimeoutMs,
-            quietMs: 600,
-          });
-          const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
-          result.metadata = {
-            raw,
-            ...parseReleaseDate(raw),
-            ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
-          };
-        } catch (err) {
-          result.errors.push(`metadata: ${err.message}`);
-        }
-      }
-
-      const coverButton = moreButtons.find(text => /کاور/u.test(clean(text))) || null;
-      if (coverButton) {
-        try {
-          const coverResult = await sendAndCollect(client, coverButton, {
-            timeoutMs: config.searchTimeoutMs,
-            quietMs: 600,
-            stopWhen: photoMessage,
-          });
-          const photo = coverResult.messages.find(photoMessage);
-          if (photo) result.cover = { source: 'melobot', photoMessage: photo };
-        } catch (err) {
-          result.errors.push(`cover: ${err.message}`);
-        }
+      const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+      result.metadata = {
+        raw,
+        ...parseReleaseDate(raw),
+        ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
+      };
+      if (!raw) {
+        result.errors.push('metadata: empty response');
       }
     } catch (err) {
-      result.errors.push(`more: ${err.message}`);
+      result.errors.push(`metadata: ${err.message}`);
     }
   }
 
+  const coverButton = [
+    ...menuButtons,
+    ...extraButtons,
+  ].find(text => /کاور/u.test(clean(text))) || null;
+
+  if (coverButton && !remaining.expired()) {
+    try {
+      const coverResult = await sendAndCollect(client, coverButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+        stopWhen: photoMessage,
+      });
+      const photo = coverResult.messages.find(photoMessage);
+      if (photo) {
+        result.cover = { source: 'melobot', photoMessage: photo };
+      } else {
+        result.errors.push('cover: photo not delivered');
+      }
+    } catch (err) {
+      result.errors.push(`cover: ${err.message}`);
+    }
+  }
+
+  if (remaining.expired()) {
+    result.errors.push('enrichment budget exhausted');
+  }
   return result;
 }
 
-export async function discoverMeloBotFeed(client, command, { contentOrigin = 'unknown' } = {}) {
+export async function discoverMeloBotFeed(
+  client,
+  command,
+  {
+    contentOrigin = 'unknown',
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
+) {
   const result = await sendAndCollect(client, command, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 650,
     stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
   });
@@ -1327,11 +1660,16 @@ export async function inspectMeloBotTrack(client, candidate) {
   };
 }
 
-async function openMeloBotArtistBase(client, seedTrack) {
+async function openMeloBotArtistBase(
+  client,
+  seedTrack,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
   let openedMenu = await openTrackMenuWithCandidate(
     client,
     seedTrack,
-    { timeoutMs: ARTIST_NAV_TIMEOUT_MS }
+    { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
   );
   let menuMessages = openedMenu.messages;
   let effectiveSeed = openedMenu.candidate || seedTrack;
@@ -1355,7 +1693,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
       openedMenu = await openTrackMenuWithCandidate(
         client,
         recoverySeed,
-        { timeoutMs: ARTIST_NAV_TIMEOUT_MS }
+        { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
       );
       menuMessages = openedMenu.messages;
       effectiveSeed = openedMenu.candidate || recoverySeed;
@@ -1386,8 +1724,9 @@ async function openMeloBotArtistBase(client, seedTrack) {
     );
     throw new Error('MeloBot artist button not found.');
   }
+  if (remaining.expired()) throw new Error('MeloBot artist navigation budget exhausted.');
   let artistPage = await sendAndCollect(client, artistButton, {
-    timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+    timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
     quietMs: 650,
   });
 
@@ -1414,8 +1753,9 @@ async function openMeloBotArtistBase(client, seedTrack) {
 
     selectedArtist = chosen.name;
 
+    if (remaining.expired()) throw new Error('MeloBot artist picker budget exhausted.');
     artistPage = await sendAndCollect(client, chosen.rawText, {
-      timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+      timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       quietMs: 750,
     });
   }
@@ -1461,8 +1801,107 @@ async function openMeloBotArtistBase(client, seedTrack) {
   };
 }
 
-export async function openMeloBotArtist(client, seedTrack) {
-  const base = await openMeloBotArtistBase(client, seedTrack);
+export async function openMeloBotArtistFast(
+  client,
+  seedTrack,
+  { timeoutMs = 8000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 8000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
+
+  let tracks = (base.recentTracks || []).slice(0, 10);
+  let route = tracks.length ? 'artist_base' : 'artist_search_recovery';
+  let liveStateValid = true;
+
+  if (!tracks.length && !remaining.expired()) {
+    try {
+      const searched = await searchMeloBot(client, base.artist, {
+        maxRefinements: 2,
+        timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+      });
+      const target = normalize(base.artist);
+      const exact = searched
+        .filter(track => normalize(track.artist) === target)
+        .slice(0, 10);
+      if (exact.length >= 2) {
+        tracks = exact;
+        liveStateValid = false;
+      }
+    } catch (err) {
+      console.warn('[melobot fast artist recovery]', base.artist, err.message);
+    }
+  }
+
+  if (!tracks.length) {
+    throw new Error(`MeloBot artist page returned no usable tracks for: ${base.artist}`);
+  }
+
+  return {
+    ...base,
+    tracks,
+    topTracks: [],
+    recentTracks: (base.recentTracks || []).slice(0, 10),
+    bulkHighButton: null,
+    bulkNormalButton: null,
+    liveAlbumButton: liveStateValid ? (base.albumButton || null) : null,
+    liveAlbumList: liveStateValid ? (base.albumList || []) : [],
+    liveAlbumListingConfirmed: liveStateValid
+      ? Boolean(base.albumListingConfirmed)
+      : false,
+    liveAlbumListingConfirmedEmpty: liveStateValid
+      ? Boolean(base.albumListingConfirmedEmpty)
+      : false,
+    liveAlbumDeclaredCount: liveStateValid
+      ? (base.albumDeclaredCount ?? null)
+      : null,
+    liveAlbumNextButton: liveStateValid
+      ? (base.albumNextButton || null)
+      : null,
+    liveAlbumSourceStateVersion: liveStateValid
+      ? base.sourceStateVersion
+      : null,
+    fastArtistRoute: route,
+  };
+}
+
+export async function openMeloBotArtistFastFresh(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 8000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 8000);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  if (remaining.expired()) {
+    throw new Error(`MeloBot fast Artist open timed out for: ${artist}`);
+  }
+  return openMeloBotArtistFast(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
+}
+
+export async function openMeloBotArtist(
+  client,
+  seedTrack,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
   let topTracks = [];
   let bulkHighButton = null;
   let bulkNormalButton = null;
@@ -1491,7 +1930,7 @@ export async function openMeloBotArtist(client, seedTrack) {
 
     try {
       let ordered = await sendAndCollect(client, base.orderButton, {
-        timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+        timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
         quietMs: 650,
         stopWhen: message => {
           const buttons = replyButtons(message);
@@ -1507,9 +1946,9 @@ export async function openMeloBotArtist(client, seedTrack) {
         const popularityButton = findButton(ordered.messages, text =>
           /بازدید|محبوب|برتر|پر.?دانلود/u.test(clean(text))
         );
-        if (popularityButton) {
+        if (popularityButton && !remaining.expired()) {
           ordered = await sendAndCollect(client, popularityButton, {
-            timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+            timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
             quietMs: 650,
             stopWhen: message => replyButtons(message)
               .some(text => parseTrackButton(text, base.artist)),
@@ -1540,11 +1979,11 @@ export async function openMeloBotArtist(client, seedTrack) {
     }
   }
 
-  if (!topTracks.length && !base.recentTracks.length) {
+  if (!topTracks.length && !base.recentTracks.length && !remaining.expired()) {
     try {
       const fallback = await searchMeloBot(client, base.artist, {
         maxRefinements: 2,
-        timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+        timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       });
       const target = normalize(base.artist);
       const exactArtistTracks = fallback.filter(track =>
@@ -1601,25 +2040,39 @@ export async function resolveMeloBotArtistTrackList(
   client,
   artist,
   mode = 'top',
-  preferredSeed = null
+  preferredSeed = null,
+  { timeoutMs = 8000 } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, 8000);
   const wantedMode = mode === 'recent' ? 'recent' : 'top';
-  const seed = await findArtistSeed(client, artist, preferredSeed);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
 
   if (wantedMode === 'top') {
-    const context = await openMeloBotArtist(client, seed);
+    const context = await openMeloBotArtist(
+      client,
+      seed,
+      { timeoutMs: remaining() }
+    );
     let tracks = (context.topTracks || []).slice(0, 10);
     let route = 'artist_top';
 
-    if (!tracks.length) {
+    if (!tracks.length && !remaining.expired()) {
       try {
         const searched = await searchMeloBot(client, context.artist || artist, {
           maxRefinements: 2,
-          timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+          timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
         });
         const target = normalize(context.artist || artist);
         tracks = searched
-          .filter(track => normalize(track.artist) === target)
+          .filter(track =>
+            normalize(track.artist) === target
+            && Number.isFinite(track.sourcePopularityCount)
+          )
           .sort((a, b) =>
             Number(b.sourcePopularityCount || 0) - Number(a.sourcePopularityCount || 0)
           )
@@ -1647,16 +2100,20 @@ export async function resolveMeloBotArtistTrackList(
     };
   }
 
-  const base = await openMeloBotArtistBase(client, seed);
+  const base = await openMeloBotArtistBase(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
   let tracks = (base.recentTracks || []).slice(0, 10);
   let recentBulkHighButton = base.recentBulkHighButton || null;
   let recentBulkNormalButton = base.recentBulkNormalButton || null;
   let route = tracks.length ? 'artist_base_recent' : 'artist_sort_recent';
 
-  if (!tracks.length && base.orderButton) {
+  if (!tracks.length && base.orderButton && !remaining.expired()) {
     try {
       const sorted = await sendAndCollect(client, base.orderButton, {
-        timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+        timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
         quietMs: 650,
       });
       const directTracks = parseTracksFromMessages(sorted.messages, base.artist);
@@ -1680,9 +2137,9 @@ export async function resolveMeloBotArtistTrackList(
           return /جدید|تازه|تاریخ|انتشار|new|recent/iu.test(value);
         });
 
-        if (recentButton) {
+        if (recentButton && !remaining.expired()) {
           const recentPage = await sendAndCollect(client, recentButton, {
-            timeoutMs: ARTIST_SORT_TIMEOUT_MS,
+            timeoutMs: Math.min(ARTIST_SORT_TIMEOUT_MS, remaining()),
             quietMs: 650,
             stopWhen: message => replyButtons(message)
               .some(text => Boolean(parseTrackButton(text, base.artist))),
@@ -1721,27 +2178,62 @@ export async function resolveMeloBotArtistTrackList(
   };
 }
 
-export async function prepareMeloBotBulkTopTracks(client, artist, preferredSeed = null) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  const context = await openMeloBotArtist(client, seed);
+export async function prepareMeloBotBulkTopTracks(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 7000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 7000);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  const context = await openMeloBotArtist(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
   if (!context.bulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the sorted artist page.');
   }
   return context;
 }
 
-export async function prepareMeloBotBulkRecentTracks(client, artist, preferredSeed = null) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  const context = await openMeloBotArtistBase(client, seed);
+export async function prepareMeloBotBulkRecentTracks(
+  client,
+  artist,
+  preferredSeed = null,
+  { timeoutMs = 6500 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 6500);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  const context = await openMeloBotArtistBase(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
   if (!context.recentBulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the newest artist page.');
   }
   return context;
 }
 
-export async function openMeloBotAlbumContext(client, artist, album) {
+export async function openMeloBotAlbumContext(
+  client,
+  artist,
+  album,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
   const page = await sendAndCollect(client, album.rawText, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 650,
     stopWhen: message => {
       const buttons = replyButtons(message);
@@ -1784,11 +2276,14 @@ export async function openMeloBotAlbumContext(client, artist, album) {
 }
 
 export async function prepareMeloBotBulkAlbum(client, artist, albumTitle, preferredSeed = null) {
-  const context = await openMeloBotAlbumByTitle(
+  const context = await openMeloBotAlbumRobustByTitle(
     client,
     artist,
     albumTitle,
-    preferredSeed
+    {
+      timeoutMs: 4500,
+      maxPages: 8,
+    }
   );
   if (!context.bulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the album page.');
@@ -1962,11 +2457,12 @@ function chooseArtistPicker(items = [], requested = '') {
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
-  timeoutMs = config.searchTimeoutMs,
+  timeoutMs = Math.min(config.searchTimeoutMs, 6000),
   allowSeedFallback = true,
 } = {}) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const first = await sendAndCollect(client, artistQuery, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 750,
   });
 
@@ -1979,7 +2475,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
     if (picker) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       messages = selected.messages;
@@ -1991,7 +2487,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
     const navButton = albumNavigationButton(messages);
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
-        timeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       messages = page.messages;
@@ -2020,7 +2516,9 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
   // Search-only layouts may require one or more suggestion selections before
   // a real track exists. Use that live track to enter the artist page, while
   // preserving the album-page state returned by getInitialMeloBotAlbumListing.
-  const seeds = await searchMeloBot(client, artistQuery, { maxRefinements: 3 });
+  if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
+
+  const seeds = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs: remaining() });
   const target = normalize(artistQuery);
   const seed = seeds.find(track => normalize(track.artist) === target)
     || seeds.find(track =>
@@ -2036,8 +2534,9 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
     );
   }
 
-  const artistContext = await openMeloBotArtistBase(client, seed);
-  const initial = await getInitialMeloBotAlbumListing(client, artistContext);
+  if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
+  const artistContext = await openMeloBotArtistBase(client, seed, { timeoutMs: remaining() });
+  const initial = await getInitialMeloBotAlbumListing(client, artistContext, { timeoutMs: remaining() });
   return {
     artist: artistContext.artist,
     listing: initial.listing,
@@ -2050,12 +2549,14 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
 
 export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   maxAlbums = 12,
+  timeoutMs = Math.min(config.searchTimeoutMs, 6000),
 } = {}) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const artistQuery = stripAlbumIntent(query);
   if (!artistQuery) return { artist: '', albums: [] };
 
   const first = await sendAndCollect(client, artistQuery, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 750,
   });
 
@@ -2068,7 +2569,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     if (picker) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       contextMessages = selected.messages;
@@ -2079,7 +2580,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   if (listing.confirmed) {
     const resolved = listing.complete || !listing.nextButton
       ? listing
-      : await collectMeloBotAlbumPages(client, listing, { maxAlbums });
+      : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs: remaining() });
     return {
       artist,
       albums: resolved.albums,
@@ -2093,14 +2594,14 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   const navButton = albumNavigationButton(contextMessages);
   if (navButton) {
     const page = await sendAndCollect(client, navButton, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     listing = inspectMeloBotAlbumListing(page.messages);
     if (listing.confirmed) {
       const resolved = listing.complete || !listing.nextButton
         ? listing
-        : await collectMeloBotAlbumPages(client, listing, { maxAlbums });
+        : await collectMeloBotAlbumPages(client, listing, { maxAlbums, timeoutMs: remaining() });
       return {
         artist,
         albums: resolved.albums,
@@ -2118,7 +2619,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   let seedTracks = parseTracksFromMessages(first.messages);
   if (!seedTracks.length) {
     try {
-      seedTracks = await searchMeloBot(client, artistQuery, { maxRefinements: 3 });
+      seedTracks = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs: remaining() });
     } catch (err) {
       console.warn(
         '[melobot album seed search]',
@@ -2138,11 +2639,11 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     || null;
 
   if (seed) {
-    const artistContext = await openMeloBotArtistBase(client, seed);
+    const artistContext = await openMeloBotArtistBase(client, seed, { timeoutMs: remaining() });
     const resolved = await resolveMeloBotAlbums(
       client,
       artistContext,
-      { allowEmpty: true, maxAlbums }
+      { allowEmpty: true, maxAlbums, timeoutMs: remaining() }
     );
     return {
       artist: artistContext.artist,
@@ -2239,7 +2740,12 @@ function embeddedMeloBotAlbumListing(artistContext) {
   };
 }
 
-async function getInitialMeloBotAlbumListing(client, artistContext) {
+async function getInitialMeloBotAlbumListing(
+  client,
+  artistContext,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 6000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const embedded = embeddedMeloBotAlbumListing(artistContext);
   if (embedded) {
     return { listing: embedded, route: 'embedded' };
@@ -2248,7 +2754,7 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
   const albumControl = clean(artistContext?.albumButton || '');
   if (albumControl) {
     const page = await sendAndCollect(client, albumControl, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     const listing = inspectMeloBotAlbumListing(page.messages);
@@ -2262,7 +2768,7 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
     );
   }
 
-  const probed = await probeMeloBotAlbumSurface(client, artistContext);
+  const probed = await probeMeloBotAlbumSurface(client, artistContext, { timeoutMs: remaining() });
   if (probed.listing?.confirmed) {
     return { listing: probed.listing, route: probed.route };
   }
@@ -2272,7 +2778,12 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
   );
 }
 
-async function probeMeloBotAlbumSurface(client, artistContext) {
+async function probeMeloBotAlbumSurface(
+  client,
+  artistContext,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 6000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const artist = artistContext?.artist || 'unknown';
   let messages = [];
   let listing = inspectMeloBotAlbumListing(messages);
@@ -2284,7 +2795,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const late = await collectLateMeloBotMessages(
       client,
       Number(artistContext.sourceAfterId),
-      { timeoutMs: 3600, quietMs: 500 }
+      { timeoutMs: Math.min(3600, remaining()), quietMs: 500 }
     );
     messages = mergeMessageSets(messages, late);
     listing = inspectMeloBotAlbumListing(messages);
@@ -2294,7 +2805,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const lateNav = albumNavigationButton(messages);
     if (lateNav) {
       const page = await sendAndCollect(client, lateNav, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
@@ -2306,7 +2817,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
   const moreButton = clean(artistContext?.moreButton || '');
   if (moreButton) {
     const more = await sendAndCollect(client, moreButton, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     messages = mergeMessageSets(messages, more.messages);
@@ -2316,7 +2827,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const navButton = albumNavigationButton(more.messages);
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
@@ -2344,10 +2855,11 @@ export async function openMeloBotAlbumDirectByTitle(
     allowSeedFallback = false,
   } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, 6000);
   const direct = await openMeloBotAlbumListingDirect(
     client,
     artist,
-    { timeoutMs, allowSeedFallback }
+    { timeoutMs: remaining(), allowSeedFallback }
   );
 
   let state = direct.listing;
@@ -2364,7 +2876,8 @@ export async function openMeloBotAlbumDirectByTitle(
       const context = await openMeloBotAlbumContext(
         client,
         resolvedArtist,
-        target
+        target,
+        { timeoutMs: remaining() }
       );
       return {
         ...context,
@@ -2373,10 +2886,10 @@ export async function openMeloBotAlbumDirectByTitle(
       };
     }
 
-    if (!state?.nextButton) break;
+    if (!state?.nextButton || remaining.expired()) break;
 
     const page = await sendAndCollect(client, state.nextButton, {
-      timeoutMs,
+      timeoutMs: remaining(),
       quietMs: 750,
     });
     const nextState = inspectMeloBotAlbumListing(page.messages);
@@ -2399,18 +2912,27 @@ export async function openMeloBotAlbumRobustByTitle(
   {
     album = null,
     timeoutMs = 4500,
+    totalTimeoutMs = 10000,
     maxPages = 12,
   } = {}
 ) {
   const errors = [];
   const targetTitle = normalize(albumTitle);
+  const remaining = sourceBudget(totalTimeoutMs, 10000);
+  const stepTimeout = (cap = timeoutMs) =>
+    Math.min(Math.max(450, Number(cap || timeoutMs)), remaining());
 
   if (
     album?.rawText
     && Number(album?.sourceStateVersion || -1) === Number(sourceStateVersion)
   ) {
     try {
-      const context = await openMeloBotAlbumContext(client, artist, album);
+      const context = await openMeloBotAlbumContext(
+        client,
+        artist,
+        album,
+        { timeoutMs: stepTimeout() }
+      );
       return { ...context, route: 'live_album_row' };
     } catch (err) {
       errors.push(`live_row=${err.message}`);
@@ -2423,7 +2945,7 @@ export async function openMeloBotAlbumRobustByTitle(
       artist,
       albumTitle,
       {
-        timeoutMs,
+        timeoutMs: stepTimeout(),
         maxPages,
         allowSeedFallback: true,
       }
@@ -2432,19 +2954,24 @@ export async function openMeloBotAlbumRobustByTitle(
     errors.push(`direct=${err.message}`);
   }
 
+  if (remaining.expired()) {
+    throw new Error(`MeloBot robust album open timed out: ${artist} — ${albumTitle}`);
+  }
+
   const exactQueries = [
     [artist, albumTitle].filter(Boolean).join(' '),
     albumTitle,
   ].filter(Boolean);
 
   for (const query of [...new Set(exactQueries)]) {
+    if (remaining.expired()) break;
     try {
       const typed = await classifyMeloBotTypedSearchExact(
         client,
         query,
         await searchMeloBotTyped(client, query, {
           maxRefinements: 2,
-          timeoutMs,
+          timeoutMs: stepTimeout(),
         })
       );
 
@@ -2456,7 +2983,8 @@ export async function openMeloBotAlbumRobustByTitle(
         const context = await openMeloBotAlbumContext(
           client,
           resolvedArtist,
-          candidate
+          candidate,
+          { timeoutMs: stepTimeout() }
         );
         return {
           ...context,
@@ -2474,6 +3002,7 @@ export async function openMeloBotAlbumRobustByTitle(
     .filter(Boolean);
 
   for (const part of [...new Set(artistParts)]) {
+    if (remaining.expired()) break;
     if (normalize(part) === normalize(artist)) continue;
     try {
       const opened = await openMeloBotAlbumDirectByTitle(
@@ -2481,7 +3010,7 @@ export async function openMeloBotAlbumRobustByTitle(
         part,
         albumTitle,
         {
-          timeoutMs: Math.min(timeoutMs, 3500),
+          timeoutMs: stepTimeout(Math.min(timeoutMs, 3500)),
           maxPages,
           allowSeedFallback: true,
         }
@@ -2504,14 +3033,27 @@ export async function openMeloBotAlbumRobustByTitle(
 export async function resolveMeloBotAlbums(
   client,
   artistContext,
-  { allowEmpty = false, maxAlbums = 60 } = {}
+  {
+    allowEmpty = false,
+    maxAlbums = 60,
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
 ) {
-  const initial = await getInitialMeloBotAlbumListing(client, artistContext);
+  const remaining = sourceBudget(timeoutMs, 6000);
+  const initial = await getInitialMeloBotAlbumListing(
+    client,
+    artistContext,
+    { timeoutMs: remaining() }
+  );
   const listing = initial.listing;
 
   const resolved = listing.complete || !listing.nextButton
     ? listing
-    : await collectMeloBotAlbumPages(client, listing, { maxAlbums });
+    : await collectMeloBotAlbumPages(
+        client,
+        listing,
+        { maxAlbums, timeoutMs: remaining() }
+      );
 
   if (!resolved.albums.length && !allowEmpty) {
     throw new Error(
@@ -2532,7 +3074,11 @@ export async function resolveMeloBotAlbums(
 export async function resolveMeloBotAlbumsFromLiveArtistContext(
   client,
   artistContext,
-  { allowEmpty = true, maxAlbums = 60 } = {}
+  {
+    allowEmpty = true,
+    maxAlbums = 60,
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
 ) {
   if (
     Number(artistContext?.liveAlbumSourceStateVersion || -1)
@@ -2564,7 +3110,7 @@ export async function resolveMeloBotAlbumsFromLiveArtistContext(
   const resolved = await resolveMeloBotAlbums(
     client,
     liveContext,
-    { allowEmpty, maxAlbums }
+    { allowEmpty, maxAlbums, timeoutMs }
   );
 
   return {
@@ -2671,22 +3217,33 @@ export async function resolveMeloBotArtistAlbums(
     allowEmpty = true,
     maxAlbums = 60,
     skipDirectFallback = false,
+    timeoutMs = Math.min(config.searchTimeoutMs, 10000),
   } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, 10000);
   let primaryError = null;
   const circuitRemainingMs = albumPrimaryCircuitRemainingMs(artist);
 
   if (!circuitRemainingMs) {
     try {
-      const seed = await findArtistSeed(client, artist, preferredSeed);
-      const artistContext = await openMeloBotArtistBase(client, seed);
+      const seed = await findArtistSeed(
+        client,
+        artist,
+        preferredSeed,
+        { timeoutMs: remaining() }
+      );
+      const artistContext = await openMeloBotArtistBase(
+        client,
+        seed,
+        { timeoutMs: remaining() }
+      );
 
       // MeloBot uses a stateful reply keyboard. Resolve albums immediately from
       // the base artist page before sorting/top-track navigation changes that state.
       const resolved = await resolveMeloBotAlbums(
         client,
         artistContext,
-        { allowEmpty, maxAlbums }
+        { allowEmpty, maxAlbums, timeoutMs: remaining() }
       );
 
       clearAlbumPrimaryFailure(artistContext.artist || artist);
@@ -2711,10 +3268,13 @@ export async function resolveMeloBotArtistAlbums(
   }
 
   try {
+    if (remaining.expired()) {
+      throw new Error('MeloBot artist album resolution budget exhausted.');
+    }
     const direct = await discoverMeloBotAlbumsByArtistQuery(
       client,
       `album ${artist}`,
-      { maxAlbums }
+      { maxAlbums, timeoutMs: remaining() }
     );
     if (!direct.albums?.length && !direct.confirmedEmpty && !allowEmpty) {
       throw new Error('Direct album route returned no usable albums.');
@@ -2810,8 +3370,19 @@ export async function openMeloBotAlbumByTitle(
   throw new Error(`MeloBot album was not found: ${albumTitle}`);
 }
 
-export async function listMeloBotAlbums(client, artistContext, { allowEmpty = false } = {}) {
-  const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty });
+export async function listMeloBotAlbums(
+  client,
+  artistContext,
+  {
+    allowEmpty = false,
+    timeoutMs = Math.min(config.searchTimeoutMs, 6000),
+  } = {}
+) {
+  const resolved = await resolveMeloBotAlbums(
+    client,
+    artistContext,
+    { allowEmpty, timeoutMs }
+  );
   console.log(
     `[melobot] albums for ${artistContext.artist}: ${resolved.albums.length}`
     + (resolved.complete ? '' : ' (partial)')
@@ -2825,9 +3396,13 @@ export async function openMeloBotAlbum(client, artist, album) {
   return context.tracks;
 }
 
-async function openMeloBotDailyPlaylists(client) {
+async function openMeloBotDailyPlaylists(
+  client,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 9000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
   const index = await sendAndCollect(client, '/playlists', {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
   });
 
@@ -2836,14 +3411,23 @@ async function openMeloBotDailyPlaylists(client) {
   );
   if (!dailyButton) throw new Error('MeloBot daily playlists button was not found.');
 
+  if (remaining.expired()) {
+    throw new Error('MeloBot playlist-index budget exhausted.');
+  }
   return sendAndCollect(client, dailyButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 700,
   });
 }
 
-export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } = {}) {
-  const page = await openMeloBotDailyPlaylists(client);
+export async function listCuratedMeloBotPlaylists(
+  client,
+  {
+    maxPlaylists = 5,
+    timeoutMs = Math.min(config.searchTimeoutMs, 9000),
+  } = {}
+) {
+  const page = await openMeloBotDailyPlaylists(client, { timeoutMs });
   const buttons = buttonsFromMessages(page.messages);
   const out = [];
   const seen = new Set();
@@ -2867,17 +3451,28 @@ export async function listCuratedMeloBotPlaylists(client, { maxPlaylists = 5 } =
   return out;
 }
 
-export async function openMeloBotCuratedPlaylist(client, playlist) {
+export async function openMeloBotCuratedPlaylist(
+  client,
+  playlist,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 9000) } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
   if (!playlist?.key) throw new Error('Curated playlist key is missing.');
   const rule = curatedPlaylistByKey(playlist.key);
   if (!rule) throw new Error(`Unknown curated playlist: ${playlist.key}`);
 
-  const page = await openMeloBotDailyPlaylists(client);
+  const page = await openMeloBotDailyPlaylists(
+    client,
+    { timeoutMs: remaining() }
+  );
   const liveButton = buttonsFromMessages(page.messages).find(text => rule.pattern.test(clean(text)));
   if (!liveButton) throw new Error(`MeloBot playlist is not available: ${playlist.label || playlist.key}`);
 
+  if (remaining.expired()) {
+    throw new Error(`MeloBot playlist budget exhausted: ${playlist.label || playlist.key}`);
+  }
   const result = await sendAndCollect(client, liveButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 2300,
     stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
   });
@@ -2898,8 +3493,21 @@ export async function openMeloBotCuratedPlaylist(client, playlist) {
   };
 }
 
-export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}) {
-  const playlists = await listCuratedMeloBotPlaylists(client, { maxPlaylists });
+export async function discoverMeloBotPlaylists(
+  client,
+  {
+    maxPlaylists = 5,
+    timeoutMs = 12000,
+  } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 12000);
+  const playlists = await listCuratedMeloBotPlaylists(
+    client,
+    {
+      maxPlaylists,
+      timeoutMs: remaining(),
+    }
+  );
   const entries = [];
   const tracks = [];
   const artists = [];
@@ -2907,8 +3515,13 @@ export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}
   const seenArtists = new Set();
 
   for (const playlist of playlists) {
+    if (remaining.expired()) break;
     try {
-      const opened = await openMeloBotCuratedPlaylist(client, playlist);
+      const opened = await openMeloBotCuratedPlaylist(
+        client,
+        playlist,
+        { timeoutMs: remaining() }
+      );
       entries.push({ playlist: opened.playlist, tracks: opened.tracks });
 
       for (const track of opened.tracks) {
@@ -2937,20 +3550,33 @@ export async function discoverMeloBotPlaylists(client, { maxPlaylists = 5 } = {}
   };
 }
 
-export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
-  // Bootstrap only through buttons that actually exist on MeloBot's live keyboard.
-  // Never invent a button label such as "💿".
+export async function discoverMeloBotHome(
+  client,
+  {
+    maxSections = 3,
+    timeoutMs = 12000,
+  } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 12000);
+
+  // Bootstrap only through buttons that actually exist on MeloBot's live
+  // keyboard. One shared budget prevents an idle crawler that started just
+  // before a user returns from holding the source lane for many sections.
   const openHome = async () => {
+    if (remaining.expired()) {
+      throw new Error('MeloBot home discovery budget exhausted.');
+    }
+
     let page = await sendAndCollect(client, '/start', {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: remaining(),
       quietMs: 650,
     });
 
     const homeButton = findButton(page.messages, text => /صفحه\s*اصلی/u.test(clean(text)));
-    if (homeButton) {
+    if (homeButton && !remaining.expired()) {
       try {
         page = await sendAndCollect(client, homeButton, {
-          timeoutMs: config.searchTimeoutMs,
+          timeoutMs: remaining(),
           quietMs: 650,
         });
       } catch {}
@@ -2965,7 +3591,6 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
     const text = clean(raw);
     if (!text || isControl(text)) return false;
     if (parseTrackButton(text) || parseAlbumButton(text)) return false;
-    // Buttons shown on MeloBot home commonly represent playlists/categories.
     return true;
   }).slice(0, Math.max(0, maxSections));
 
@@ -3000,20 +3625,23 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
 
   absorb(home.messages);
 
+  const openedSections = [];
   for (const sectionButton of sectionButtons) {
+    if (remaining.expired()) break;
     try {
-      // Reset to a known keyboard state before every click.
       await openHome();
+      if (remaining.expired()) break;
       const section = await sendAndCollect(client, sectionButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 650,
         stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
       });
+      openedSections.push(sectionButton);
       absorb(section.messages);
     } catch (err) {
       console.warn('[melobot bootstrap section]', sectionButton, err.message);
     }
   }
 
-  return { tracks, artists, sections: sectionButtons };
+  return { tracks, artists, sections: openedSections };
 }

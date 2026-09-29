@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.7 — Artist Lists & Album Recovery
+# Navazon Cloud v1.5.8 — Instant Track Pages & Catalog Repair
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -221,3 +221,20 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Collaborative album rows such as `Bahram & Ali Sorena — Khoone Khorshid` no longer depend only on the combined artist key.
 - Transient Telegram Bot API network/5xx failures are retried before surfacing an update error.
 - Includes the cleaner user-facing labels and bulk fallback copy from v1.5.6.
+
+
+## Instant Track Pages & Catalog Repair v1.5.8
+
+- Track pages render from local state immediately; MeloBot capability discovery is lazy and no longer blocks the initial page.
+- MeloBot track pages keep HQ, normal, lyrics, cover, metadata, and Artist actions visible while unknown capabilities are resolved only when the user taps them.
+- Capability failures/timeouts are treated as unknown instead of being cached as unavailable; negative lyrics state is persisted only after a confirmed source response.
+- Explicit quality, lyrics, cover, metadata, Artist navigation, album navigation, search refinement, and album pagination all use bounded end-to-end source budgets.
+- Primary Artist identity is never made durable while it is inferred from a title-only row; later live resolution can canonicalize the performer safely.
+- Search ranking is collaboration-aware and re-ranks mixed MeloBot/Ahangify results when a complex query is only partially covered.
+- Album parsing requires stronger provenance. Bare counted rows cannot become albums unless an album declaration on the same Telegram message authorizes them.
+- Legacy/unverified album lists, album-track relations, and Artist-list semantics are versioned out and rebuilt from trusted source observations.
+- Top and recent Artist lists have independent provenance and are derived from popularity/release-date evidence when a trusted live list is unavailable.
+- Artist-page album opens use the robust bounded opener, and collaborative album fallbacks share one total budget rather than multiplying timeouts.
+- Bulk HQ fallback is cooperative and time-budgeted so foreground searches/navigation regain the stateful source lane quickly.
+- Background crawler work yields before starting when a foreground request arrives, reducing queue contention.
+- Regression coverage includes Persian/Latin normalization, Persian/Arabic digits, collaboration syntax, inferred Artist identity, polluted album rows, cross-message keyboards, tri-state capabilities, lyrics unknown state, cache provenance migrations, and total timeout budgets.

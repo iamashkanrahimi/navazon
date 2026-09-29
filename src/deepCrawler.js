@@ -14,10 +14,13 @@ import {
   listMeloBotAlbums,
   resolveMeloBotAlbums,
   resolveMeloBotArtistAlbums,
+  resolveMeloBotArtistAlbumsDirectFirst,
+  resolveMeloBotTrackCandidate,
   matchBulkAudioToTracks,
   openMeloBotAlbum,
   openMeloBotAlbumContext,
   openMeloBotAlbumByTitle,
+  openMeloBotAlbumRobustByTitle,
   openMeloBotArtistFresh,
   prepareMeloBotBulkAlbum,
   prepareMeloBotBulkRecentTracks,
@@ -32,7 +35,7 @@ function clean(value = '') {
 
 async function captureForwardedMedia(message) {
   if (!message?.id) throw new Error('Source media message is missing.');
-  const wait = bridge.expectMedia(25_000);
+  const wait = bridge.expectMedia(10_000);
   await forwardHiddenToOurBot(tg, config.melobotUsername, message.id);
   return wait;
 }
@@ -41,7 +44,7 @@ async function captureForwardedMediaBatch(messages = []) {
   const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
   if (!ids.length) return { items: [], complete: true, expected: 0 };
 
-  const timeoutMs = Math.max(35_000, Math.min(120_000, 12_000 + ids.length * 4_000));
+  const timeoutMs = Math.max(12_000, Math.min(25_000, 7_000 + ids.length * 2_000));
   const wait = bridge.expectManyMedia(ids.length, timeoutMs);
   await forwardHiddenManyToOurBot(tg, config.melobotUsername, ids);
   return wait;
@@ -183,6 +186,23 @@ function pairBridgedMedia(matches, received = []) {
   return pairs;
 }
 
+async function canonicalTrackForPersistence(track, timeoutMs = 4000) {
+  if (!track?.artistInferred) return track;
+  if (track?.source !== 'melobot' || !track?.rawText) {
+    throw new Error('Primary artist identity is inferred and cannot be persisted.');
+  }
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    tg,
+    track,
+    { timeoutMs, forceIdentity: true }
+  );
+  if (!resolved?.artist || !resolved?.title || resolved.artistInferred) {
+    throw new Error('Primary artist identity is still inferred.');
+  }
+  return { ...track, ...resolved, source: 'melobot', artistInferred: false };
+}
+
 async function cacheBulkMedia(tracks, bulk, quality, label) {
   const sourceTracks = uniqueTracks(tracks);
   const matches = matchBulkAudioToTracks(sourceTracks, bulk?.audioItems || []);
@@ -202,17 +222,36 @@ async function cacheBulkMedia(tracks, bulk, quality, label) {
   for (const pair of pairs) {
     const track = { ...pair.track, source: 'melobot' };
     const media = pair.media;
+    const performer = clean(media?.performer || '');
+    const durableTrack = track.artistInferred && performer
+      ? { ...track, artist: performer, artistInferred: false }
+      : track;
+
+    if (durableTrack.artistInferred) {
+      console.warn(
+        `[${label} cache skipped]`,
+        durableTrack.title,
+        'primary artist is still inferred'
+      );
+      continue;
+    }
+
     try {
-      await deepCatalog.setMedia(track, quality, media, {
+      await deepCatalog.setMedia(durableTrack, quality, media, {
         source: 'melobot',
         satisfiedBy: label,
       });
       if (quality === 'hq') {
-        await cache.set(track, media, { sourceFetch: true });
+        await cache.set(durableTrack, media, { sourceFetch: true });
       }
       cached += 1;
     } catch (err) {
-      console.warn(`[${label} cache]`, track.artist, track.title, err.message);
+      console.warn(
+        `[${label} cache]`,
+        durableTrack.artist,
+        durableTrack.title,
+        err.message
+      );
     }
   }
 
@@ -299,7 +338,7 @@ async function runArtistBulkMedia(task) {
     button,
     label: `${artist} ${mode} ${quality}`,
     expectedCount: tracks.length,
-    timeoutMs: 75_000,
+    timeoutMs: 25_000,
   });
 
   const saved = await cacheBulkMedia(tracks, bulk, quality, `artist_bulk_${mode}_${quality}`);
@@ -350,6 +389,7 @@ async function runAlbumBulkMedia(task) {
     button,
     label: `album ${albumTitle} ${quality}`,
     expectedCount: context.tracks.length,
+    timeoutMs: 25_000,
   });
   const saved = await cacheBulkMedia(context.tracks, bulk, quality, `album_bulk_${quality}`);
   return {
@@ -365,8 +405,18 @@ async function runTrackEnrich(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Track enrichment task has no live MeloBot track reference.');
 
-  const bundle = await enrichMeloBotTrack(tg, track);
-  const liveTrack = { ...track, ...(bundle.candidate || {}), source: 'melobot' };
+  const canonicalTrack = await canonicalTrackForPersistence(track, 4000);
+  const bundle = await enrichMeloBotTrack(
+    tg,
+    canonicalTrack,
+    { timeoutMs: 8000 }
+  );
+  const liveTrack = {
+    ...canonicalTrack,
+    ...(bundle.candidate || {}),
+    source: 'melobot',
+    artistInferred: false,
+  };
   const summary = {
     track: `${liveTrack.artist} — ${liveTrack.title}`,
     metadata: false,
@@ -380,13 +430,22 @@ async function runTrackEnrich(task) {
   }
 
   if (bundle.metadata) {
-    try {
-      await deepCatalog.setMetadata(liveTrack, bundle.metadata);
-      summary.metadata = true;
-      summary.releaseDate = bundle.metadata.releaseDate || bundle.metadata.releaseDateRaw || null;
-      summary.popularity = bundle.metadata.popularityCount || bundle.metadata.popularityText || null;
-    } catch (err) {
-      summary.errors.push(`metadata-save: ${err.message}`);
+    const meaningfulMetadata = Boolean(
+      bundle.metadata.releaseDate
+      || bundle.metadata.releaseDateRaw
+      || bundle.metadata.popularityCount
+      || bundle.metadata.popularityText
+      || String(bundle.metadata.raw || '').trim()
+    );
+    if (meaningfulMetadata) {
+      try {
+        await deepCatalog.setMetadata(liveTrack, bundle.metadata);
+        summary.metadata = true;
+        summary.releaseDate = bundle.metadata.releaseDate || bundle.metadata.releaseDateRaw || null;
+        summary.popularity = bundle.metadata.popularityCount || bundle.metadata.popularityText || null;
+      } catch (err) {
+        summary.errors.push(`metadata-save: ${err.message}`);
+      }
     }
   }
 
@@ -410,11 +469,35 @@ async function runTrackEnrich(task) {
     } catch (err) {
       summary.errors.push(`lyrics-save: ${err.message}`);
     }
-  } else {
+  } else if (bundle.lyrics?.checked === true) {
     try { await deepCatalog.markNoLyrics(liveTrack, 'melobot'); } catch {}
   }
 
-  if (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length) {
+  const unresolvedPositiveCapabilities = [];
+  if (bundle.capabilities?.hasMetadata && !summary.metadata) {
+    unresolvedPositiveCapabilities.push('metadata');
+  }
+  if (bundle.capabilities?.hasCover && !summary.cover) {
+    unresolvedPositiveCapabilities.push('cover');
+  }
+  if (
+    bundle.capabilities?.hasLyrics
+    && !summary.lyrics
+    && bundle.lyrics?.checked !== true
+  ) {
+    unresolvedPositiveCapabilities.push('lyrics');
+  }
+
+  if (unresolvedPositiveCapabilities.length) {
+    summary.errors.push(
+      `unresolved capabilities: ${unresolvedPositiveCapabilities.join(', ')}`
+    );
+  }
+
+  if (
+    unresolvedPositiveCapabilities.length
+    || (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length)
+  ) {
     throw new Error(`Track enrichment failed: ${summary.errors.join(' | ')}`);
   }
   return summary;
@@ -624,21 +707,29 @@ async function runAlbumDetail(task) {
   const { artist, album, seedTrack = null } = task.payload || {};
   if (!artist || !album?.title) throw new Error('Album detail task is incomplete.');
 
-  const resolved = await resolveMeloBotArtistAlbums(
+  const resolved = await resolveMeloBotArtistAlbumsDirectFirst(
     tg,
     artist,
     seedTrack,
-    { allowEmpty: true }
+    {
+      allowEmpty: true,
+      maxAlbums: 40,
+      directTimeoutMs: 3500,
+    }
   );
   const albums = resolved.albums;
   const target = albums.find(item =>
     deepNormalize(item.title) === deepNormalize(album.title)
   ) || album;
-  const albumContext = await openMeloBotAlbumByTitle(
+  const albumContext = await openMeloBotAlbumRobustByTitle(
     tg,
     resolved.artist,
     target.title,
-    resolved.seed || seedTrack || null
+    {
+      album: target,
+      timeoutMs: 3500,
+      maxPages: 8,
+    }
   );
   const tracks = albumContext.tracks;
 
@@ -700,35 +791,52 @@ async function runTrackHq(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('HQ task has no live MeloBot track reference.');
 
-  const result = await downloadMeloBotTrackQuality(tg, track, 'hq');
+  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const result = await downloadMeloBotTrackQuality(
+    tg,
+    liveTrack,
+    'hq',
+    { timeoutMs: 12_000, menuTimeoutMs: 4000 }
+  );
   const media = await captureForwardedMedia(result.audioMessage);
-  await deepCatalog.setMedia(track, 'hq', media, { source: 'melobot' });
+  await deepCatalog.setMedia(liveTrack, 'hq', media, { source: 'melobot' });
 
   // HQ is also the default Navazon delivery cache.
-  await cache.set(track, media, { sourceFetch: true });
+  await cache.set(liveTrack, media, { sourceFetch: true });
 
-  return { track: `${track.artist} — ${track.title}`, quality: 'hq', cached: true };
+  return { track: `${liveTrack.artist} — ${liveTrack.title}`, quality: 'hq', cached: true };
 }
 
 async function runTrackNormal(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Normal-quality task has no live MeloBot track reference.');
 
-  const result = await downloadMeloBotTrackQuality(tg, track, 'normal');
+  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const result = await downloadMeloBotTrackQuality(
+    tg,
+    liveTrack,
+    'normal',
+    { timeoutMs: 12_000, menuTimeoutMs: 4000 }
+  );
   const media = await captureForwardedMedia(result.audioMessage);
-  await deepCatalog.setMedia(track, 'normal', media, { source: 'melobot' });
+  await deepCatalog.setMedia(liveTrack, 'normal', media, { source: 'melobot' });
 
-  return { track: `${track.artist} — ${track.title}`, quality: 'normal', cached: true };
+  return { track: `${liveTrack.artist} — ${liveTrack.title}`, quality: 'normal', cached: true };
 }
 
 async function runTrackMetadata(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Metadata task has no live MeloBot track reference.');
 
-  const metadata = await getMeloBotTrackMetadata(tg, track);
-  await deepCatalog.setMetadata(track, metadata);
+  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const metadata = await getMeloBotTrackMetadata(
+    tg,
+    liveTrack,
+    { timeoutMs: 7000 }
+  );
+  await deepCatalog.setMetadata(liveTrack, metadata);
   return {
-    track: `${track.artist} — ${track.title}`,
+    track: `${liveTrack.artist} — ${liveTrack.title}`,
     releaseDate: metadata.releaseDate || metadata.releaseDateRaw || null,
     popularity: metadata.popularityCount || metadata.popularityText || null,
   };
@@ -738,27 +846,47 @@ async function runTrackCover(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Cover task has no live MeloBot track reference.');
 
-  const cover = await getMeloBotCover(tg, track);
-  if (!cover?.photoMessage) return { track: `${track.artist} — ${track.title}`, cover: false };
+  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const cover = await getMeloBotCover(
+    tg,
+    liveTrack,
+    { timeoutMs: 7000 }
+  );
+  if (!cover?.photoMessage) {
+    return { track: `${liveTrack.artist} — ${liveTrack.title}`, cover: false };
+  }
 
   const media = await captureForwardedMedia(cover.photoMessage);
   if (media.kind !== 'photo') throw new Error(`Expected photo cover, received ${media.kind}.`);
-  await deepCatalog.setCover(track, media);
-  return { track: `${track.artist} — ${track.title}`, cover: true };
+  await deepCatalog.setCover(liveTrack, media);
+  return { track: `${liveTrack.artist} — ${liveTrack.title}`, cover: true };
 }
 
 async function runTrackLyrics(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Lyrics task has no live MeloBot track reference.');
 
-  const lyrics = await getMeloBotLyrics(tg, track);
+  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const lyrics = await getMeloBotLyrics(
+    tg,
+    liveTrack,
+    { timeoutMs: 7000 }
+  );
   if (lyrics.available && lyrics.text) {
-    await deepCatalog.setLyrics(track, lyrics.text, 'melobot');
-    return { track: `${track.artist} — ${track.title}`, lyrics: true, chars: lyrics.text.length };
+    await deepCatalog.setLyrics(liveTrack, lyrics.text, 'melobot');
+    return {
+      track: `${liveTrack.artist} — ${liveTrack.title}`,
+      lyrics: true,
+      chars: lyrics.text.length,
+    };
   }
 
-  await deepCatalog.markNoLyrics(track, 'melobot');
-  return { track: `${track.artist} — ${track.title}`, lyrics: false };
+  if (lyrics.checked === true) {
+    await deepCatalog.markNoLyrics(liveTrack, 'melobot');
+    return { track: `${liveTrack.artist} — ${liveTrack.title}`, lyrics: false };
+  }
+
+  throw new Error('Lyrics availability could not be confirmed.');
 }
 
 export async function executeDeepTask(task) {

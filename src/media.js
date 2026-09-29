@@ -3,7 +3,12 @@ import { bot, bridge, cache, tg } from './runtime.js';
 import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
-import { normalizeText } from './text.js';
+import {
+  normalizeText,
+  rankTracksForQuery,
+  meaningfulSearchTokens,
+  shouldUseSearchRelevanceFallback,
+} from './text.js';
 import {
   searchMeloBot,
   searchMeloBotTyped,
@@ -41,29 +46,60 @@ export async function deliverCached(chatId, track, cached) {
   else await bot.sendAudio(chatId,cached.fileId,{
     caption,
     ...(track.title ? { title: track.title } : {}),
-    ...(track.artist ? { performer: track.artist } : {}),
+    ...(track.artist && !track.artistInferred
+      ? { performer: track.artist }
+      : cached.performer
+        ? { performer: cached.performer }
+        : {}),
     ...(cached.duration ? { duration: cached.duration } : {}),
   });
-  await cache.recordServe(track,{ cacheHit: true, cacheKey: cached._cacheKey || null });
+  if (!track?.artistInferred) {
+    await cache.recordServe(track,{ cacheHit: true, cacheKey: cached._cacheKey || null });
+  }
 }
 
-export async function bridgeSourceMessage(sourceUsername, audioMessage, track) {
-  const mediaPromise = bridge.expectMedia(25_000);
+export async function bridgeSourceMessage(
+  sourceUsername,
+  audioMessage,
+  track,
+  { timeoutMs = 10_000 } = {}
+) {
+  const mediaPromise = bridge.expectMedia(
+    Math.max(3_000, Math.min(15_000, Number(timeoutMs || 10_000)))
+  );
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
-  await cache.set(track,media,{ sourceFetch: true });
+
+  const performer = String(media?.performer || '').trim();
+  const durableTrack = track?.artistInferred && performer
+    ? { ...track, artist: performer, artistInferred: false }
+    : track;
+
+  if (!durableTrack?.artistInferred) {
+    await cache.set(durableTrack,media,{ sourceFetch: true });
+  }
   return media;
 }
 
-export async function bridgeSourceAudio(sourceUsername, result, track) {
-  return bridgeSourceMessage(sourceUsername,result.audioMessage,track);
+export async function bridgeSourceAudio(
+  sourceUsername,
+  result,
+  track,
+  { timeoutMs = 10_000 } = {}
+) {
+  return bridgeSourceMessage(
+    sourceUsername,
+    result.audioMessage,
+    track,
+    { timeoutMs }
+  );
 }
 
 export async function bridgeSourceMessages(sourceUsername, messages = []) {
   const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
   if (!ids.length) return { items: [], complete: true, expected: 0 };
 
-  const timeoutMs = Math.max(35_000, Math.min(120_000, 12_000 + ids.length * 4_000));
+  const timeoutMs = Math.max(12_000, Math.min(25_000, 7_000 + ids.length * 2_000));
   const wait = bridge.expectManyMedia(ids.length, timeoutMs);
   await forwardHiddenManyToOurBot(tg, sourceUsername, ids);
   return wait;
@@ -79,15 +115,29 @@ export async function sendMedia(
   if (media.kind === 'audio') await bot.sendAudio(chatId,media.fileId,{
     caption,
     ...(track.title ? { title: track.title } : media.title ? { title: media.title } : {}),
-    ...(track.artist ? { performer: track.artist } : media.performer ? { performer: media.performer } : {}),
+    ...(track.artist && !track.artistInferred
+      ? { performer: track.artist }
+      : media.performer
+        ? { performer: media.performer }
+        : {}),
     ...(media.duration ? { duration: media.duration } : {}),
   });
   else await bot.sendDocument(chatId,media.fileId,{ caption });
-  await cache.recordServe(track,{ cacheHit, cacheKey });
+  if (!track?.artistInferred) {
+    await cache.recordServe(track,{ cacheHit, cacheKey });
+  }
 }
 
 function normalizeMatch(value = '') {
   return normalizeText(value);
+}
+
+function interactionBudget(timeoutMs = Math.min(config.searchTimeoutMs, 14000)) {
+  const total = Math.max(2500, Number(timeoutMs || 14000));
+  const deadline = Date.now() + total;
+  const remaining = () => Math.max(800, deadline - Date.now());
+  remaining.expired = () => Date.now() >= deadline;
+  return remaining;
 }
 
 function chooseAhangifyMatch(results, track) {
@@ -129,72 +179,187 @@ function chooseAhangifyMatch(results, track) {
 export async function downloadTrackWithSources(
   track,
   originalQuery,
-  { allowLegacyCache = true } = {}
+  {
+    allowLegacyCache = true,
+    totalTimeoutMs = 22000,
+  } = {}
 ) {
-  if (allowLegacyCache) {
+  const remaining = interactionBudget(totalTimeoutMs);
+
+  if (allowLegacyCache && !track?.artistInferred) {
     const cached = await cache.get(track);
     if (cached) return { cached, track };
   }
 
   if (track.source === 'ahangify' && track.cmd) {
-    const result = await downloadAhangifyResult(tg, track);
+    const result = await downloadAhangifyResult(
+      tg,
+      track,
+      { timeoutMs: Math.min(10000, remaining()) }
+    );
+    if (remaining.expired()) throw new Error('Interactive download budget exhausted.');
     return {
-      media: await bridgeSourceAudio(config.ahangifyUsername, result, track),
+      media: await bridgeSourceAudio(
+        config.ahangifyUsername,
+        result,
+        track,
+        { timeoutMs: Math.min(7000, remaining()) }
+      ),
       track,
     };
   }
 
   if (track.source === 'melobot') {
     try {
-      const result = await downloadMeloBotTrack(tg,track);
-      return { media: await bridgeSourceAudio(config.melobotUsername,result,track), track };
+      const result = await downloadMeloBotTrack(
+        tg,
+        track,
+        { timeoutMs: Math.min(10000, remaining()) }
+      );
+      if (remaining.expired()) throw new Error('Interactive download budget exhausted.');
+      return {
+        media: await bridgeSourceAudio(
+          config.melobotUsername,
+          result,
+          track,
+          { timeoutMs: Math.min(7000, remaining()) }
+        ),
+        track,
+      };
     } catch (err) {
       console.warn('[melobot download]',err.message);
     }
   }
 
-  const fallbackQuery = [track.artist,track.title].filter(Boolean).join(' ') || originalQuery;
-  const results = await searchAhangify(tg,fallbackQuery);
+  const fallbackQuery = track?.artistInferred
+    ? (track.title || originalQuery)
+    : ([track.artist,track.title].filter(Boolean).join(' ') || originalQuery);
+  if (remaining.expired()) {
+    throw new Error('Interactive fallback search budget exhausted.');
+  }
+  const results = await searchAhangify(tg, fallbackQuery, {
+    timeoutMs: Math.min(6000, remaining()),
+  });
   const matched = chooseAhangifyMatch(results, track);
   if (!matched) throw new Error('Fallback source returned no sufficiently close result.');
 
-  const result = await downloadAhangifyResult(tg,matched.candidate);
+  if (remaining.expired()) {
+    throw new Error('Interactive fallback download budget exhausted.');
+  }
+  const result = await downloadAhangifyResult(
+    tg,
+    matched.candidate,
+    { timeoutMs: Math.min(8000, remaining()) }
+  );
   const finalTrack = track.artist || track.title ? track : matched.parsed;
+  if (remaining.expired()) {
+    throw new Error('Interactive fallback bridge budget exhausted.');
+  }
   return {
-    media: await bridgeSourceAudio(config.ahangifyUsername,result,finalTrack),
+    media: await bridgeSourceAudio(
+      config.ahangifyUsername,
+      result,
+      finalTrack,
+      { timeoutMs: Math.min(6000, remaining()) }
+    ),
     track: finalTrack,
   };
 }
 
-export async function searchPrimaryTyped(query) {
+export async function searchPrimaryTyped(
+  query,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 14000) } = {}
+) {
+  const remaining = interactionBudget(timeoutMs);
   try {
     const typed = await classifyMeloBotTypedSearchExact(
       tg,
       query,
-      await searchMeloBotTyped(tg, query)
+      await searchMeloBotTyped(tg, query, {
+        timeoutMs: Math.min(7000, remaining()),
+      }),
+      {
+        probeTimeoutMs: Math.min(2500, remaining()),
+      }
     );
-    const tracks = (typed.tracks || []).slice(0, MAX_RESULTS).map(track =>
-      applyPolicyDefaults({ ...track, source: 'melobot' })
+    const rankedMelo = rankTracksForQuery(query, typed.tracks || []);
+    const meaningful = meaningfulSearchTokens(query);
+    let selectedMelo = rankedMelo;
+
+    // Complex queries such as "Shayea Ma Ft T-Dey" should not degrade into
+    // a partial artist/title match merely because two tokens happen to match.
+    // If MeloBot does not cover every meaningful query token, blend in the
+    // fallback source and re-rank the combined candidates.
+    const bestCoverage = rankedMelo[0]?.coverage || 0;
+    const needsRelevanceFallback = shouldUseSearchRelevanceFallback(
+      query,
+      bestCoverage
     );
+
+    if (needsRelevanceFallback) {
+      try {
+        if (remaining.expired()) {
+          throw new Error('Search relevance fallback budget exhausted.');
+        }
+        const fallback = await searchAhangify(tg, query, {
+          timeoutMs: remaining(),
+        });
+        const fallbackTracks = fallback.map(candidate => applyPolicyDefaults({
+          ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }),
+          source: 'ahangify',
+        }));
+        const combined = [
+          ...rankedMelo.map(item => applyPolicyDefaults({ ...item.track, source: 'melobot' })),
+          ...fallbackTracks,
+        ];
+        const seen = new Set();
+        selectedMelo = rankTracksForQuery(query, combined)
+          .filter(item => {
+            const key = `${normalizeText(item.track.artist || '')}|${normalizeText(item.track.title || '')}`;
+            if (!key || key === '|' || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+      } catch (err) {
+        console.warn('[search relevance fallback]', err.message);
+      }
+    }
+
+    const tracks = selectedMelo
+      .slice(0, MAX_RESULTS)
+      .map(item => applyPolicyDefaults({
+        ...item.track,
+        source: item.track.source || 'melobot',
+      }));
+
     const albums = (typed.albums || [])
       .filter(album => album?.artist && album?.title)
       .slice(0, MAX_RESULTS)
       .map(album => ({ ...album, source: 'melobot' }));
 
     if (tracks.length || albums.length) {
+      const trackSources = new Set(tracks.map(track => track.source).filter(Boolean));
+      const resultSource = trackSources.size > 1
+        ? 'hybrid'
+        : (trackSources.values().next().value || 'melobot');
+
       return {
         tracks,
         albums,
-        source: 'melobot',
+        source: resultSource,
         typed: true,
         exactProbe: typed.exactProbe || 'not_needed',
+        relevanceCoverage: selectedMelo[0]?.coverage || 0,
       };
     }
 
     throw new Error('MeloBot typed search returned no visible results.');
   } catch (err) {
     console.warn('[melobot search]', err.message);
-    const results = await searchAhangify(tg, query);
+    if (remaining.expired()) throw err;
+    const results = await searchAhangify(tg, query, {
+      timeoutMs: remaining(),
+    });
     return {
       tracks: results.slice(0, MAX_RESULTS).map(candidate => applyPolicyDefaults({
         ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }),

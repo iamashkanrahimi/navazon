@@ -8,7 +8,7 @@ import {
   getMeloBotCover,
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
-  inspectMeloBotTrack,
+  resolveMeloBotTrackCandidate,
   sanitizeMeloBotLyricsText,
 } from './sources/melobot.js';
 
@@ -16,23 +16,65 @@ function clean(value = '') {
   return String(value).replace(/\s+/g, ' ').trim();
 }
 
-async function captureForwardedMedia(message) {
+function hasCanonicalTrackIdentity(track = {}) {
+  return Boolean(track?.artist && track?.title && !track?.artistInferred);
+}
+
+function adoptCanonicalCandidate(track = {}, candidate = null) {
+  if (
+    !candidate?.artist
+    || !candidate?.title
+    || candidate.artistInferred
+  ) {
+    return track;
+  }
+
+  // Session track objects are mutable by design. Repair them in place so a
+  // successful quality/lyrics/cover/info action also fixes later Artist/Album
+  // navigation without another identity lookup.
+  Object.assign(track, {
+    ...candidate,
+    source: candidate.source || track.source || 'melobot',
+    artistInferred: false,
+  });
+  return track;
+}
+
+async function safeTrackDetails(track = {}) {
+  if (!hasCanonicalTrackIdentity(track)) {
+    return { media: {}, metadata: {}, albumInfo: null };
+  }
+  return await deepCatalog.getTrackDetails(track)
+    || { media: {}, metadata: {}, albumInfo: null };
+}
+
+async function captureForwardedMedia(message, timeoutMs = 10_000) {
   if (!message?.id) throw new Error('Source media message is missing.');
-  const wait = bridge.expectMedia(25_000);
+  const wait = bridge.expectMedia(
+    Math.max(3_000, Math.min(15_000, Number(timeoutMs || 10_000)))
+  );
   await forwardHiddenToOurBot(tg, config.melobotUsername, message.id);
   return wait;
 }
 
 export async function prepareTrackPage(track) {
-  await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
-  try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
+  // A title-only Artist-page row may carry a page-context artist that is not
+  // the primary artist. Do not create more durable catalog state until a
+  // source-backed action has canonicalized that identity.
+  if (!track?.artistInferred) {
+    await deepCatalog.upsertTrack(track, { discoveredFrom: 'user:track-page' });
+    try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
+  }
 
-  let details = await deepCatalog.getTrackDetails(track);
+  const details = track?.artistInferred
+    ? { media: {}, metadata: {} }
+    : await deepCatalog.getTrackDetails(track);
   const snapshot = details?.metadata?.capabilities || {};
-  const checkedAt = Date.parse(details?.metadata?.capabilitiesCheckedAt || '') || 0;
-  const snapshotFresh = checkedAt > 0 && (Date.now() - checkedAt) < 7 * 24 * 60 * 60 * 1000;
 
-  let capabilities = {
+  // Initial rendering is local-only. Source capability checks are deliberately
+  // deferred to the button click so a temporary MeloBot timeout can never
+  // make the page take 18–36 seconds or hide an action for days.
+  const capabilities = {
     hasHq: Boolean(details?.media?.hq) || Boolean(snapshot.hasHq) || track?.source === 'ahangify',
     hasNormal: Boolean(details?.media?.normal) || Boolean(snapshot.hasNormal),
     hasLyrics: Boolean(details?.lyrics_text) || Boolean(snapshot.hasLyrics),
@@ -45,25 +87,37 @@ export async function prepareTrackPage(track) {
     hasArtistPage: Boolean(track?.artist),
   };
 
-  if (!snapshotFresh && track?.source === 'melobot' && track?.rawText) {
-    try {
-      const live = await inspectMeloBotTrack(tg, track);
-      capabilities = {
-        hasHq: capabilities.hasHq || live.hasHq,
-        hasNormal: capabilities.hasNormal || live.hasNormal,
-        hasLyrics: capabilities.hasLyrics || live.hasLyrics,
-        hasCover: capabilities.hasCover || live.hasCover,
-        hasMetadata: capabilities.hasMetadata || live.hasMetadata,
-        hasArtistPage: capabilities.hasArtistPage || live.hasArtistPage,
-      };
-      try { await deepCatalog.setCapabilities(track, capabilities); } catch {}
-    } catch (err) {
-      console.warn('[track page inspect]', err.message);
-    }
+  return { details, capabilities };
+}
+
+export async function resolveTrackIdentity(track) {
+  if (
+    track?.source !== 'melobot'
+    || !track?.rawText
+    || !track?.artistInferred
+  ) {
+    return track;
   }
 
-  details = await deepCatalog.getTrackDetails(track);
-  return { details, capabilities };
+  try {
+    const resolved = await resolveMeloBotTrackCandidate(
+      tg,
+      track,
+      { timeoutMs: 5000, forceIdentity: true }
+    );
+    if (!resolved?.title || resolved.artistInferred !== false) {
+      return track;
+    }
+    return {
+      ...track,
+      ...resolved,
+      source: 'melobot',
+      artistInferred: false,
+    };
+  } catch (err) {
+    console.warn('[track identity]', err.message);
+    return track;
+  }
 }
 
 export async function renderTrackPage(sessionId, session, messageId) {
@@ -87,15 +141,25 @@ async function sendAudioMedia(chatId, track, media) {
   }
   await bot.sendAudio(chatId, media.fileId, {
     caption: minimalBrandCaption(),
-    ...(track.title ? { title: track.title } : {}),
-    ...(track.artist ? { performer: track.artist } : {}),
+    ...(track.title ? { title: track.title } : media.title ? { title: media.title } : {}),
+    ...(track.artist && !track.artistInferred
+      ? { performer: track.artist }
+      : media.performer
+        ? { performer: media.performer }
+        : {}),
     ...(media.duration ? { duration: media.duration } : {}),
   });
 }
 
-export async function sendTrackQuality(chatId, track, quality, userRegion = 'unknown') {
+export async function sendTrackQuality(
+  chatId,
+  track,
+  quality,
+  userRegion = 'unknown',
+  { sourceTimeoutMs = config.downloadTimeoutMs } = {}
+) {
   assertDeliveryAllowed(track, userRegion);
-  let details = await deepCatalog.getTrackDetails(track);
+  let details = await safeTrackDetails(track);
   let media = details?.media?.[quality] || null;
   let cacheHit = Boolean(media);
   let cacheKey = null;
@@ -105,11 +169,19 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
     // promoted to HQ. HQ/normal reuse comes only from deep_track_media where
     // the quality dimension is explicit.
     if (track?.source === 'melobot' && track?.rawText) {
-      const result = await downloadMeloBotTrackQuality(tg, track, quality);
+      const result = await downloadMeloBotTrackQuality(
+        tg,
+        track,
+        quality,
+        { timeoutMs: sourceTimeoutMs }
+      );
+      track = adoptCanonicalCandidate(track, result.candidate);
       media = await captureForwardedMedia(result.audioMessage);
-      await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
-      if (quality === 'hq') {
-        await cache.set(track, media, { sourceFetch: true });
+      if (hasCanonicalTrackIdentity(track)) {
+        await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
+        if (quality === 'hq') {
+          await cache.set(track, media, { sourceFetch: true });
+        }
       }
     } else if (quality === 'hq') {
       const { downloadTrackWithSources } = await import('./media.js');
@@ -123,7 +195,7 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
         cacheHit = true;
         cacheKey = outcome.cached._cacheKey || null;
       }
-      if (media) {
+      if (media && hasCanonicalTrackIdentity(track)) {
         await deepCatalog.setMedia(track, 'hq', media, {
           source: track.source || 'ahangify',
           bitrate: Number(track.bitrate || 0) || undefined,
@@ -135,7 +207,9 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
   }
 
   await sendAudioMedia(chatId, track, media);
-  try { await cache.recordServe(track, { cacheHit, cacheKey }); } catch {}
+  if (hasCanonicalTrackIdentity(track)) {
+    try { await cache.recordServe(track, { cacheHit, cacheKey }); } catch {}
+  }
   return media;
 }
 
@@ -155,7 +229,7 @@ function chunks(text, max = 3800) {
 }
 
 export async function sendTrackLyrics(chatId, track) {
-  let details = await deepCatalog.getTrackDetails(track);
+  let details = await safeTrackDetails(track);
   let lyrics = details?.lyrics_text || '';
 
   // Old cached rows may still contain the MeloBot footer. Clean them on read
@@ -165,18 +239,25 @@ export async function sendTrackLyrics(chatId, track) {
     if (cleaned !== lyrics) {
       lyrics = cleaned;
       if (lyrics) {
-        try { await deepCatalog.setLyrics(track, lyrics, details?.lyrics_source || 'melobot'); } catch {}
+        if (hasCanonicalTrackIdentity(track)) {
+          try { await deepCatalog.setLyrics(track, lyrics, details?.lyrics_source || 'melobot'); } catch {}
+        }
       }
     }
   }
 
   if (!lyrics && track?.source === 'melobot' && track?.rawText) {
-    const result = await getMeloBotLyrics(tg, track);
+    const result = await getMeloBotLyrics(tg, track, { timeoutMs: 6000 });
+    track = adoptCanonicalCandidate(track, result.candidate);
     if (result.available && result.text) {
       lyrics = result.text;
-      await deepCatalog.setLyrics(track, lyrics, 'melobot');
-    } else {
-      await deepCatalog.markNoLyrics(track, 'melobot');
+      if (hasCanonicalTrackIdentity(track)) {
+        await deepCatalog.setLyrics(track, lyrics, 'melobot');
+      }
+    } else if (result.checked === true) {
+      if (hasCanonicalTrackIdentity(track)) {
+        await deepCatalog.markNoLyrics(track, 'melobot');
+      }
     }
   }
 
@@ -194,7 +275,7 @@ export async function sendTrackLyrics(chatId, track) {
 }
 
 export async function sendTrackCover(chatId, track) {
-  let details = await deepCatalog.getTrackDetails(track);
+  let details = await safeTrackDetails(track);
   let media = details?.cover_file_id ? {
     kind: 'photo',
     fileId: details.cover_file_id,
@@ -202,11 +283,14 @@ export async function sendTrackCover(chatId, track) {
   } : null;
 
   if (!media && track?.source === 'melobot' && track?.rawText) {
-    const cover = await getMeloBotCover(tg, track);
+    const cover = await getMeloBotCover(tg, track, { timeoutMs: 6000 });
+    track = adoptCanonicalCandidate(track, cover?.candidate);
     if (cover?.photoMessage) {
       media = await captureForwardedMedia(cover.photoMessage);
       if (media.kind === 'photo') {
-        await deepCatalog.setCover(track, media);
+        if (hasCanonicalTrackIdentity(track)) {
+          await deepCatalog.setCover(track, media);
+        }
       }
     }
   }
@@ -221,15 +305,29 @@ export async function sendTrackCover(chatId, track) {
 }
 
 export async function getTrackInfoText(track) {
-  let details = await deepCatalog.getTrackDetails(track);
-  const needsLive = !details?.release_date && !details?.release_date_raw &&
-    !details?.popularity_count && !details?.popularity_text;
+  let details = await safeTrackDetails(track);
+  const hasReleaseDate = Boolean(details?.release_date || details?.release_date_raw);
+  const hasPopularity = Boolean(details?.popularity_count || details?.popularity_text);
+  const needsLive = !hasReleaseDate || !hasPopularity;
 
   if (needsLive && track?.source === 'melobot' && track?.rawText) {
     try {
-      const patch = await getMeloBotTrackMetadata(tg, track);
-      await deepCatalog.setMetadata(track, patch);
-      details = await deepCatalog.getTrackDetails(track);
+      const patch = await getMeloBotTrackMetadata(tg, track, { timeoutMs: 6000 });
+      track = adoptCanonicalCandidate(track, patch.candidate);
+      if (hasCanonicalTrackIdentity(track)) {
+        await deepCatalog.setMetadata(track, patch);
+        details = await safeTrackDetails(track);
+      } else {
+        details = {
+          ...details,
+          release_date: patch.releaseDate || details?.release_date || null,
+          release_date_raw: patch.releaseDateRaw || details?.release_date_raw || null,
+          popularity_count: Number.isFinite(patch.popularityCount)
+            ? patch.popularityCount
+            : details?.popularity_count,
+          popularity_text: patch.popularityText || details?.popularity_text || null,
+        };
+      }
     } catch (err) {
       console.warn('[track info]', err.message);
     }
@@ -247,7 +345,12 @@ export async function getTrackInfoText(track) {
   if (details?.popularity_text) lines.push(`📈 بازدید حدودی: ${details.popularity_text}`);
   else if (details?.popularity_count) lines.push(`📈 بازدید حدودی: ${Number(details.popularity_count).toLocaleString('en-US')}`);
 
-  const qualities = Object.keys(details?.media || {});
+  const qualitySet = new Set(Object.keys(details?.media || {}));
+  const knownCapabilities = details?.metadata?.capabilities || {};
+  if (knownCapabilities.hasHq === true) qualitySet.add('hq');
+  if (knownCapabilities.hasNormal === true) qualitySet.add('normal');
+  const qualities = [...qualitySet];
+
   if (qualities.length) {
     const labels = qualities.map(q =>
       q === 'hq'
@@ -264,6 +367,7 @@ export async function getTrackInfoText(track) {
 }
 
 export async function getTrackAlbum(track) {
+  if (!hasCanonicalTrackIdentity(track)) return null;
   const details = await deepCatalog.getTrackDetails(track);
   if (!details?.albumInfo?.album_key) return null;
   const tracks = await deepCatalog.getAlbumTracksByKey(details.albumInfo.album_key);

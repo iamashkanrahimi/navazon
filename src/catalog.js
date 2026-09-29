@@ -10,6 +10,23 @@ function normalize(value = '') {
   return normalizeText(value);
 }
 
+function markLegacyInferredArtist(track = {}) {
+  if (track.artistInferred) return track;
+  const artist = normalize(track.artist || '');
+  const title = normalize(track.title || '');
+  if (
+    artist
+    && (
+      title.includes(`feat ${artist}`)
+      || title.includes(`ft ${artist}`)
+      || title.includes(`featuring ${artist}`)
+    )
+  ) {
+    return { ...track, artistInferred: true };
+  }
+  return track;
+}
+
 function trackIdentity(track = {}) {
   return [normalize(track.artist), normalize(track.title), normalize(track.rawText || track.cmd || '')].join('|');
 }
@@ -19,6 +36,13 @@ function looksLikeAlbumRowButton(value = '') {
     .replace(/^[^\p{L}\p{N}]+/u, '')
     .trim();
   return /^.+?\s*\([۰-۹٠-٩0-9]+\)\s*$/u.test(text);
+}
+
+function trustedStoredAlbum(album = {}) {
+  return Boolean(
+    album?.verifiedAlbum === true
+    && Number(album?.albumTrustVersion || 0) >= 2
+  );
 }
 
 function freshEnough(iso, maxAgeMs) {
@@ -54,6 +78,7 @@ export class CatalogStore {
       rawText: clean(policy.rawText),
       cmd: clean(policy.cmd),
       source: policy.source || undefined,
+      artistInferred: Boolean(policy.artistInferred) || undefined,
       duration: policy.duration || undefined,
       bitrate: policy.bitrate || undefined,
       sourcePopularityText: policy.sourcePopularityText || undefined,
@@ -110,7 +135,7 @@ export class CatalogStore {
   async seedArtistsFromTracks(tracks = [], discoveredFrom = 'tracks') {
     const names = new Map();
     for (const track of tracks) {
-      if (track?.artist) {
+      if (track?.artist && !track?.artistInferred) {
         const key = normalize(track.artist);
         if (key) names.set(key, { name: track.artist, seedTracks: [track], discoveredFrom });
       }
@@ -142,8 +167,20 @@ export class CatalogStore {
   async getArtistContext(name, maxAgeMs) {
     const { node } = await this.readArtist(name);
     if (!node || !freshEnough(node.artistUpdatedAt, maxAgeMs)) return null;
-    const topTracks = Array.isArray(node.topTracks) ? node.topTracks : [];
-    const recentTracks = Array.isArray(node.recentTracks) ? node.recentTracks : [];
+
+    const topTracks = (
+      Number(node.topTracksVersion || 0) >= 1
+      && Array.isArray(node.topTracks)
+    )
+      ? node.topTracks.map(markLegacyInferredArtist)
+      : [];
+    const recentTracks = (
+      Number(node.recentTracksVersion || 0) >= 1
+      && Array.isArray(node.recentTracks)
+    )
+      ? node.recentTracks.map(markLegacyInferredArtist)
+      : [];
+
     if (!topTracks.length && !recentTracks.length) return null;
     return {
       artist: node.name || clean(name),
@@ -163,7 +200,13 @@ export class CatalogStore {
     if (!node || !Array.isArray(node.albumList)) return null;
 
     if (node.albumList.length) {
-      return freshEnough(node.albumsUpdatedAt, maxAgeMs) ? node.albumList : null;
+      if (!freshEnough(node.albumsUpdatedAt, maxAgeMs)) return null;
+      const trusted = node.albumList.filter(trustedStoredAlbum);
+      // Any row dropped by the stricter parser means this legacy list may have
+      // mixed real albums with artist/category rows. Force one live refresh so
+      // the catalog self-heals instead of presenting a partial discography.
+      if (trusted.length !== node.albumList.length) return null;
+      return trusted.length ? trusted : null;
     }
 
     // Empty album lists are trusted only when the source explicitly confirmed
@@ -199,8 +242,10 @@ export class CatalogStore {
       SELECT
         a.name AS artist,
         album->>'title' AS title,
-        NULLIF(album->>'trackCount','')::int AS track_count,
-        album->>'rawText' AS raw_text
+        album->>'trackCount' AS track_count,
+        album->>'rawText' AS raw_text,
+        album->>'verifiedAlbum' AS verified_album,
+        album->>'albumTrustVersion' AS album_trust_version
       FROM artists a
       CROSS JOIN LATERAL jsonb_array_elements(
         COALESCE(a.data->'albumList','[]'::jsonb)
@@ -211,12 +256,19 @@ export class CatalogStore {
     `, params);
 
     return result.rows
-      .filter(row => row.artist && row.title)
+      .filter(row =>
+        row.artist
+        && row.title
+        && String(row.verified_album || '').toLowerCase() === 'true'
+        && Number(row.album_trust_version || 0) >= 2
+      )
       .map(row => ({
         artist: row.artist,
         title: row.title,
-        trackCount: row.track_count || undefined,
+        trackCount: Number(row.track_count || 0) || undefined,
         rawText: row.raw_text || undefined,
+        verifiedAlbum: String(row.verified_album || '').toLowerCase() === 'true',
+        albumTrustVersion: Number(row.album_trust_version || 0) || undefined,
         source: 'catalog',
       }));
   }
@@ -224,7 +276,11 @@ export class CatalogStore {
   async getAlbumTracks(name, albumTitle, maxAgeMs) {
     const { node } = await this.readArtist(name);
     const album = node?.albums?.[normalize(albumTitle)];
-    if (!album || !freshEnough(album.updatedAt, maxAgeMs)) return null;
+    if (
+      !album
+      || Number(album.trackListVersion || 0) < 1
+      || !freshEnough(album.updatedAt, maxAgeMs)
+    ) return null;
     return Array.isArray(album.tracks) && album.tracks.length ? album.tracks : null;
   }
 
@@ -260,6 +316,9 @@ export class CatalogStore {
     const { key, node } = await this.readArtist(name);
     if (!node) return false;
 
+    topTracks = (topTracks || []).filter(track => !track?.artistInferred);
+    recentTracks = (recentTracks || []).filter(track => !track?.artistInferred);
+
     const hasTop = Array.isArray(topTracks) && topTracks.length > 0;
     const hasRecent = Array.isArray(recentTracks) && recentTracks.length > 0;
 
@@ -268,9 +327,16 @@ export class CatalogStore {
     // erasing it when a transient artist layout returns only one mode.
     if (!hasTop && !hasRecent) return false;
 
-    if (hasTop) node.topTracks = topTracks.map(track => this.compactTrack(track));
-    if (hasRecent) node.recentTracks = recentTracks.map(track => this.compactTrack(track));
+    if (hasTop) {
+      node.topTracks = topTracks.map(track => this.compactTrack(track));
+      node.topTracksVersion = 1;
+    }
+    if (hasRecent) {
+      node.recentTracks = recentTracks.map(track => this.compactTrack(track));
+      node.recentTracksVersion = 1;
+    }
     node.albumButton = clean(albumButton || node.albumButton || '') || null;
+    node.artistListVersion = 1;
     node.artistUpdatedAt = new Date().toISOString();
 
     const observedTracks = [
@@ -287,18 +353,21 @@ export class CatalogStore {
     const { key, node } = await this.readArtist(name);
     if (!node) return;
 
+    const trustedAlbums = (albums || []).filter(trustedStoredAlbum);
     const now = new Date().toISOString();
-    node.albumList = albums.map(album => ({
+    node.albumList = trustedAlbums.map(album => ({
       title: clean(album.title),
       trackCount: album.trackCount || undefined,
       rawText: clean(album.rawText),
+      verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+      albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
     }));
     node.albumsUpdatedAt = now;
-    node.albumsEmptyConfirmedAt = !albums.length && emptyConfirmed ? now : null;
+    node.albumsEmptyConfirmedAt = !(albums || []).length && emptyConfirmed ? now : null;
     node.albumButton = null;
     node.albums ||= {};
 
-    for (const album of albums) {
+    for (const album of trustedAlbums) {
       const albumKey = normalize(album.title);
       if (!albumKey) continue;
       node.albums[albumKey] = {
@@ -306,6 +375,8 @@ export class CatalogStore {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
+        verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+        albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
         listingUpdatedAt: now,
       };
     }
@@ -326,12 +397,15 @@ export class CatalogStore {
     node.albums ||= {};
 
     for (const album of albums) {
+      if (!trustedStoredAlbum(album)) continue;
       const albumKey = normalize(album.title);
       if (!albumKey) continue;
       const compact = {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
+        verifiedAlbum: true,
+        albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
       };
       existing.set(albumKey, { ...(existing.get(albumKey) || {}), ...compact });
       node.albums[albumKey] = {
@@ -355,8 +429,9 @@ export class CatalogStore {
     node.albums ||= {};
     node.albums[albumKey] ||= { title: clean(album.title) };
     node.albums[albumKey].tracks = tracks.map(track => this.compactTrack(track));
+    node.albums[albumKey].trackListVersion = 1;
     node.albums[albumKey].updatedAt = new Date().toISOString();
-    this.addTracksToNode(node, tracks);
+    this.addTracksToNode(node, tracks.filter(track => !track?.artistInferred));
     await this.writeArtist(key, node);
     await this.seedArtistsFromTracks(tracks, `album:${clean(album.title)}`);
   }
