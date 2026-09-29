@@ -178,12 +178,12 @@ export async function searchPrimaryTyped(query) {
     let selectedMelo = rankedMelo;
 
     // Complex queries such as "Shayea Ma Ft T-Dey" should not degrade into
-    // five unrelated T-Dey rows merely because one token matched. When MeloBot
-    // has no result covering at least two meaningful tokens, blend in the
+    // a partial artist/title match merely because two tokens happen to match.
+    // If MeloBot does not cover every meaningful query token, blend in the
     // fallback source and re-rank the combined candidates.
     if (
       meaningful.length >= 3
-      && (rankedMelo[0]?.coverage || 0) < 2
+      && (rankedMelo[0]?.coverage || 0) < meaningful.length
     ) {
       try {
         const fallback = await searchAhangify(tg, query);
