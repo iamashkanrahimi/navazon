@@ -52,7 +52,7 @@ import {
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
 const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
-const SEARCH_CACHE_NAMESPACE = 'v154';
+const SEARCH_CACHE_NAMESPACE = 'v158';
 
 function userSearchCacheKey(query = '') {
   return `${SEARCH_CACHE_NAMESPACE}:${query}`;
@@ -1911,54 +1911,28 @@ export const sourceQueue = new SerialQueue(async job => {
               normalize(x.artist) === normalize(session.artistContext.artist)
             ) || null;
 
-            const directStartedAt = Date.now();
-            try {
-              openedAlbumContext = await openMeloBotAlbumDirectByTitle(
-                tg,
-                session.artistContext.artist,
-                album.title,
-                { timeoutMs: 6000, maxPages: 12 }
-              );
-              resolvedArtist = openedAlbumContext.artist;
-              liveAlbum = openedAlbumContext.album;
-              tracks = openedAlbumContext.tracks;
-              session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
-              await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
-              console.log(
-                `[fastpath] album_open=direct_title direct_ms=${Date.now() - directStartedAt}`
-              );
-            } catch (directError) {
-              const directMs = Date.now() - directStartedAt;
-              console.warn('[album direct title fastpath]', album.title, directError.message);
+            const openedStartedAt = Date.now();
+            openedAlbumContext = await openMeloBotAlbumRobustByTitle(
+              tg,
+              session.artistContext.artist,
+              album.title,
+              {
+                album,
+                timeoutMs: 4500,
+                maxPages: 12,
+              }
+            );
 
-              const fallbackStartedAt = Date.now();
+            resolvedArtist = openedAlbumContext.artist || session.artistContext.artist;
+            liveAlbum = openedAlbumContext.album;
+            tracks = openedAlbumContext.tracks;
+            session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
+            await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
 
-              // Stay on the direct-first route even for the robust fallback.
-              // This avoids the known slow Artist -> Albums primary path and,
-              // unlike resolving a whole discography first, clicks the target
-              // row while the correct source page is still live.
-              openedAlbumContext = await openMeloBotAlbumDirectByTitle(
-                tg,
-                session.artistContext.artist,
-                album.title,
-                {
-                  timeoutMs: config.searchTimeoutMs,
-                  maxPages: 12,
-                  allowSeedFallback: true,
-                }
-              );
-
-              resolvedArtist = openedAlbumContext.artist;
-              liveAlbum = openedAlbumContext.album;
-              tracks = openedAlbumContext.tracks;
-              session.artistSeed = openedAlbumContext.seed || session.artistSeed || seed || null;
-              await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
-
-              console.log(
-                `[perf.album_open] direct_ms=${directMs} `
-                + `robust_direct_ms=${Date.now() - fallbackStartedAt}`
-              );
-            }
+            console.log(
+              `[perf.album_open] route=${openedAlbumContext.route || 'robust'} `
+              + `open_ms=${Date.now() - openedStartedAt}`
+            );
           }
         }
 
