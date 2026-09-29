@@ -483,13 +483,11 @@ export async function searchMeloBot(client, query, {
 
   let command = requested;
   let fallbackArtist = '';
-  const visited = new Set();
+  const seenTransitions = new Set();
   const allMessages = [];
 
   for (let step = 0; step <= Math.max(0, Number(maxRefinements || 0)); step += 1) {
-    const commandKey = normalize(command);
-    if (!commandKey || visited.has(commandKey)) break;
-    visited.add(commandKey);
+    if (!normalize(command)) break;
 
     const result = await sendAndCollect(client, command, {
       timeoutMs: config.searchTimeoutMs,
@@ -499,6 +497,10 @@ export async function searchMeloBot(client, query, {
 
     const tracks = parseTracksFromMessages(result.messages, fallbackArtist);
     if (tracks.length) return tracks;
+
+    const surfaceKey = `${normalize(command)}|${describeMeloBotSurface(result.messages)}`;
+    if (seenTransitions.has(surfaceKey)) break;
+    seenTransitions.add(surfaceKey);
 
     const refinement = chooseMeloBotSearchRefinement(result.messages, requested);
     if (!refinement) break;
