@@ -112,11 +112,14 @@ export class DeepCatalog {
     }));
 
     await Promise.all(rows.filter(Boolean).map(row => db.query(`
-      INSERT INTO deep_artist_tracks (artist_key, artist_name, list_type, track_key, rank, observed_at)
-      VALUES ($1,$2,$3,$4,$5,NOW())
+      INSERT INTO deep_artist_tracks (
+        artist_key, artist_name, list_type, track_key, rank, observed_at, list_version
+      )
+      VALUES ($1,$2,$3,$4,$5,NOW(),1)
       ON CONFLICT (artist_key, list_type, track_key) DO UPDATE SET
         rank = EXCLUDED.rank,
-        observed_at = NOW()
+        observed_at = NOW(),
+        list_version = 1
     `, [artistKey, clean(artist), listType, row.trackKey, row.rank])));
   }
 
@@ -138,6 +141,7 @@ export class DeepCatalog {
       safeJson({
         rawText: album.rawText || undefined,
         verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+        albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
       }),
     ]);
     return albumKey;
@@ -422,7 +426,9 @@ export class DeepCatalog {
         at.rank
       FROM deep_artist_tracks at
       JOIN deep_tracks t ON t.track_key = at.track_key
-      WHERE at.artist_key = $1 AND at.list_type = $2
+      WHERE at.artist_key = $1
+        AND at.list_type = $2
+        AND at.list_version >= 1
       ORDER BY at.rank ASC NULLS LAST, at.observed_at DESC
       LIMIT $3
     `, [artistKey, listType, Math.max(1, Number(limit || 10))]);
@@ -530,8 +536,8 @@ export class DeepCatalog {
 
     return result.rows
       .filter(row =>
-        /^[💿📀]/u.test(clean(row.metadata?.rawText || ''))
-        || row.metadata?.verifiedAlbum === true
+        row.metadata?.verifiedAlbum === true
+        && Number(row.metadata?.albumTrustVersion || 0) >= 2
       )
       .map(row => ({
         albumKey: row.album_key,
@@ -540,6 +546,7 @@ export class DeepCatalog {
         trackCount: row.track_count || undefined,
         rawText: row.metadata?.rawText || undefined,
         verifiedAlbum: Boolean(row.metadata?.verifiedAlbum),
+        albumTrustVersion: Number(row.metadata?.albumTrustVersion || 0) || undefined,
         source: 'catalog',
       }));
   }
@@ -857,8 +864,9 @@ export class DeepCatalog {
       db.query('SELECT COUNT(*)::bigint AS albums FROM deep_albums'),
       db.query(`
         SELECT
-          COUNT(*) FILTER (WHERE list_type = 'recent')::bigint AS recent_rows,
-          COUNT(*) FILTER (WHERE list_type = 'top')::bigint AS top_rows
+          COUNT(*) FILTER (WHERE list_type = 'recent' AND list_version >= 1)::bigint AS recent_rows,
+          COUNT(*) FILTER (WHERE list_type = 'top' AND list_version >= 1)::bigint AS top_rows,
+          COUNT(*) FILTER (WHERE list_version = 0)::bigint AS legacy_rows
         FROM deep_artist_tracks
       `),
     ]);
