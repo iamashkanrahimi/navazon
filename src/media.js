@@ -41,17 +41,31 @@ export async function deliverCached(chatId, track, cached) {
   else await bot.sendAudio(chatId,cached.fileId,{
     caption,
     ...(track.title ? { title: track.title } : {}),
-    ...(track.artist ? { performer: track.artist } : {}),
+    ...(track.artist && !track.artistInferred
+      ? { performer: track.artist }
+      : cached.performer
+        ? { performer: cached.performer }
+        : {}),
     ...(cached.duration ? { duration: cached.duration } : {}),
   });
-  await cache.recordServe(track,{ cacheHit: true, cacheKey: cached._cacheKey || null });
+  if (!track?.artistInferred) {
+    await cache.recordServe(track,{ cacheHit: true, cacheKey: cached._cacheKey || null });
+  }
 }
 
 export async function bridgeSourceMessage(sourceUsername, audioMessage, track) {
-  const mediaPromise = bridge.expectMedia(25_000);
+  const mediaPromise = bridge.expectMedia(15_000);
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
-  await cache.set(track,media,{ sourceFetch: true });
+
+  const performer = String(media?.performer || '').trim();
+  const durableTrack = track?.artistInferred && performer
+    ? { ...track, artist: performer, artistInferred: false }
+    : track;
+
+  if (!durableTrack?.artistInferred) {
+    await cache.set(durableTrack,media,{ sourceFetch: true });
+  }
   return media;
 }
 
@@ -63,7 +77,7 @@ export async function bridgeSourceMessages(sourceUsername, messages = []) {
   const ids = (messages || []).map(message => Number(message?.id)).filter(Number.isFinite);
   if (!ids.length) return { items: [], complete: true, expected: 0 };
 
-  const timeoutMs = Math.max(35_000, Math.min(120_000, 12_000 + ids.length * 4_000));
+  const timeoutMs = Math.max(12_000, Math.min(25_000, 7_000 + ids.length * 2_000));
   const wait = bridge.expectManyMedia(ids.length, timeoutMs);
   await forwardHiddenManyToOurBot(tg, sourceUsername, ids);
   return wait;
@@ -137,7 +151,7 @@ export async function downloadTrackWithSources(
   originalQuery,
   { allowLegacyCache = true } = {}
 ) {
-  if (allowLegacyCache) {
+  if (allowLegacyCache && !track?.artistInferred) {
     const cached = await cache.get(track);
     if (cached) return { cached, track };
   }
@@ -159,7 +173,9 @@ export async function downloadTrackWithSources(
     }
   }
 
-  const fallbackQuery = [track.artist,track.title].filter(Boolean).join(' ') || originalQuery;
+  const fallbackQuery = track?.artistInferred
+    ? (track.title || originalQuery)
+    : ([track.artist,track.title].filter(Boolean).join(' ') || originalQuery);
   const results = await searchAhangify(tg,fallbackQuery);
   const matched = chooseAhangifyMatch(results, track);
   if (!matched) throw new Error('Fallback source returned no sufficiently close result.');
