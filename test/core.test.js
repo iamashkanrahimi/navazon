@@ -31,6 +31,7 @@ const {
   getMeloBotCover,
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
+  enrichMeloBotTrack,
   downloadMeloBotTrackQuality,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
@@ -2777,4 +2778,50 @@ test('track metadata reuses release date already visible on the track menu', asy
 
   assert.equal(metadata.releaseDate, '2024-05-06');
   assert.equal(metadata.popularityCount, 1_200_000);
+});
+
+
+test('empty More response keeps lyrics availability unknown instead of caching a false negative', async () => {
+  const raw = '🎵 Artist, Unknown Lyrics';
+  const client = new FakeTelegramClient({
+    [raw]: [[
+      fakeBotMessage('track menu', ['کیفیت عالی', 'بیشتر']),
+    ]],
+    'بیشتر': [[]],
+  });
+
+  await assert.rejects(
+    () => getMeloBotLyrics(
+      client,
+      { ...parseTrackButton(raw), source: 'melobot' },
+      { timeoutMs: 120 }
+    ),
+    /submenu returned no response|budget exhausted/
+  );
+});
+
+test('bundled enrichment discovers lyrics hidden behind More before declaring them unavailable', async () => {
+  const raw = '🎵 Artist, Bundled Hidden Lyrics';
+  const client = new FakeTelegramClient({
+    [raw]: [
+      [fakeBotMessage('track menu', ['کیفیت عالی', 'کیفیت معمولی', 'بیشتر'])],
+    ],
+    'بیشتر': [[
+      fakeBotMessage('more menu', ['متن آهنگ'])
+    ]],
+    'متن آهنگ': [[
+      fakeBotMessage('first line\nsecond line\n@MeloBot', [])
+    ]],
+  });
+
+  const bundle = await enrichMeloBotTrack(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    { timeoutMs: 1600 }
+  );
+
+  assert.equal(bundle.capabilities.hasLyrics, true);
+  assert.equal(bundle.lyrics.available, true);
+  assert.equal(bundle.lyrics.checked, true);
+  assert.equal(bundle.lyrics.text, 'first line\nsecond line');
 });
