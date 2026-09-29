@@ -1577,3 +1577,29 @@ test('deep media details query ignores pre-v1.5.4 unverified quality rows', asyn
   const mediaSql = calls.find(call => call.sql.includes('FROM deep_track_media'))?.sql || '';
   assert.match(mediaSql, /verified_quality\s*=\s*TRUE/i);
 });
+
+
+test('crawler treats unverified legacy media as missing quality cache', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    return { rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const missing = await catalog.missingMediaTracks([
+      { artist: 'Legacy Artist', title: 'Legacy Track' },
+    ], 'hq');
+
+    assert.equal(missing.length, 1);
+    assert.equal(missing[0].title, 'Legacy Track');
+  } finally {
+    db.query = originalQuery;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /verified_quality\s*=\s*TRUE/i);
+  assert.equal(calls[0].params[0], 'hq');
+});
