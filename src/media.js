@@ -81,8 +81,18 @@ export async function bridgeSourceMessage(
   return media;
 }
 
-export async function bridgeSourceAudio(sourceUsername, result, track) {
-  return bridgeSourceMessage(sourceUsername,result.audioMessage,track);
+export async function bridgeSourceAudio(
+  sourceUsername,
+  result,
+  track,
+  { timeoutMs = 10_000 } = {}
+) {
+  return bridgeSourceMessage(
+    sourceUsername,
+    result.audioMessage,
+    track,
+    { timeoutMs }
+  );
 }
 
 export async function bridgeSourceMessages(sourceUsername, messages = []) {
@@ -169,8 +179,13 @@ function chooseAhangifyMatch(results, track) {
 export async function downloadTrackWithSources(
   track,
   originalQuery,
-  { allowLegacyCache = true } = {}
+  {
+    allowLegacyCache = true,
+    totalTimeoutMs = 22000,
+  } = {}
 ) {
+  const remaining = interactionBudget(totalTimeoutMs);
+
   if (allowLegacyCache && !track?.artistInferred) {
     const cached = await cache.get(track);
     if (cached) return { cached, track };
@@ -180,10 +195,16 @@ export async function downloadTrackWithSources(
     const result = await downloadAhangifyResult(
       tg,
       track,
-      { timeoutMs: 12000 }
+      { timeoutMs: Math.min(10000, remaining()) }
     );
+    if (remaining.expired()) throw new Error('Interactive download budget exhausted.');
     return {
-      media: await bridgeSourceAudio(config.ahangifyUsername, result, track),
+      media: await bridgeSourceAudio(
+        config.ahangifyUsername,
+        result,
+        track,
+        { timeoutMs: Math.min(7000, remaining()) }
+      ),
       track,
     };
   }
@@ -193,9 +214,18 @@ export async function downloadTrackWithSources(
       const result = await downloadMeloBotTrack(
         tg,
         track,
-        { timeoutMs: 12000 }
+        { timeoutMs: Math.min(10000, remaining()) }
       );
-      return { media: await bridgeSourceAudio(config.melobotUsername,result,track), track };
+      if (remaining.expired()) throw new Error('Interactive download budget exhausted.');
+      return {
+        media: await bridgeSourceAudio(
+          config.melobotUsername,
+          result,
+          track,
+          { timeoutMs: Math.min(7000, remaining()) }
+        ),
+        track,
+      };
     } catch (err) {
       console.warn('[melobot download]',err.message);
     }
@@ -204,18 +234,34 @@ export async function downloadTrackWithSources(
   const fallbackQuery = track?.artistInferred
     ? (track.title || originalQuery)
     : ([track.artist,track.title].filter(Boolean).join(' ') || originalQuery);
-  const results = await searchAhangify(tg,fallbackQuery);
+  if (remaining.expired()) {
+    throw new Error('Interactive fallback search budget exhausted.');
+  }
+  const results = await searchAhangify(tg, fallbackQuery, {
+    timeoutMs: Math.min(6000, remaining()),
+  });
   const matched = chooseAhangifyMatch(results, track);
   if (!matched) throw new Error('Fallback source returned no sufficiently close result.');
 
+  if (remaining.expired()) {
+    throw new Error('Interactive fallback download budget exhausted.');
+  }
   const result = await downloadAhangifyResult(
     tg,
     matched.candidate,
-    { timeoutMs: 12000 }
+    { timeoutMs: Math.min(8000, remaining()) }
   );
   const finalTrack = track.artist || track.title ? track : matched.parsed;
+  if (remaining.expired()) {
+    throw new Error('Interactive fallback bridge budget exhausted.');
+  }
   return {
-    media: await bridgeSourceAudio(config.ahangifyUsername,result,finalTrack),
+    media: await bridgeSourceAudio(
+      config.ahangifyUsername,
+      result,
+      finalTrack,
+      { timeoutMs: Math.min(6000, remaining()) }
+    ),
     track: finalTrack,
   };
 }
