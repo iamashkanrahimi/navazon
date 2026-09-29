@@ -165,6 +165,14 @@ export class DeepCatalog {
       VALUES ($1,$2,$3)
       ON CONFLICT (album_key, track_key) DO UPDATE SET position = EXCLUDED.position
     `, [albumKey, row.trackKey, row.position])));
+
+    // Only mark the relation trusted after the full replacement completed.
+    await db.query(`
+      UPDATE deep_albums
+      SET metadata = metadata || '{"trackListVersion":1}'::jsonb,
+          updated_at = NOW()
+      WHERE album_key = $1
+    `, [albumKey]);
   }
 
   async setMedia(track, quality, media = {}, extra = {}) {
@@ -561,7 +569,9 @@ export class DeepCatalog {
       SELECT t.*, dat.position
       FROM deep_album_tracks dat
       JOIN deep_tracks t ON t.track_key = dat.track_key
+      JOIN deep_albums da ON da.album_key = dat.album_key
       WHERE dat.album_key = $1
+        AND da.metadata @> '{"trackListVersion":1}'::jsonb
       ORDER BY dat.position ASC NULLS LAST
     `, [albumKey]);
     return result.rows.map(row => ({
