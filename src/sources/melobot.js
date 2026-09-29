@@ -115,6 +115,12 @@ function stripLeadingEmoji(value = '') {
   return clean(value).replace(/^[^\p{L}\p{N}]+/u, '').trim();
 }
 
+function stripFeedRankPrefix(value = '') {
+  return clean(value)
+    .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
+    .trim();
+}
+
 function parsePopularity(value = '') {
   const text = clean(value);
   const match = text.match(/\s+x\s+(\d+(?:\.\d+)?)\s*([kKmMgG])?\s*$/u);
@@ -316,7 +322,11 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
   if (looksLikeAlbumNavigationText(original)) return null;
 
   const popularity = parsePopularity(original);
-  let value = stripLeadingEmoji(original);
+  // MeloBot ranked feeds prefix rows like "#49 🎵 Artist, Title x 10k".
+  // Strip the rank marker before artist/title parsing; otherwise the crawler
+  // permanently invents artists such as "49 🎵 Artist".
+  let value = stripFeedRankPrefix(original);
+  value = stripLeadingEmoji(value);
   value = stripMetricSuffix(value);
 
   const comma = value.indexOf(',');
