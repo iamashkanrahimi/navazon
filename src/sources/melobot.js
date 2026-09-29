@@ -1867,7 +1867,10 @@ export async function resolveMeloBotArtistTrackList(
         });
         const target = normalize(context.artist || artist);
         tracks = searched
-          .filter(track => normalize(track.artist) === target)
+          .filter(track =>
+            normalize(track.artist) === target
+            && Number.isFinite(track.sourcePopularityCount)
+          )
           .sort((a, b) =>
             Number(b.sourcePopularityCount || 0) - Number(a.sourcePopularityCount || 0)
           )
