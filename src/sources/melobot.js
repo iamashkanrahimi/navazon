@@ -1484,6 +1484,10 @@ export async function openMeloBotArtist(client, seedTrack) {
     }
   }
 
+  if (!topTracks.length && !base.recentTracks.length) {
+    throw new Error(`MeloBot artist page returned no usable tracks for: ${base.artist}`);
+  }
+
   return {
     ...base,
     tracks: topTracks,
