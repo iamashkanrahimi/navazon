@@ -497,7 +497,9 @@ export class DeepCatalog {
     const result = await db.query(`
       SELECT track_key
       FROM deep_track_media
-      WHERE quality = $1 AND track_key = ANY($2::text[])
+      WHERE quality = $1
+        AND verified_quality = TRUE
+        AND track_key = ANY($2::text[])
     `, [quality, keys]);
     const present = new Set(result.rows.map(row => row.track_key));
     return keyed.filter(item => !present.has(item.key)).map(item => item.track);
@@ -744,9 +746,10 @@ export class DeepCatalog {
       `),
       db.query(`
         SELECT
-          COUNT(*)::bigint AS media,
-          COUNT(*) FILTER (WHERE quality = 'hq')::bigint AS hq,
-          COUNT(*) FILTER (WHERE quality = 'normal')::bigint AS normal
+          COUNT(*) FILTER (WHERE verified_quality = TRUE)::bigint AS media,
+          COUNT(*) FILTER (WHERE quality = 'hq' AND verified_quality = TRUE)::bigint AS hq,
+          COUNT(*) FILTER (WHERE quality = 'normal' AND verified_quality = TRUE)::bigint AS normal,
+          COUNT(*) FILTER (WHERE verified_quality = FALSE)::bigint AS unverified
         FROM deep_track_media
       `),
       db.query(`
