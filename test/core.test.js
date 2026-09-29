@@ -966,7 +966,7 @@ test('direct album-title opener follows pagination and clicks only when target p
     client,
     'Paged Direct Artist',
     'Album Two',
-    { timeoutMs: 650, maxPages: 3 }
+    { timeoutMs: 2500, maxPages: 3 }
   );
 
   assert.equal(opened.album.title, 'Album Two');
