@@ -256,6 +256,15 @@ function isControl(text) {
   const value = clean(text);
   if (!value) return true;
   if (/^[⬅️🔙🏛️🏠🎙️🎤🗣️💿🎵🎶📀🎧]+$/u.test(value)) return true;
+
+  const normalized = normalize(value);
+  if (
+    /^(?:پربازدیدترین(?: ها)?|محبوب ترین(?: ها)?|برترین(?: ها)?|پر.?دانلودترین(?: ها)?|جدیدترین(?: ها)?|نمایش به ترتیب(?: .*)?|ترتیب بر اساس(?: .*)?)$/u
+      .test(normalized)
+  ) {
+    return true;
+  }
+
   return CONTROL_WORDS.some(word => value.includes(word));
 }
 
