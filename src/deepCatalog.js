@@ -220,6 +220,58 @@ export class DeepCatalog {
     `, [trackKey, capability]);
   }
 
+  async markCapabilityFailure(track = {}, capability = '', reason = '') {
+    const trackKey = deepTrackKey(track);
+    const allowed = new Set([
+      'hasHq', 'hasNormal', 'hasLyrics', 'hasCover', 'hasMetadata', 'hasArtistPage',
+    ]);
+    if (!trackKey || trackKey === '|' || !allowed.has(capability)) return;
+
+    const exists = await db.query(
+      'SELECT 1 FROM deep_tracks WHERE track_key = $1 LIMIT 1',
+      [trackKey]
+    );
+    if (!exists.rowCount) return;
+
+    await db.query(`
+      INSERT INTO track_capability_failures (track_key, capability, reason, failed_at)
+      VALUES ($1,$2,$3,NOW())
+      ON CONFLICT (track_key, capability) DO UPDATE SET
+        reason = EXCLUDED.reason,
+        failed_at = NOW()
+    `, [trackKey, capability, clean(reason).slice(0, 500) || null]);
+  }
+
+  async clearCapabilityFailure(track = {}, capability = '') {
+    const trackKey = deepTrackKey(track);
+    if (!trackKey || trackKey === '|' || !capability) return;
+    await db.query(
+      'DELETE FROM track_capability_failures WHERE track_key = $1 AND capability = $2',
+      [trackKey, capability]
+    );
+  }
+
+  async getRecentCapabilityFailures(track = {}, maxAgeMs = 15 * 60 * 1000) {
+    const trackKey = deepTrackKey(track);
+    if (!trackKey || trackKey === '|') return {};
+
+    const result = await db.query(`
+      SELECT capability, reason, failed_at
+      FROM track_capability_failures
+      WHERE track_key = $1
+        AND failed_at >= NOW() - ($2::bigint * INTERVAL '1 millisecond')
+    `, [trackKey, Math.max(0, Number(maxAgeMs || 0))]);
+
+    const out = {};
+    for (const row of result.rows) {
+      out[row.capability] = {
+        failedAt: row.failed_at,
+        reason: row.reason || undefined,
+      };
+    }
+    return out;
+  }
+
   async upsertTrack(track = {}, extra = {}) {
     const policy = applyPolicyDefaults({ ...track, ...extra });
     const trackKey = deepTrackKey(policy);
