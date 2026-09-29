@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.8 — Instant Track Pages & Catalog Repair
+# Navazon Cloud v1.5.9 — Composite Artist Crawl Guard
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -238,3 +238,11 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Bulk HQ fallback is cooperative and time-budgeted so foreground searches/navigation regain the stateful source lane quickly.
 - Background crawler work yields before starting when a foreground request arrives, reducing queue contention.
 - Regression coverage includes Persian/Latin normalization, Persian/Arabic digits, collaboration syntax, inferred Artist identity, polluted album rows, cross-message keyboards, tri-state capabilities, lyrics unknown state, cache provenance migrations, and total timeout budgets.
+
+
+## Composite Artist Crawl Guard v1.5.9
+
+- Background discovery no longer opens Artist profiles for ambiguous track-level collaboration credits such as `Drake & Yeat`, `Eminem x Jay Z`, or `Sadegh feat. T-Dey`.
+- Legacy queued composite-credit Artist tasks are retired before they can occupy the serialized MeloBot source lane.
+- Artist identities observed directly from MeloBot's Artist picker remain source-backed and can still be crawled, including names that contain collaboration-like separators.
+- The change is deliberately limited to background crawling; interactive search and Artist navigation behavior is unchanged.

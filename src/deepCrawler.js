@@ -28,6 +28,7 @@ import {
 } from './sources/melobot.js';
 import { deepNormalize, deepTrackKey } from './deepCatalog.js';
 import { recordCrawlerFinish, recordCrawlerStart } from './state.js';
+import { hasCompositeArtistSeparators } from './text.js';
 
 function clean(value = '') {
   return String(value).replace(/\s+/g, ' ').trim();
@@ -58,15 +59,25 @@ function albumRefreshBucket() {
   return Math.floor(Date.now() / (30 * 24 * 60 * 60 * 1000));
 }
 
-async function enqueueArtistProfile(artist, seedTrack, priority = 100) {
+async function enqueueArtistProfile(
+  artist,
+  seedTrack,
+  priority = 100,
+  { sourceBackedArtist = false } = {}
+) {
   const name = clean(artist);
   if (!name) return;
   await deepCatalog.enqueueTask(
     'artist_profile',
-    { artist: name, seedTrack: seedTrack || null },
+    {
+      artist: name,
+      seedTrack: seedTrack || null,
+      sourceBackedArtist: Boolean(sourceBackedArtist),
+    },
     {
       priority,
       taskKey: `artist_profile:${deepNormalize(name)}:${dayBucket()}`,
+      reviveDone: Boolean(sourceBackedArtist),
     }
   );
 }
@@ -591,8 +602,24 @@ async function runFeed(task) {
 }
 
 async function runArtistProfile(task) {
-  const { artist, seedTrack = null } = task.payload || {};
+  const {
+    artist,
+    seedTrack = null,
+    sourceBackedArtist = false,
+  } = task.payload || {};
   if (!artist) throw new Error('Artist profile task is missing artist.');
+
+  // Feed and playlist track rows often carry collaboration credits rather
+  // than a real Artist-page identity. Legacy queued tasks such as
+  // "Drake & Yeat" used to spend several seconds probing a profile that does
+  // not exist, then sometimes persisted a tiny search-derived pseudo-profile.
+  // Skip those ambiguous background tasks before touching the serialized
+  // MeloBot lane. A name observed directly on an Artist picker is explicitly
+  // marked source-backed and is still allowed through.
+  if (!sourceBackedArtist && hasCompositeArtistSeparators(artist)) {
+    console.log('[deep crawler] skipped composite artist credit', artist);
+    return { artist, skipped: 'composite_artist_credit' };
+  }
 
   const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
   const recent = live.recentTracks || [];
@@ -630,7 +657,7 @@ async function runArtistProfile(task) {
 
   for (const related of live.relatedArtists || []) {
     if (deepNormalize(related) !== deepNormalize(live.artist)) {
-      await enqueueArtistProfile(related, null, 82);
+      await enqueueArtistProfile(related, null, 82, { sourceBackedArtist: true });
     }
   }
 
