@@ -1622,11 +1622,15 @@ export const sourceQueue = new SerialQueue(async job => {
             const freshArtist = await openMeloBotArtistFresh(tg,liveArtist.artist,candidate.seedTrack || null);
             const freshAlbums = await listMeloBotAlbums(tg,freshArtist);
             const target = freshAlbums.find(x => normalize(x.title) === normalize(album.title)) || album;
-            const opened = await openMeloBotAlbumByTitle(
+            const opened = await openMeloBotAlbumRobustByTitle(
               tg,
               liveArtist.artist,
               target.title,
-              candidate.seedTrack || null
+              {
+                album: target,
+                timeoutMs: 3500,
+                maxPages: 8,
+              }
             );
             const tracks = opened.tracks;
             await catalog.recordAlbums(opened.artist,freshAlbums);
