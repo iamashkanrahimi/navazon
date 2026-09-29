@@ -2953,13 +2953,13 @@ test('file cache keys ignore changing feed rank prefixes', () => {
 
 test('full-coverage search filtering removes partial false positives when an exact match exists', () => {
   const tracks = keepFullCoverageTracksWhenAvailable('رضا بهرام یار', [
-    { artist: 'Reza Bahram', title: 'Yar' },
+    { artist: 'رضا بهرام', title: 'یار', source: 'ahangify' },
     { artist: 'Reza Sadeghi', title: 'Bemoni Baram' },
     { artist: 'Reza Bahram', title: 'Hamdam' },
   ]);
   assert.equal(tracks.length, 1);
-  assert.equal(tracks[0].artist, 'Reza Bahram');
-  assert.equal(tracks[0].title, 'Yar');
+  assert.equal(tracks[0].artist, 'رضا بهرام');
+  assert.equal(tracks[0].title, 'یار');
 });
 
 test('legacy trustworthy Artist lists self-heal their semantic version locally', async () => {
