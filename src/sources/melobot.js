@@ -287,6 +287,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
   const original = clean(rawText);
   if (!original || isControl(original) || looksLikeAlbumButton(original)) return null;
   if (/^[🗣🎤🎙]/u.test(original)) return null;
+  if (/^[💿📀]/u.test(original)) return null;
 
   if (looksLikeAlbumNavigationText(original)) return null;
 
@@ -347,17 +348,66 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
 
 export function parseAlbumButton(rawText) {
   const original = clean(rawText);
-  if (!original || isControl(original)) return null;
+  if (!original || isControl(original) || looksLikeAlbumNavigationText(original)) return null;
+
   const value = toAsciiDigits(stripLeadingEmoji(original));
-  const match = value.match(/^(.+?)\s*\((\d+)\)\s*$/u);
-  if (!match) return null;
-  return {
-    type: 'album',
-    rawText: original,
-    title: clean(match[1]),
-    trackCount: Number(match[2]),
-    sourceStateVersion,
-  };
+  const counted = value.match(/^(.+?)\s*\((\d+)\)\s*$/u);
+  if (counted) {
+    return {
+      type: 'album',
+      rawText: original,
+      title: clean(counted[1]),
+      trackCount: Number(counted[2]),
+      sourceStateVersion,
+    };
+  }
+
+  // MeloBot search surfaces sometimes expose album rows with a disc icon but
+  // without the usual "(track count)" suffix. Keep them typed as albums so a
+  // comma or dash inside the label can never turn them into fake tracks.
+  if (/^[💿📀]/u.test(original)) {
+    const body = clean(stripLeadingEmoji(original));
+    if (!body) return null;
+
+    const comma = body.indexOf(',');
+    if (comma > 0) {
+      const artist = clean(body.slice(0, comma));
+      const title = clean(body.slice(comma + 1));
+      if (artist && title) {
+        return {
+          type: 'album',
+          rawText: original,
+          artist,
+          title,
+          sourceStateVersion,
+        };
+      }
+    }
+
+    const dashed = body.match(/^(.+?)\s+[–—-]\s+(.+)$/u);
+    if (dashed) {
+      const artist = clean(dashed[1]);
+      const title = clean(dashed[2]);
+      if (artist && title) {
+        return {
+          type: 'album',
+          rawText: original,
+          artist,
+          title,
+          sourceStateVersion,
+        };
+      }
+    }
+
+    return {
+      type: 'album',
+      rawText: original,
+      title: body,
+      sourceStateVersion,
+    };
+  }
+
+  return null;
 }
 
 function parseAlbumButtons(messages = []) {
@@ -444,6 +494,27 @@ function parseTracksFromMessages(messages, fallbackArtist = '') {
     tracks.push(track);
   }
   return tracks;
+}
+
+export function parseMeloBotSearchSurface(messages = [], fallbackArtist = '') {
+  const tracks = parseTracksFromMessages(messages, fallbackArtist);
+  const albums = [];
+  const albumSeen = new Set();
+
+  for (const rawText of buttonsFromMessages(messages)) {
+    const album = parseAlbumButton(rawText);
+    if (!album) continue;
+    const key = `${normalize(album.artist || '')}|${normalize(album.title)}`;
+    if (!normalize(album.title) || albumSeen.has(key)) continue;
+    albumSeen.add(key);
+    albums.push(album);
+  }
+
+  return {
+    tracks,
+    albums,
+    buttons: buttonsFromMessages(messages),
+  };
 }
 
 async function sendAndCollect(client, text, {
@@ -535,7 +606,7 @@ async function collectMeloBotAlbumPages(client, initial, {
   };
 }
 
-export async function searchMeloBot(client, query, {
+export async function searchMeloBotTyped(client, query, {
   maxRefinements = 3,
 } = {}) {
   const requested = clean(query);
@@ -555,8 +626,15 @@ export async function searchMeloBot(client, query, {
     });
     allMessages.push(...(result.messages || []));
 
-    const tracks = parseTracksFromMessages(result.messages, fallbackArtist);
-    if (tracks.length) return tracks;
+    const surface = parseMeloBotSearchSurface(result.messages, fallbackArtist);
+    if (surface.tracks.length || surface.albums.length) {
+      return {
+        ...surface,
+        messages: result.messages || [],
+        sourceStateVersion,
+        steps: step + 1,
+      };
+    }
 
     const surfaceKey = `${normalize(command)}|${describeMeloBotSurface(result.messages)}`;
     if (seenTransitions.has(surfaceKey)) break;
@@ -572,8 +650,95 @@ export async function searchMeloBot(client, query, {
   }
 
   throw new Error(
-    `MeloBot search returned no usable tracks. ${describeMeloBotSurface(allMessages)}`
+    `MeloBot search returned no usable results. ${describeMeloBotSurface(allMessages)}`
   );
+}
+
+export async function searchMeloBot(client, query, options = {}) {
+  const result = await searchMeloBotTyped(client, query, options);
+  if (result.tracks.length) return result.tracks;
+  throw new Error(
+    `MeloBot search returned albums but no usable tracks. ${describeMeloBotSurface(result.messages)}`
+  );
+}
+
+function isTrackMenuSurface(messages = []) {
+  return buttonsFromMessages(messages).some(text => {
+    const value = clean(text);
+    return (
+      (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+      && !value.includes('دانلود همه')
+    );
+  });
+}
+
+function inspectSelectedCandidateSurface(messages = [], candidate = {}) {
+  if (isTrackMenuSurface(messages)) {
+    return { kind: 'track', tracks: [] };
+  }
+
+  const fallbackArtist = candidate?.artist || '';
+  const tracks = parseTracksFromMessages(messages, fallbackArtist);
+  const buttons = buttonsFromMessages(messages);
+  const hasBulk = buttons.some(text => /دانلود همه/u.test(clean(text)));
+  const body = (messages || []).map(messageText).filter(Boolean).join(' ');
+  const albumPrompt = /(?:آلبوم|البوم|album)/iu.test(body);
+
+  if (tracks.length && (hasBulk || albumPrompt)) {
+    return {
+      kind: 'album',
+      tracks,
+      bulkHighButton: buttons.find(text =>
+        /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
+      ) || null,
+      bulkNormalButton: buttons.find(text =>
+        /دانلود همه/u.test(clean(text)) && /معمولی/u.test(clean(text))
+      ) || null,
+    };
+  }
+
+  return { kind: 'unknown', tracks: [] };
+}
+
+export async function probeMeloBotCandidateSurface(client, candidate) {
+  if (!candidate?.rawText) {
+    throw new Error('MeloBot candidate surface probe requires a raw button.');
+  }
+  if (Number(candidate.sourceStateVersion || -1) !== sourceStateVersion) {
+    throw new Error('MeloBot candidate surface is stale.');
+  }
+
+  const selected = await sendAndCollect(client, candidate.rawText, {
+    timeoutMs: config.searchTimeoutMs,
+    quietMs: 550,
+  });
+  const inspected = inspectSelectedCandidateSurface(selected.messages, candidate);
+
+  if (inspected.kind === 'album') {
+    return {
+      ...inspected,
+      album: {
+        type: 'album',
+        artist: candidate.artist || undefined,
+        title: candidate.title || stripMetricSuffix(stripLeadingEmoji(candidate.rawText)),
+        rawText: candidate.rawText,
+        trackCount: inspected.tracks.length || undefined,
+        sourceStateVersion,
+        bulkHighButton: inspected.bulkHighButton,
+        bulkNormalButton: inspected.bulkNormalButton,
+        tracks: inspected.tracks,
+      },
+      messages: selected.messages,
+      sourceStateVersion,
+    };
+  }
+
+  return {
+    ...inspected,
+    candidate,
+    messages: selected.messages,
+    sourceStateVersion,
+  };
 }
 
 async function findArtistSeed(client, artist, preferredSeed = null) {
@@ -648,7 +813,7 @@ async function resolveMeloBotTrackCandidate(client, candidate) {
   }
 }
 
-async function openTrackMenu(client, candidate) {
+async function openTrackMenuWithCandidate(client, candidate) {
   const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
   if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
 
@@ -656,10 +821,15 @@ async function openTrackMenu(client, candidate) {
     timeoutMs: config.searchTimeoutMs,
     quietMs: 550,
     stopWhen: m => replyButtons(m).some(text =>
-      text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
+      (text.includes('کیفیت عالی') || text.includes('کیفیت معمولی'))
+      && !text.includes('دانلود همه')
     ),
   });
-  return selected.messages;
+  return { messages: selected.messages, candidate: liveCandidate };
+}
+
+async function openTrackMenu(client, candidate) {
+  return (await openTrackMenuWithCandidate(client, candidate)).messages;
 }
 
 export async function downloadMeloBotTrack(client, candidate) {
@@ -1015,19 +1185,56 @@ export async function inspectMeloBotTrack(client, candidate) {
 }
 
 async function openMeloBotArtistBase(client, seedTrack) {
-  const menuMessages = await openTrackMenu(client, seedTrack);
-  const artistButton = findButton(menuMessages, text =>
+  let openedMenu = await openTrackMenuWithCandidate(client, seedTrack);
+  let menuMessages = openedMenu.messages;
+  let effectiveSeed = openedMenu.candidate || seedTrack;
+  let recoveredFromAlbum = false;
+
+  let artistButton = findButton(menuMessages, text =>
     text.includes('خواننده') && !text.includes('پیشنهاد')
   );
+
+  if (!artistButton) {
+    const surface = inspectSelectedCandidateSurface(menuMessages, effectiveSeed);
+    if (surface.kind === 'album' && surface.tracks.length) {
+      // Some MeloBot search rows that look like a track are actually albums.
+      // For artist navigation, use a real track button already visible on that
+      // live album page instead of re-searching or timing out.
+      const recoverySeed = {
+        ...surface.tracks[0],
+        source: 'melobot',
+        sourceStateVersion,
+      };
+      openedMenu = await openTrackMenuWithCandidate(client, recoverySeed);
+      menuMessages = openedMenu.messages;
+      effectiveSeed = openedMenu.candidate || recoverySeed;
+      recoveredFromAlbum = true;
+      artistButton = findButton(menuMessages, text =>
+        text.includes('خواننده') && !text.includes('پیشنهاد')
+      );
+      if (artistButton) {
+        console.log(
+          '[fastpath] artist_recovery=album_track',
+          effectiveSeed.artist,
+          effectiveSeed.title
+        );
+      }
+    }
+  }
+
   if (!artistButton) {
     console.warn(
       '[melobot artist menu surface]',
-      seedTrack?.artist || 'unknown',
-      describeMeloBotSurface(menuMessages)
+      effectiveSeed?.artist || seedTrack?.artist || 'unknown',
+      describeMeloBotSurface(menuMessages),
+      JSON.stringify({
+        seedTitle: effectiveSeed?.title || seedTrack?.title || null,
+        seedRawText: effectiveSeed?.rawText || seedTrack?.rawText || null,
+        recoveredFromAlbum,
+      })
     );
     throw new Error('MeloBot artist button not found.');
   }
-
   let artistPage = await sendAndCollect(client, artistButton, {
     timeoutMs: config.searchTimeoutMs,
     quietMs: 650,
@@ -1042,11 +1249,11 @@ async function openMeloBotArtistBase(client, seedTrack) {
     }))
     .filter(item => item.name && !/خواننده|پیشنهاد/u.test(item.name));
 
-  let selectedArtist = seedTrack.artist;
+  let selectedArtist = effectiveSeed.artist;
   const relatedArtists = pickerButtons.map(item => item.name);
 
   if (pickerButtons.length) {
-    const requested = normalize(seedTrack.artist);
+    const requested = normalize(effectiveSeed.artist);
     const requestedParts = requested.split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu).filter(Boolean);
 
     const chosen = pickerButtons.find(item => normalize(item.name) === requested)
@@ -1098,6 +1305,8 @@ async function openMeloBotArtistBase(client, seedTrack) {
     recentBulkHighButton,
     recentBulkNormalButton,
     relatedArtists,
+    seedTrack: effectiveSeed,
+    recoveredFromAlbum,
   };
 }
 
@@ -1181,6 +1390,32 @@ export async function openMeloBotArtist(client, seedTrack) {
   }
 
   if (!topTracks.length) topTracks = base.recentTracks;
+
+  if (!topTracks.length && !base.recentTracks.length) {
+    try {
+      const fallback = await searchMeloBot(client, base.artist, { maxRefinements: 2 });
+      const target = normalize(base.artist);
+      const exactTracks = fallback.filter(track =>
+        normalize(track.artist) === target
+      ).slice(0, 10);
+
+      if (exactTracks.length) {
+        topTracks = exactTracks;
+        // The recovery search changed MeloBot state, so invalidate any live
+        // controls captured from the previous artist surface.
+        liveAlbumButton = null;
+        liveAlbumList = [];
+        liveAlbumListingConfirmed = false;
+        liveAlbumListingConfirmedEmpty = false;
+        liveAlbumDeclaredCount = null;
+        liveAlbumNextButton = null;
+        liveAlbumSourceStateVersion = null;
+        console.log('[fastpath] artist_recovery=search_tracks', base.artist, exactTracks.length);
+      }
+    } catch (err) {
+      console.warn('[melobot artist track recovery]', base.artist, err.message);
+    }
+  }
 
   return {
     ...base,
