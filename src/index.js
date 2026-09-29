@@ -30,6 +30,7 @@ async function queueCrawler() {
   await deepCatalog.compactQueue();
 
   let deepTask = null;
+  let deferredHeavyTasks = 0;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const candidateTask = await deepCatalog.claimNextTask();
     if (!candidateTask) break;
@@ -38,6 +39,7 @@ async function queueCrawler() {
       HEAVY_CRAWL_KINDS.has(candidateTask.kind)
       && idleForMs < config.discoveryHeavyIdleMs
     ) {
+      deferredHeavyTasks += 1;
       const remainingMs = Math.max(
         60_000,
         config.discoveryHeavyIdleMs - idleForMs
@@ -64,7 +66,20 @@ async function queueCrawler() {
     };
   }
 
-  // Legacy discovery remains as a low-priority safety net if the deep queue is empty.
+  // If runnable deep work existed but it was all deliberately deferred, do
+  // not fall through into legacy discovery and immediately consume the same
+  // interactive MTProto lane anyway.
+  if (deferredHeavyTasks > 0) {
+    return {
+      queued: false,
+      reason: 'heavy_tasks_deferred',
+      deferredHeavyTasks,
+      idleForMs,
+      heavyIdleMs: config.discoveryHeavyIdleMs,
+    };
+  }
+
+  // Legacy discovery remains as a low-priority safety net if the deep queue is truly empty.
   const candidate = await catalog.nextDiscoveryCandidate(config.discoveryArtistMinAgeMs);
   if (candidate) {
     sourceQueue.push({ type: 'discover', candidate });
