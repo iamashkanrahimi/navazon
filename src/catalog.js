@@ -22,6 +22,7 @@ function looksLikeAlbumRowButton(value = '') {
 }
 
 function trustedStoredAlbum(album = {}) {
+  if (album.verifiedAlbum === true) return true;
   const rawText = clean(album.rawText || '');
   if (!rawText) return true;
   return /^[💿📀]/u.test(rawText);
@@ -213,7 +214,8 @@ export class CatalogStore {
         a.name AS artist,
         album->>'title' AS title,
         NULLIF(album->>'trackCount','')::int AS track_count,
-        album->>'rawText' AS raw_text
+        album->>'rawText' AS raw_text,
+        COALESCE((album->>'verifiedAlbum')::boolean, FALSE) AS verified_album
       FROM artists a
       CROSS JOIN LATERAL jsonb_array_elements(
         COALESCE(a.data->'albumList','[]'::jsonb)
@@ -227,13 +229,18 @@ export class CatalogStore {
       .filter(row =>
         row.artist
         && row.title
-        && (!row.raw_text || /^[💿📀]/u.test(clean(row.raw_text)))
+        && (
+          !row.raw_text
+          || /^[💿📀]/u.test(clean(row.raw_text))
+          || row.verified_album === true
+        )
       )
       .map(row => ({
         artist: row.artist,
         title: row.title,
         trackCount: row.track_count || undefined,
         rawText: row.raw_text || undefined,
+        verifiedAlbum: Boolean(row.verified_album),
         source: 'catalog',
       }));
   }
@@ -310,6 +317,7 @@ export class CatalogStore {
       title: clean(album.title),
       trackCount: album.trackCount || undefined,
       rawText: clean(album.rawText),
+      verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
     }));
     node.albumsUpdatedAt = now;
     node.albumsEmptyConfirmedAt = !trustedAlbums.length && emptyConfirmed ? now : null;
@@ -324,6 +332,7 @@ export class CatalogStore {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
+        verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
         listingUpdatedAt: now,
       };
     }
@@ -350,6 +359,7 @@ export class CatalogStore {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
+        verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
       };
       existing.set(albumKey, { ...(existing.get(albumKey) || {}), ...compact });
       node.albums[albumKey] = {
