@@ -534,31 +534,14 @@ async function runArtistProfile(task) {
   });
 
   const bulkSeed = seedTrack || recent[0] || top[0] || null;
-  let topHqComplete = false;
-  if (top.length && live.bulkHighButton) {
-    try {
-      const missingTopHq = await deepCatalog.missingMediaTracks(top, 'hq');
-      if (shouldUseBulk(top.length, missingTopHq.length)) {
-        const bulk = await downloadMeloBotBulkTracks(tg, {
-          button: live.bulkHighButton,
-          label: `${live.artist} top hq inline`,
-          expectedCount: top.length,
-          timeoutMs: 75_000,
-        });
-        await cacheBulkMedia(top, bulk, 'hq', 'artist_profile_top_hq');
-      } else if (missingTopHq.length) {
-        await enqueueSparseMediaFallback(missingTopHq, 'hq', 114);
-      }
-      topHqComplete = (await deepCatalog.missingMediaTracks(top, 'hq')).length === 0;
-    } catch (err) {
-      console.warn('[artist profile inline HQ]', live.artist, err.message);
-    }
-  }
 
+  // Keep profile discovery short. Media warming is intentionally split into
+  // separate heavy tasks so an artist-profile crawl cannot hold the user queue
+  // for tens of seconds.
   await enqueueArtistBulkTasks(live.artist, bulkSeed, {
     topTracks: top,
     recentTracks: recent,
-    skipTopHq: topHqComplete,
+    skipTopHq: false,
   });
 
   for (const related of live.relatedArtists || []) {
@@ -676,29 +659,12 @@ async function runAlbumDetail(task) {
   const albumSeed = albumContext.seed || resolved.seed || seedTrack || tracks[0] || null;
   const albumKey = `${deepNormalize(resolved.artist)}:${deepNormalize(target.title)}`;
 
-  let albumHqComplete = false;
-  if (albumContext.bulkHighButton && tracks.length) {
-    try {
-      const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
-      if (shouldUseBulk(tracks.length, missingHq.length)) {
-        const bulk = await downloadMeloBotBulkTracks(tg, {
-          button: albumContext.bulkHighButton,
-          label: `album ${target.title} hq inline`,
-          expectedCount: tracks.length,
-          timeoutMs: 75_000,
-        });
-        await cacheBulkMedia(tracks, bulk, 'hq', 'album_detail_hq');
-      } else if (missingHq.length) {
-        await enqueueSparseMediaFallback(missingHq, 'hq', 110);
-      }
-      albumHqComplete = (await deepCatalog.missingMediaTracks(tracks, 'hq')).length === 0;
-    } catch (err) {
-      console.warn('[album detail inline HQ]', resolved.artist, target.title, err.message);
-    }
-  }
+  // Album detail stays metadata-only on the interactive source lane. Heavy
+  // media warming is queued separately and only runs after a longer idle window.
+  const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
+  const albumHqComplete = missingHq.length === 0;
 
   if (!albumHqComplete) {
-    const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
     if (shouldUseBulk(tracks.length, missingHq.length)) {
       await deepCatalog.enqueueTask(
         'album_bulk_media',

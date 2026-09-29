@@ -13,6 +13,15 @@ import {
   messageText,
 } from '../mtproto.js';
 
+// State tokens may leak into short-lived catalog/session JSON. Seed the
+// counter from wall-clock time so a process restart cannot accidentally reuse
+// an old token and treat a stale MeloBot reply-keyboard row as still clickable.
+let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+
+export function getMeloBotStateVersion() {
+  return sourceStateVersion;
+}
+
 const CONTROL_WORDS = [
   'صفحه اصلی',
   'جستجوی عمیق',
@@ -255,6 +264,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
       title,
       sourcePopularityText: popularity.text,
       sourcePopularityCount: popularity.count,
+      sourceStateVersion,
     };
   }
 
@@ -270,6 +280,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
         title,
         sourcePopularityText: popularity.text,
         sourcePopularityCount: popularity.count,
+        sourceStateVersion,
       };
     }
   }
@@ -284,6 +295,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
         title,
         sourcePopularityText: popularity.text,
         sourcePopularityCount: popularity.count,
+        sourceStateVersion,
       };
     }
   }
@@ -302,6 +314,7 @@ export function parseAlbumButton(rawText) {
     rawText: original,
     title: clean(match[1]),
     trackCount: Number(match[2]),
+    sourceStateVersion,
   };
 }
 
@@ -393,19 +406,23 @@ function parseTracksFromMessages(messages, fallbackArtist = '') {
 
 async function sendAndCollect(client, text, {
   timeoutMs = config.searchTimeoutMs,
-  quietMs = 1600,
+  quietMs = 650,
   stopWhen,
   stopWhenBatch,
+  onMessage,
 } = {}) {
   const peer = config.melobotUsername;
   const afterId = await latestMessageId(client, peer);
+  const stateVersion = ++sourceStateVersion;
   await client.sendMessage(peer, { message: text });
-  return collectNewMessages(client, peer, afterId, {
+  const result = await collectNewMessages(client, peer, afterId, {
     timeoutMs,
     quietMs,
     stopWhen,
     stopWhenBatch,
+    onMessage,
   });
+  return { ...result, stateVersion };
 }
 
 function mergeAlbumPages(current = [], incoming = [], maxAlbums = 60) {
@@ -436,7 +453,7 @@ async function collectMeloBotAlbumPages(client, initial, {
   while (!complete && nextButton && pages < maxPages && albums.length < maxAlbums) {
     const page = await sendAndCollect(client, nextButton, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2200,
+      quietMs: 650,
     });
     const state = inspectMeloBotAlbumListing(page.messages);
     const fingerprint = [
@@ -492,7 +509,7 @@ export async function searchMeloBot(client, query, {
 
     const result = await sendAndCollect(client, command, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2200,
+      quietMs: 650,
     });
     allMessages.push(...(result.messages || []));
 
@@ -518,17 +535,34 @@ export async function searchMeloBot(client, query, {
 }
 
 async function findArtistSeed(client, artist, preferredSeed = null) {
-  let seed = preferredSeed;
+  const target = normalize(artist);
+  const preferredArtist = normalize(preferredSeed?.artist || '');
 
+  // A seed already selected by the user is enough to reopen the live track
+  // menu. If its source state is stale, openTrackMenu will refresh that exact
+  // track once; doing an artist search here first only duplicates navigation.
+  if (
+    preferredSeed?.rawText
+    && preferredSeed?.source !== 'ahangify'
+    && preferredArtist
+    && (
+      preferredArtist === target
+      || preferredArtist.includes(target)
+      || target.includes(preferredArtist)
+    )
+  ) {
+    return preferredSeed;
+  }
+
+  let seed = null;
   try {
     const results = await searchMeloBot(client, artist);
-    const target = normalize(artist);
     seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track =>
-        normalize(track.artist).includes(target) ||
-        target.includes(normalize(track.artist))
-      )
-      || seed;
+      || results.find(track => {
+        const candidateArtist = normalize(track.artist);
+        return candidateArtist.includes(target) || target.includes(candidateArtist);
+      })
+      || null;
   } catch (err) {
     console.warn('[melobot artist seed]', artist, err.message);
   }
@@ -548,6 +582,13 @@ async function resolveMeloBotTrackCandidate(client, candidate) {
     || candidate?.rawText;
 
   if (!query) throw new Error('MeloBot track candidate is incomplete.');
+
+  if (
+    candidate?.rawText
+    && Number(candidate.sourceStateVersion || -1) === sourceStateVersion
+  ) {
+    return candidate;
+  }
 
   try {
     const results = await searchMeloBot(client, query);
@@ -571,7 +612,7 @@ async function openTrackMenu(client, candidate) {
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1500,
+    quietMs: 550,
     stopWhen: m => replyButtons(m).some(text =>
       text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
     ),
@@ -593,7 +634,7 @@ export async function downloadMeloBotTrack(client, candidate) {
 
   const download = await sendAndCollect(client, highQualityButton, {
     timeoutMs: config.downloadTimeoutMs,
-    quietMs: 1600,
+    quietMs: 600,
     stopWhen: isAudioMessage,
   });
 
@@ -629,7 +670,7 @@ export async function downloadMeloBotTrackQuality(client, candidate, quality = '
 
   const result = await sendAndCollect(client, button, {
     timeoutMs: config.downloadTimeoutMs,
-    quietMs: 1800,
+    quietMs: 650,
     stopWhen: isAudioMessage,
   });
 
@@ -653,7 +694,7 @@ async function openMoreMenu(client, candidate) {
 
   const more = await sendAndCollect(client, moreButton, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1600,
+    quietMs: 600,
   });
   return more.messages;
 }
@@ -693,7 +734,7 @@ export async function getMeloBotLyrics(client, candidate) {
 
   const result = await sendAndCollect(client, lyricsButton, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1800,
+    quietMs: 650,
   });
 
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
@@ -736,7 +777,7 @@ export async function getMeloBotTrackMetadata(client, candidate) {
 
   const result = await sendAndCollect(client, detailsButton, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1800,
+    quietMs: 650,
   });
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
   return {
@@ -753,7 +794,7 @@ export async function getMeloBotCover(client, candidate) {
 
   const result = await sendAndCollect(client, coverButton, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1800,
+    quietMs: 650,
     stopWhen: photoMessage,
   });
 
@@ -767,7 +808,7 @@ export async function enrichMeloBotTrack(client, candidate) {
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1500,
+    quietMs: 550,
     stopWhen: message => replyButtons(message).some(text =>
       text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
     ),
@@ -805,7 +846,7 @@ export async function enrichMeloBotTrack(client, candidate) {
     try {
       const lyricsResult = await sendAndCollect(client, lyricsButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 1800,
+        quietMs: 650,
       });
       const raw = lyricsResult.messages.map(messageText).filter(Boolean).join('\n\n').trim();
       const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
@@ -824,7 +865,7 @@ export async function enrichMeloBotTrack(client, candidate) {
     try {
       const more = await sendAndCollect(client, moreButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 1500,
+        quietMs: 550,
       });
       const moreButtons = buttonsFromMessages(more.messages);
       result.capabilities.hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
@@ -837,7 +878,7 @@ export async function enrichMeloBotTrack(client, candidate) {
         try {
           const details = await sendAndCollect(client, detailsButton, {
             timeoutMs: config.searchTimeoutMs,
-            quietMs: 1600,
+            quietMs: 600,
           });
           const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
           result.metadata = {
@@ -855,7 +896,7 @@ export async function enrichMeloBotTrack(client, candidate) {
         try {
           const coverResult = await sendAndCollect(client, coverButton, {
             timeoutMs: config.searchTimeoutMs,
-            quietMs: 1600,
+            quietMs: 600,
             stopWhen: photoMessage,
           });
           const photo = coverResult.messages.find(photoMessage);
@@ -875,7 +916,7 @@ export async function enrichMeloBotTrack(client, candidate) {
 export async function discoverMeloBotFeed(client, command, { contentOrigin = 'unknown' } = {}) {
   const result = await sendAndCollect(client, command, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 2200,
+    quietMs: 650,
     stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
   });
 
@@ -911,7 +952,7 @@ export async function inspectMeloBotTrack(client, candidate) {
     try {
       const more = await sendAndCollect(client, moreButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 1400,
+        quietMs: 550,
       });
       const moreButtons = buttonsFromMessages(more.messages);
       hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
@@ -947,7 +988,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
 
   let artistPage = await sendAndCollect(client, artistButton, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1800,
+    quietMs: 650,
   });
 
   // Collaborative tracks can open an intermediate artist picker.
@@ -975,7 +1016,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
 
     artistPage = await sendAndCollect(client, chosen.rawText, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2600,
+      quietMs: 750,
     });
   }
 
@@ -1011,6 +1052,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
     moreButton,
     sourceAfterId,
     sourceButtons: allButtons.slice(0, 30),
+    sourceStateVersion: sourceStateVersion,
     recentBulkHighButton,
     recentBulkNormalButton,
     relatedArtists,
@@ -1027,7 +1069,7 @@ export async function openMeloBotArtist(client, seedTrack) {
     try {
       let ordered = await sendAndCollect(client, base.orderButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2200,
+        quietMs: 650,
         stopWhen: message => {
           const buttons = replyButtons(message);
           const hasTracks = buttons.some(text => parseTrackButton(text, base.artist));
@@ -1045,7 +1087,7 @@ export async function openMeloBotArtist(client, seedTrack) {
         if (popularityButton) {
           ordered = await sendAndCollect(client, popularityButton, {
             timeoutMs: config.searchTimeoutMs,
-            quietMs: 1800,
+            quietMs: 650,
             stopWhen: message => replyButtons(message)
               .some(text => parseTrackButton(text, base.artist)),
           });
@@ -1096,7 +1138,7 @@ export async function prepareMeloBotBulkRecentTracks(client, artist, preferredSe
 export async function openMeloBotAlbumContext(client, artist, album) {
   const page = await sendAndCollect(client, album.rawText, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 2200,
+    quietMs: 650,
     stopWhen: message => {
       const buttons = replyButtons(message);
       return buttons.some(text => parseTrackButton(text, artist)) &&
@@ -1127,7 +1169,14 @@ export async function openMeloBotAlbumContext(client, artist, album) {
     throw new Error(`No tracks found in MeloBot album ${album.title}. ${response.slice(0, 350)}`);
   }
 
-  return { artist, album, tracks, bulkHighButton, bulkNormalButton };
+  return {
+    artist,
+    album,
+    tracks,
+    bulkHighButton,
+    bulkNormalButton,
+    sourceStateVersion: sourceStateVersion,
+  };
 }
 
 export async function prepareMeloBotBulkAlbum(client, artist, albumTitle, preferredSeed = null) {
@@ -1293,7 +1342,7 @@ function chooseArtistPicker(items = [], requested = '') {
 async function openMeloBotAlbumListingDirect(client, artistQuery) {
   const first = await sendAndCollect(client, artistQuery, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 2600,
+    quietMs: 750,
   });
 
   let artist = artistQuery;
@@ -1306,7 +1355,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery) {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2600,
+        quietMs: 750,
       });
       messages = selected.messages;
       listing = inspectMeloBotAlbumListing(messages);
@@ -1318,7 +1367,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery) {
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2600,
+        quietMs: 750,
       });
       messages = page.messages;
       listing = inspectMeloBotAlbumListing(messages);
@@ -1332,6 +1381,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery) {
       seed: null,
       artistContext: null,
       route: 'direct_surface',
+      sourceStateVersion: sourceStateVersion,
     };
   }
 
@@ -1362,6 +1412,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery) {
     seed,
     artistContext,
     route: `direct_seed:${initial.route}`,
+    sourceStateVersion: sourceStateVersion,
   };
 }
 
@@ -1373,7 +1424,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
 
   const first = await sendAndCollect(client, artistQuery, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 2600,
+    quietMs: 750,
   });
 
   let artist = artistQuery;
@@ -1386,7 +1437,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       artist = picker.name;
       const selected = await sendAndCollect(client, picker.rawText, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2600,
+        quietMs: 750,
       });
       contextMessages = selected.messages;
       listing = inspectMeloBotAlbumListing(contextMessages);
@@ -1402,6 +1453,8 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       albums: resolved.albums,
       complete: resolved.complete,
       confirmedEmpty: resolved.confirmedEmpty,
+      sourceStateVersion,
+      sourceStateSinglePage: !(resolved.pages > 1),
     };
   }
 
@@ -1409,7 +1462,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
   if (navButton) {
     const page = await sendAndCollect(client, navButton, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2600,
+      quietMs: 750,
     });
     listing = inspectMeloBotAlbumListing(page.messages);
     if (listing.confirmed) {
@@ -1421,6 +1474,8 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
         albums: resolved.albums,
         complete: resolved.complete,
         confirmedEmpty: resolved.confirmedEmpty,
+        sourceStateVersion,
+        sourceStateSinglePage: !(resolved.pages > 1),
       };
     }
   }
@@ -1466,6 +1521,8 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       artistContext,
       declaredCount: resolved.declaredCount ?? null,
       confirmed: resolved.confirmed,
+      sourceStateVersion: resolved.sourceStateVersion,
+      sourceStateSinglePage: resolved.sourceStateSinglePage,
     };
   }
 
@@ -1560,7 +1617,7 @@ async function getInitialMeloBotAlbumListing(client, artistContext) {
   if (albumControl) {
     const page = await sendAndCollect(client, albumControl, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2600,
+      quietMs: 750,
     });
     const listing = inspectMeloBotAlbumListing(page.messages);
     if (listing.confirmed) {
@@ -1595,7 +1652,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     const late = await collectLateMeloBotMessages(
       client,
       Number(artistContext.sourceAfterId),
-      { timeoutMs: 3600, quietMs: 1200 }
+      { timeoutMs: 3600, quietMs: 500 }
     );
     messages = mergeMessageSets(messages, late);
     listing = inspectMeloBotAlbumListing(messages);
@@ -1606,7 +1663,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     if (lateNav) {
       const page = await sendAndCollect(client, lateNav, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2600,
+        quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
       return { listing: pageListing, messages: page.messages, route: 'late_album_button' };
@@ -1618,7 +1675,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
   if (moreButton) {
     const more = await sendAndCollect(client, moreButton, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2400,
+      quietMs: 750,
     });
     messages = mergeMessageSets(messages, more.messages);
     listing = inspectMeloBotAlbumListing(more.messages);
@@ -1628,7 +1685,7 @@ async function probeMeloBotAlbumSurface(client, artistContext) {
     if (navButton) {
       const page = await sendAndCollect(client, navButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2600,
+        quietMs: 750,
       });
       const pageListing = inspectMeloBotAlbumListing(page.messages);
       return { listing: pageListing, messages: page.messages, route: 'artist_more_album_button' };
@@ -1667,6 +1724,8 @@ export async function resolveMeloBotAlbums(
   return {
     ...resolved,
     source: resolved.pages > 1 ? `${initial.route}_paged` : initial.route,
+    sourceStateVersion: sourceStateVersion,
+    sourceStateSinglePage: !(resolved.pages > 1),
   };
 }
 
@@ -1720,6 +1779,8 @@ export async function resolveMeloBotArtistAlbums(
       confirmed: Boolean(direct.confirmed || direct.albums?.length || direct.confirmedEmpty),
       declaredCount: direct.declaredCount ?? null,
       source: 'direct_fallback',
+      sourceStateVersion: direct.sourceStateVersion ?? sourceStateVersion,
+      sourceStateSinglePage: direct.sourceStateSinglePage !== false,
     };
   } catch (directError) {
     throw new Error(
@@ -1773,7 +1834,7 @@ export async function openMeloBotAlbumByTitle(
 
     const page = await sendAndCollect(client, state.nextButton, {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 2600,
+      quietMs: 750,
     });
     const nextState = inspectMeloBotAlbumListing(page.messages);
     const fingerprint = [
@@ -1806,7 +1867,7 @@ export async function openMeloBotAlbum(client, artist, album) {
 async function openMeloBotDailyPlaylists(client) {
   const index = await sendAndCollect(client, '/playlists', {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1800,
+    quietMs: 650,
   });
 
   const dailyButton = findButton(index.messages, text =>
@@ -1816,7 +1877,7 @@ async function openMeloBotDailyPlaylists(client) {
 
   return sendAndCollect(client, dailyButton, {
     timeoutMs: config.searchTimeoutMs,
-    quietMs: 1900,
+    quietMs: 700,
   });
 }
 
@@ -1921,7 +1982,7 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
   const openHome = async () => {
     let page = await sendAndCollect(client, '/start', {
       timeoutMs: config.searchTimeoutMs,
-      quietMs: 1800,
+      quietMs: 650,
     });
 
     const homeButton = findButton(page.messages, text => /صفحه\s*اصلی/u.test(clean(text)));
@@ -1929,7 +1990,7 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
       try {
         page = await sendAndCollect(client, homeButton, {
           timeoutMs: config.searchTimeoutMs,
-          quietMs: 1800,
+          quietMs: 650,
         });
       } catch {}
     }
@@ -1984,7 +2045,7 @@ export async function discoverMeloBotHome(client, { maxSections = 3 } = {}) {
       await openHome();
       const section = await sendAndCollect(client, sectionButton, {
         timeoutMs: config.searchTimeoutMs,
-        quietMs: 2200,
+        quietMs: 650,
         stopWhen: message => replyButtons(message).some(text => Boolean(parseTrackButton(text))),
       });
       absorb(section.messages);

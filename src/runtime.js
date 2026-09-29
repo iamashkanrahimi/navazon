@@ -7,7 +7,7 @@ import { FollowStore } from './follows.js';
 import { SessionStore } from './sessions.js';
 import { DeepCatalog } from './deepCatalog.js';
 import { initDb, db } from './db.js';
-import { createTelegramClient } from './mtproto.js';
+import { createTelegramClient, installTelegramInbox } from './mtproto.js';
 
 await initDb();
 
@@ -22,6 +22,7 @@ export const tg = createTelegramClient();
 
 await tg.connect();
 if (!(await tg.checkAuthorization())) throw new Error('Proxy Telegram session is not authorized');
+installTelegramInbox(tg);
 
 console.log('Proxy MTProto connected.');
 console.log(`Primary source: @${config.melobotUsername} (Premium/HQ)`);
