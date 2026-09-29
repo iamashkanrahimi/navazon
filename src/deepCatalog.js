@@ -412,8 +412,8 @@ export class DeepCatalog {
   }
 
   async deriveArtistList(artist, listType = 'top', limit = 10) {
-    const artistKey = deepNormalize(artist);
-    if (!artistKey) return [];
+    const artistName = clean(artist);
+    if (!artistName) return [];
 
     const order = listType === 'recent'
       ? 't.release_date DESC NULLS LAST, t.updated_at DESC'
@@ -433,10 +433,10 @@ export class DeepCatalog {
         t.availability_policy,
         t.source_data
       FROM deep_tracks t
-      WHERE LOWER(t.artist) = $1
+      WHERE LOWER(t.artist) = LOWER($1)
       ORDER BY ${order}
       LIMIT $2
-    `, [artistKey, Math.max(1, Number(limit || 10))]);
+    `, [artistName, Math.max(1, Number(limit || 10))]);
 
     return result.rows.map(row => ({
       artist: row.artist,
