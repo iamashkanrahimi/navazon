@@ -32,7 +32,9 @@ export async function prepareTrackPage(track) {
     try { await deepCatalog.seedTrackTasks(track, { priority: 118 }); } catch {}
   }
 
-  const details = await deepCatalog.getTrackDetails(track);
+  const details = track?.artistInferred
+    ? { media: {}, metadata: {} }
+    : await deepCatalog.getTrackDetails(track);
   const snapshot = details?.metadata?.capabilities || {};
 
   // Initial rendering is local-only. Source capability checks are deliberately
