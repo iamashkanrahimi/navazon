@@ -19,6 +19,9 @@ import {
 let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
 const ALBUM_PRIMARY_CIRCUIT_MS = 10 * 60 * 1000;
+const ARTIST_NAV_TIMEOUT_MS = Math.min(config.searchTimeoutMs, 6000);
+const ARTIST_SORT_TIMEOUT_MS = Math.min(config.searchTimeoutMs, 3500);
+const EXACT_SEARCH_PROBE_TIMEOUT_MS = Math.min(config.searchTimeoutMs, 3500);
 const albumPrimaryCircuit = new Map();
 
 export function getMeloBotStateVersion() {
@@ -641,6 +644,7 @@ async function collectMeloBotAlbumPages(client, initial, {
 
 export async function searchMeloBotTyped(client, query, {
   maxRefinements = 3,
+  timeoutMs = config.searchTimeoutMs,
 } = {}) {
   const requested = clean(query);
   if (!requested) throw new Error('MeloBot search query is empty.');
@@ -654,7 +658,7 @@ export async function searchMeloBotTyped(client, query, {
     if (!normalize(command)) break;
 
     const result = await sendAndCollect(client, command, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs,
       quietMs: 650,
     });
     allMessages.push(...(result.messages || []));
@@ -796,7 +800,11 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
   };
 }
 
-export async function probeMeloBotCandidateSurface(client, candidate) {
+export async function probeMeloBotCandidateSurface(
+  client,
+  candidate,
+  { timeoutMs = EXACT_SEARCH_PROBE_TIMEOUT_MS } = {}
+) {
   if (!candidate?.rawText) {
     throw new Error('MeloBot candidate surface probe requires a raw button.');
   }
@@ -805,7 +813,7 @@ export async function probeMeloBotCandidateSurface(client, candidate) {
   }
 
   const selected = await sendAndCollect(client, candidate.rawText, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 550,
   });
   const inspected = inspectSelectedCandidateSurface(selected.messages, candidate);
@@ -909,12 +917,16 @@ async function resolveMeloBotTrackCandidate(client, candidate) {
   }
 }
 
-async function openTrackMenuWithCandidate(client, candidate) {
+async function openTrackMenuWithCandidate(
+  client,
+  candidate,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
   const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
   if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs,
     quietMs: 550,
     stopWhen: m => replyButtons(m).some(text =>
       (text.includes('کیفیت عالی') || text.includes('کیفیت معمولی'))
@@ -1281,7 +1293,11 @@ export async function inspectMeloBotTrack(client, candidate) {
 }
 
 async function openMeloBotArtistBase(client, seedTrack) {
-  let openedMenu = await openTrackMenuWithCandidate(client, seedTrack);
+  let openedMenu = await openTrackMenuWithCandidate(
+    client,
+    seedTrack,
+    { timeoutMs: ARTIST_NAV_TIMEOUT_MS }
+  );
   let menuMessages = openedMenu.messages;
   let effectiveSeed = openedMenu.candidate || seedTrack;
   let recoveredFromAlbum = false;
@@ -1301,7 +1317,11 @@ async function openMeloBotArtistBase(client, seedTrack) {
         source: 'melobot',
         sourceStateVersion,
       };
-      openedMenu = await openTrackMenuWithCandidate(client, recoverySeed);
+      openedMenu = await openTrackMenuWithCandidate(
+        client,
+        recoverySeed,
+        { timeoutMs: ARTIST_NAV_TIMEOUT_MS }
+      );
       menuMessages = openedMenu.messages;
       effectiveSeed = openedMenu.candidate || recoverySeed;
       recoveredFromAlbum = true;
@@ -1332,7 +1352,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
     throw new Error('MeloBot artist button not found.');
   }
   let artistPage = await sendAndCollect(client, artistButton, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: ARTIST_NAV_TIMEOUT_MS,
     quietMs: 650,
   });
 
@@ -1360,7 +1380,7 @@ async function openMeloBotArtistBase(client, seedTrack) {
     selectedArtist = chosen.name;
 
     artistPage = await sendAndCollect(client, chosen.rawText, {
-      timeoutMs: config.searchTimeoutMs,
+      timeoutMs: ARTIST_NAV_TIMEOUT_MS,
       quietMs: 750,
     });
   }
@@ -1436,7 +1456,7 @@ export async function openMeloBotArtist(client, seedTrack) {
 
     try {
       let ordered = await sendAndCollect(client, base.orderButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: ARTIST_SORT_TIMEOUT_MS,
         quietMs: 650,
         stopWhen: message => {
           const buttons = replyButtons(message);
@@ -1454,7 +1474,7 @@ export async function openMeloBotArtist(client, seedTrack) {
         );
         if (popularityButton) {
           ordered = await sendAndCollect(client, popularityButton, {
-            timeoutMs: config.searchTimeoutMs,
+            timeoutMs: ARTIST_SORT_TIMEOUT_MS,
             quietMs: 650,
             stopWhen: message => replyButtons(message)
               .some(text => parseTrackButton(text, base.artist)),
@@ -1489,7 +1509,10 @@ export async function openMeloBotArtist(client, seedTrack) {
 
   if (!topTracks.length && !base.recentTracks.length) {
     try {
-      const fallback = await searchMeloBot(client, base.artist, { maxRefinements: 2 });
+      const fallback = await searchMeloBot(client, base.artist, {
+        maxRefinements: 2,
+        timeoutMs: ARTIST_NAV_TIMEOUT_MS,
+      });
       const target = normalize(base.artist);
       const exactArtistTracks = fallback.filter(track =>
         normalize(track.artist) === target
