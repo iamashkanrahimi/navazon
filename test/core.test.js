@@ -791,7 +791,7 @@ test('Ebi-style missing artist button falls back to the direct album route', asy
     client,
     'Ebi',
     null,
-    { allowEmpty: true, maxAlbums: 20 }
+    { allowEmpty: true, maxAlbums: 20, timeoutMs: 4000 }
   );
 
   assert.equal(resolved.source, 'direct_fallback');
