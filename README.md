@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.9 — Composite Artist Crawl Guard
+# Navazon Cloud v1.6.0 — Canonical Track Identity
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -246,3 +246,18 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Legacy queued composite-credit Artist tasks are retired before they can occupy the serialized MeloBot source lane.
 - Artist identities observed directly from MeloBot's Artist picker remain source-backed and can still be crawled, including names that contain collaboration-like separators.
 - The change is deliberately limited to background crawling; interactive search and Artist navigation behavior is unchanged.
+
+
+## Canonical Track Identity v1.6.0
+
+- Persian/Latin and fallback-source variants can now converge on one durable Track identity using Telegram audio metadata as high-confidence evidence.
+- A new `track_aliases` table maps alternate artist/title spellings to the canonical deep-catalog Track without duplicating navigation state.
+- Search results resolve known aliases before they are shown and collapse duplicates that point to the same canonical Track.
+- Track pages resolve aliases locally before rendering, so an Ahangify-discovered Persian row can reuse MeloBot media, metadata and Artist navigation when the delivered audio proves they are the same song.
+- Search cache namespace is bumped to `v160` so legacy split-identity results do not survive the migration.
+- Positive capability snapshots expire after one hour; stale availability claims become unknown rather than remaining permanently trusted.
+- A quality that fails in the current session is hidden on the refreshed Track page without turning a transient failure into a permanent negative cache.
+- Artist navigation is shown only when the Track has a source-backed Artist route.
+- Interactive quality waits are capped at 6.5 seconds.
+- Native album/top/recent bulk work uses one bounded source attempt and no longer chains long per-track retries inside the serialized foreground queue.
+- Batch media bridging is bounded, and the `clean is not defined` bulk cache crash is fixed.
