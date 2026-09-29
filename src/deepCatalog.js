@@ -149,8 +149,8 @@ export class DeepCatalog {
     await db.query(`
       INSERT INTO deep_track_media (
         track_key, quality, file_id, file_unique_id, kind,
-        bitrate, file_size, duration_seconds, source, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+        bitrate, file_size, duration_seconds, source, verified_quality, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,NOW())
       ON CONFLICT (track_key, quality) DO UPDATE SET
         file_id = EXCLUDED.file_id,
         file_unique_id = COALESCE(EXCLUDED.file_unique_id, deep_track_media.file_unique_id),
@@ -159,6 +159,7 @@ export class DeepCatalog {
         file_size = COALESCE(EXCLUDED.file_size, deep_track_media.file_size),
         duration_seconds = COALESCE(EXCLUDED.duration_seconds, deep_track_media.duration_seconds),
         source = EXCLUDED.source,
+        verified_quality = TRUE,
         updated_at = NOW()
     `, [
       trackKey,
@@ -190,6 +191,7 @@ export class DeepCatalog {
              bitrate, file_size, duration_seconds, source
       FROM deep_track_media
       WHERE quality = $1
+        AND verified_quality = TRUE
         AND track_key = ANY($2::text[])
     `, [quality, keys]);
 
@@ -333,6 +335,7 @@ export class DeepCatalog {
         SELECT quality, file_id, file_unique_id, kind, bitrate, file_size, duration_seconds, source
         FROM deep_track_media
         WHERE track_key = $1
+          AND verified_quality = TRUE
       `, [trackKey]),
       db.query(`
         SELECT a.album_key, a.artist, a.title, a.track_count
