@@ -106,15 +106,21 @@ async function syncArtistContext(artistContext) {
     return false;
   }
 
-  const results = await Promise.allSettled([
+  const writes = [
     catalog.recordArtist(artistContext.artist, {
       topTracks,
       recentTracks,
       albumButton: artistContext.albumButton || null,
     }),
-    deepCatalog.setArtistList(artistContext.artist, 'top', topTracks),
-    deepCatalog.setArtistList(artistContext.artist, 'recent', recentTracks),
-  ]);
+  ];
+  if (topTracks.length) {
+    writes.push(deepCatalog.setArtistList(artistContext.artist, 'top', topTracks));
+  }
+  if (recentTracks.length) {
+    writes.push(deepCatalog.setArtistList(artistContext.artist, 'recent', recentTracks));
+  }
+
+  const results = await Promise.allSettled(writes);
   for (const result of results) {
     if (result.status === 'rejected') {
       console.warn('[artist sync]', artistContext.artist, result.reason?.message || result.reason);
