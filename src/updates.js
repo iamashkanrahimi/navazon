@@ -10,6 +10,7 @@ import {
 } from './ui.js';
 import { noteUserActivity } from './state.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
+import { renderTrackPage } from './trackActions.js';
 
 const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
@@ -28,6 +29,21 @@ function searchAllowed(userId) {
     }
   }
   return true;
+}
+
+async function openTrackPageLocal(sessionId, session, messageId) {
+  try {
+    await renderTrackPage(sessionId, session, messageId);
+  } catch (err) {
+    console.error('[track page local]', err.message);
+    await bot.editMessageText(
+      session.chatId,
+      messageId,
+      'باز کردن صفحه‌ی آهنگ ممکن نشد.'
+    );
+  } finally {
+    session.busy = false;
+  }
 }
 
 function newSessionId() {
@@ -179,7 +195,7 @@ export async function handleUpdate(update) {
         session.trackBack = { type: 'results' };
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
-        sourceQueue.push({ type: 'track_page', sessionId, messageId });
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'sal') {
         const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
         session.busy = true;
@@ -216,7 +232,7 @@ export async function handleUpdate(update) {
       } else if (action === 'trt') {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال بازگشت به آهنگ…');
-        sourceQueue.push({ type: 'track_page', sessionId, messageId });
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tret') {
         if (session.albumOriginTrack) {
           session.currentTrack = session.albumOriginTrack;
@@ -224,7 +240,7 @@ export async function handleUpdate(update) {
         }
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال بازگشت به آهنگ…');
-        sourceQueue.push({ type: 'track_page', sessionId, messageId });
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tbk') {
         const back = session.trackBack || { type: 'results' };
         if (back.type === 'top' && session.artistContext) {
@@ -316,14 +332,14 @@ export async function handleUpdate(update) {
         session.trackBack = { type: 'top' };
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
-        sourceQueue.push({ type: 'track_page', sessionId, messageId });
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'rt') {
         const track = session.artistContext?.recentTracks?.[Number(parts[2])]; if (!track) return;
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'recent' };
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
-        sourceQueue.push({ type: 'track_page', sessionId, messageId });
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tqh' || action === 'tqn') {
         if (!session.currentTrack) return;
         session.busy = true;
@@ -401,7 +417,7 @@ export async function handleUpdate(update) {
         session.trackBack = { type: 'album' };
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
-        sourceQueue.push({ type: 'track_page', sessionId, messageId });
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'ala') {
         if (!session.currentAlbum?.tracks?.length) return;
         session.busy = true;
