@@ -351,6 +351,7 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
         type: 'track',
         rawText: original,
         artist: fallbackArtist,
+        artistInferred: true,
         title,
         sourcePopularityText: popularity.text,
         sourcePopularityCount: popularity.count,
@@ -362,13 +363,13 @@ export function parseTrackButton(rawText, fallbackArtist = '') {
   return null;
 }
 
-export function parseAlbumButton(rawText) {
+export function parseAlbumButton(rawText, { allowBareCounted = false } = {}) {
   const original = clean(rawText);
   if (!original || isControl(original)) return null;
 
   const value = toAsciiDigits(stripLeadingEmoji(original));
   const counted = value.match(/^(.+?)\s*\((\d+)\)\s*$/u);
-  if (counted) {
+  if (counted && (allowBareCounted || /^[💿📀]/u.test(original))) {
     return {
       type: 'album',
       rawText: original,
@@ -457,7 +458,7 @@ function parseAlbumButtons(messages = []) {
   const albums = [];
   const seen = new Set();
   for (const rawText of buttonsFromMessages(messages)) {
-    const album = parseAlbumButton(rawText);
+    const album = parseAlbumButton(rawText, { allowBareCounted: true });
     if (!album) continue;
     const key = normalize(album.title);
     if (!key || seen.has(key)) continue;
@@ -922,7 +923,7 @@ export async function openMeloBotArtistFresh(client, artist, preferredSeed = nul
   return openMeloBotArtist(client, seed);
 }
 
-async function resolveMeloBotTrackCandidate(client, candidate) {
+export async function resolveMeloBotTrackCandidate(client, candidate) {
   const query = [candidate?.artist, candidate?.title].filter(Boolean).join(' ')
     || candidate?.title
     || candidate?.rawText;
