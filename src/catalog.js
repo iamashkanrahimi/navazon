@@ -39,10 +39,10 @@ function looksLikeAlbumRowButton(value = '') {
 }
 
 function trustedStoredAlbum(album = {}) {
-  if (album.verifiedAlbum === true) return true;
-  const rawText = clean(album.rawText || '');
-  if (!rawText) return false;
-  return /^[💿📀]/u.test(rawText);
+  return Boolean(
+    album?.verifiedAlbum === true
+    && Number(album?.albumTrustVersion || 0) >= 2
+  );
 }
 
 function freshEnough(iso, maxAgeMs) {
@@ -236,7 +236,8 @@ export class CatalogStore {
         album->>'title' AS title,
         NULLIF(album->>'trackCount','')::int AS track_count,
         album->>'rawText' AS raw_text,
-        COALESCE((album->>'verifiedAlbum')::boolean, FALSE) AS verified_album
+        COALESCE((album->>'verifiedAlbum')::boolean, FALSE) AS verified_album,
+        COALESCE(NULLIF(album->>'albumTrustVersion','')::int, 0) AS album_trust_version
       FROM artists a
       CROSS JOIN LATERAL jsonb_array_elements(
         COALESCE(a.data->'albumList','[]'::jsonb)
@@ -250,10 +251,8 @@ export class CatalogStore {
       .filter(row =>
         row.artist
         && row.title
-        && (
-          /^[💿📀]/u.test(clean(row.raw_text || ''))
-          || row.verified_album === true
-        )
+        && row.verified_album === true
+        && Number(row.album_trust_version || 0) >= 2
       )
       .map(row => ({
         artist: row.artist,
@@ -261,6 +260,7 @@ export class CatalogStore {
         trackCount: row.track_count || undefined,
         rawText: row.raw_text || undefined,
         verifiedAlbum: Boolean(row.verified_album),
+        albumTrustVersion: Number(row.album_trust_version || 0) || undefined,
         source: 'catalog',
       }));
   }
@@ -341,6 +341,7 @@ export class CatalogStore {
       trackCount: album.trackCount || undefined,
       rawText: clean(album.rawText),
       verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+      albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
     }));
     node.albumsUpdatedAt = now;
     node.albumsEmptyConfirmedAt = !(albums || []).length && emptyConfirmed ? now : null;
@@ -356,6 +357,7 @@ export class CatalogStore {
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
         verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+        albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
         listingUpdatedAt: now,
       };
     }
@@ -376,13 +378,15 @@ export class CatalogStore {
     node.albums ||= {};
 
     for (const album of albums) {
+      if (!trustedStoredAlbum(album)) continue;
       const albumKey = normalize(album.title);
       if (!albumKey) continue;
       const compact = {
         title: clean(album.title),
         trackCount: album.trackCount || undefined,
         rawText: clean(album.rawText),
-        verifiedAlbum: Boolean(album.verifiedAlbum) || undefined,
+        verifiedAlbum: true,
+        albumTrustVersion: Number(album.albumTrustVersion || 0) || undefined,
       };
       existing.set(albumKey, { ...(existing.get(albumKey) || {}), ...compact });
       node.albums[albumKey] = {
