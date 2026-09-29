@@ -8,6 +8,13 @@ import { getState, setState, getStats, getLastUserActivity } from './state.js';
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
 
+const HEAVY_CRAWL_KINDS = new Set([
+  'track_hq',
+  'track_normal',
+  'artist_bulk_media',
+  'album_bulk_media',
+]);
+
 function authorized(req, token) {
   return req.headers.authorization === `Bearer ${token}`;
 }
@@ -21,7 +28,32 @@ async function queueCrawler() {
 
   await deepCatalog.enqueueFeedSweep();
   await deepCatalog.compactQueue();
-  const deepTask = await deepCatalog.claimNextTask();
+
+  let deepTask = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const candidateTask = await deepCatalog.claimNextTask();
+    if (!candidateTask) break;
+
+    if (
+      HEAVY_CRAWL_KINDS.has(candidateTask.kind)
+      && idleForMs < config.discoveryHeavyIdleMs
+    ) {
+      const remainingMs = Math.max(
+        60_000,
+        config.discoveryHeavyIdleMs - idleForMs
+      );
+      await deepCatalog.deferTask(
+        candidateTask.id,
+        Math.min(remainingMs, 10 * 60 * 1000),
+        'deferred to protect interactive MTProto latency'
+      );
+      continue;
+    }
+
+    deepTask = candidateTask;
+    break;
+  }
+
   if (deepTask) {
     sourceQueue.push({ type: 'deep_crawl', task: deepTask });
     return {
