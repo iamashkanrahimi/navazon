@@ -1729,18 +1729,27 @@ async function openMeloBotArtistBase(
   };
 }
 
-export async function openMeloBotArtistFast(client, seedTrack) {
-  const base = await openMeloBotArtistBase(client, seedTrack);
+export async function openMeloBotArtistFast(
+  client,
+  seedTrack,
+  { timeoutMs = 8000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 8000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
 
   let tracks = (base.recentTracks || []).slice(0, 10);
   let route = tracks.length ? 'artist_base' : 'artist_search_recovery';
   let liveStateValid = true;
 
-  if (!tracks.length) {
+  if (!tracks.length && !remaining.expired()) {
     try {
       const searched = await searchMeloBot(client, base.artist, {
         maxRefinements: 2,
-        timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, 4500),
+        timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       });
       const target = normalize(base.artist);
       const exact = searched
@@ -1790,10 +1799,24 @@ export async function openMeloBotArtistFast(client, seedTrack) {
 export async function openMeloBotArtistFastFresh(
   client,
   artist,
-  preferredSeed = null
+  preferredSeed = null,
+  { timeoutMs = 8000 } = {}
 ) {
-  const seed = await findArtistSeed(client, artist, preferredSeed);
-  return openMeloBotArtistFast(client, seed);
+  const remaining = sourceBudget(timeoutMs, 8000);
+  const seed = await findArtistSeed(
+    client,
+    artist,
+    preferredSeed,
+    { timeoutMs: remaining() }
+  );
+  if (remaining.expired()) {
+    throw new Error(`MeloBot fast Artist open timed out for: ${artist}`);
+  }
+  return openMeloBotArtistFast(
+    client,
+    seed,
+    { timeoutMs: remaining() }
+  );
 }
 
 export async function openMeloBotArtist(client, seedTrack) {
