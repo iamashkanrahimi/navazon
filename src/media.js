@@ -122,6 +122,14 @@ function normalizeMatch(value = '') {
   return normalizeText(value);
 }
 
+function interactionBudget(timeoutMs = Math.min(config.searchTimeoutMs, 14000)) {
+  const total = Math.max(2500, Number(timeoutMs || 14000));
+  const deadline = Date.now() + total;
+  const remaining = () => Math.max(800, deadline - Date.now());
+  remaining.expired = () => Date.now() >= deadline;
+  return remaining;
+}
+
 function chooseAhangifyMatch(results, track) {
   const wantedArtist = normalizeMatch(track?.artist || '');
   const wantedTitle = normalizeMatch(track?.title || '');
@@ -200,12 +208,21 @@ export async function downloadTrackWithSources(
   };
 }
 
-export async function searchPrimaryTyped(query) {
+export async function searchPrimaryTyped(
+  query,
+  { timeoutMs = Math.min(config.searchTimeoutMs, 14000) } = {}
+) {
+  const remaining = interactionBudget(timeoutMs);
   try {
     const typed = await classifyMeloBotTypedSearchExact(
       tg,
       query,
-      await searchMeloBotTyped(tg, query)
+      await searchMeloBotTyped(tg, query, {
+        timeoutMs: Math.min(7000, remaining()),
+      }),
+      {
+        probeTimeoutMs: Math.min(2500, remaining()),
+      }
     );
     const rankedMelo = rankTracksForQuery(query, typed.tracks || []);
     const meaningful = meaningfulSearchTokens(query);
@@ -223,7 +240,12 @@ export async function searchPrimaryTyped(query) {
 
     if (needsRelevanceFallback) {
       try {
-        const fallback = await searchAhangify(tg, query);
+        if (remaining.expired()) {
+          throw new Error('Search relevance fallback budget exhausted.');
+        }
+        const fallback = await searchAhangify(tg, query, {
+          timeoutMs: remaining(),
+        });
         const fallbackTracks = fallback.map(candidate => applyPolicyDefaults({
           ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }),
           source: 'ahangify',
@@ -276,7 +298,10 @@ export async function searchPrimaryTyped(query) {
     throw new Error('MeloBot typed search returned no visible results.');
   } catch (err) {
     console.warn('[melobot search]', err.message);
-    const results = await searchAhangify(tg, query);
+    if (remaining.expired()) throw err;
+    const results = await searchAhangify(tg, query, {
+      timeoutMs: remaining(),
+    });
     return {
       tracks: results.slice(0, MAX_RESULTS).map(candidate => applyPolicyDefaults({
         ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }),
