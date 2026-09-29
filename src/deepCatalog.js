@@ -518,8 +518,7 @@ export class DeepCatalog {
 
     return result.rows
       .filter(row =>
-        !row.metadata?.rawText
-        || /^[💿📀]/u.test(clean(row.metadata.rawText))
+        /^[💿📀]/u.test(clean(row.metadata?.rawText || ''))
         || row.metadata?.verifiedAlbum === true
       )
       .map(row => ({
