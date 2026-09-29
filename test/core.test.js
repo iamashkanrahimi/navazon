@@ -16,6 +16,7 @@ process.env.SEARCH_TIMEOUT_MS ||= '650';
 const {
   parseTrackButton,
   parseAlbumButton,
+  parseMeloBotSearchSurface,
   inspectMeloBotAlbumListing,
   albumQueryMatches,
   resolveMeloBotArtistAlbums,
@@ -1281,4 +1282,23 @@ test('empty artist surfaces fail closed instead of producing a broken artist pag
     () => openMeloBotArtist(client, seed),
     /no usable tracks/
   );
+});
+
+
+test('typed search splits counted disc rows into artist and album without changing album-list parsing', () => {
+  const surface = parseMeloBotSearchSurface([{
+    message: 'search',
+    replyMarkup: {
+      rows: [{ buttons: [{ text: '💿 Hichkas, Mojaz (14)' }] }],
+    },
+  }]);
+
+  assert.equal(surface.albums.length, 1);
+  assert.equal(surface.albums[0].artist, 'Hichkas');
+  assert.equal(surface.albums[0].title, 'Mojaz');
+  assert.equal(surface.albums[0].trackCount, 14);
+
+  const listingRow = parseAlbumButton('💿 Mojaz, Vol. 2 (14)');
+  assert.equal(listingRow.artist, undefined);
+  assert.equal(listingRow.title, 'Mojaz, Vol. 2');
 });
