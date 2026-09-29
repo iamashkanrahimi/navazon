@@ -25,6 +25,7 @@ const {
   openMeloBotArtist,
   openMeloBotAlbumByTitle,
   openMeloBotAlbumDirectByTitle,
+  downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
   searchMeloBot,
@@ -1700,4 +1701,27 @@ test('mixed album artists do not create an ambiguous album-derived Artist shortc
   const keyboard = resultsKeyboard('albumartist2', session);
   const callbacks = keyboard.inline_keyboard.flat().map(button => button.callback_data);
   assert.equal(callbacks.some(value => value?.startsWith('aar:')), false);
+});
+
+test('interactive album bulk honors a short caller timeout instead of the legacy multi-minute wait', async () => {
+  const client = new FakeTelegramClient({
+    'دانلود همه (عالی)': [[]],
+  });
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => downloadMeloBotAlbumTracks(
+      client,
+      {
+        album: { title: 'Fast Fail Album' },
+        tracks: [{ artist: 'A', title: 'One' }],
+        bulkHighButton: 'دانلود همه (عالی)',
+      },
+      { timeoutMs: 30 }
+    ),
+    /did not deliver audio/
+  );
+  const elapsed = Date.now() - startedAt;
+
+  assert.ok(elapsed < 1200, `expected bounded failure, got ${elapsed}ms`);
 });
