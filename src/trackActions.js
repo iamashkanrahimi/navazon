@@ -100,7 +100,13 @@ async function sendAudioMedia(chatId, track, media) {
   });
 }
 
-export async function sendTrackQuality(chatId, track, quality, userRegion = 'unknown') {
+export async function sendTrackQuality(
+  chatId,
+  track,
+  quality,
+  userRegion = 'unknown',
+  { sourceTimeoutMs = config.downloadTimeoutMs } = {}
+) {
   assertDeliveryAllowed(track, userRegion);
   let details = await deepCatalog.getTrackDetails(track);
   let media = details?.media?.[quality] || null;
@@ -112,7 +118,12 @@ export async function sendTrackQuality(chatId, track, quality, userRegion = 'unk
     // promoted to HQ. HQ/normal reuse comes only from deep_track_media where
     // the quality dimension is explicit.
     if (track?.source === 'melobot' && track?.rawText) {
-      const result = await downloadMeloBotTrackQuality(tg, track, quality);
+      const result = await downloadMeloBotTrackQuality(
+        tg,
+        track,
+        quality,
+        { timeoutMs: sourceTimeoutMs }
+      );
       media = await captureForwardedMedia(result.audioMessage);
       await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
       if (quality === 'hq') {
