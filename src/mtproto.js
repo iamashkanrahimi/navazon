@@ -149,6 +149,12 @@ async function collectFromInbox(client, peer, afterId, {
 
     state.waiters.add(waiter);
 
+    // Close the tiny race between the initial buffer snapshot and waiter
+    // registration by replaying the current peer buffer once more.
+    for (const message of state.buffers.get(peerId) || []) {
+      waiter.push(message);
+    }
+
     totalTimer = setTimeout(
       () => finish(),
       Math.max(1, Number(timeoutMs || config.searchTimeoutMs || 18000))
