@@ -82,7 +82,7 @@ function isUsableArtistContext(context = {}) {
 function sourceJobPriority(job = {}) {
   if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
   if (job.type === 'download' || job.type?.startsWith('download_')) return 120;
-  if (job.type === 'album' || job.type === 'albums' || job.type === 'artist') return 110;
+  if (['album','albums','artist','artist_from_album'].includes(job.type)) return 110;
   return 100;
 }
 
@@ -1363,6 +1363,86 @@ export const sourceQueue = new SerialQueue(async job => {
       } catch (err) {
         await recordCrawlerFinish(runId,{ ok: false, error: err.message });
         console.warn('[crawler bootstrap]',err.message);
+      }
+      return;
+    }
+
+    if (job.type === 'artist_from_album') {
+      const artistStartedAt = Date.now();
+      let artistRoute = 'unknown';
+      try {
+        const album = session.albumOptions?.[job.albumIndex];
+        const artist = album?.artist;
+        if (!artist) throw new Error('Album artist is missing.');
+
+        const cachedArtist = await catalog.getArtistContext(
+          artist,
+          config.catalogArtistTtlMs
+        );
+
+        if (cachedArtist && isUsableArtistContext(cachedArtist)) {
+          session.artistContext = cachedArtist;
+          artistRoute = 'catalog';
+        } else {
+          const albumSeed = (album.tracks || []).find(track =>
+            track?.rawText && normalize(track.artist) === normalize(artist)
+          ) || null;
+
+          session.artistContext = albumSeed
+            ? await openMeloBotArtist(tg, { ...albumSeed, source: 'melobot' })
+            : await openMeloBotArtistFresh(tg, artist, null);
+          artistRoute = albumSeed
+            ? (session.artistContext.recoveredFromAlbum ? 'album_live_recovery' : 'album_track_seed')
+            : 'fresh_artist_search';
+        }
+
+        if (!isUsableArtistContext(session.artistContext)) {
+          throw new Error('MeloBot returned an empty album-derived artist context.');
+        }
+
+        session.artistSeed = session.artistContext.seedTrack
+          || session.artistContext.recentTracks?.[0]
+          || session.artistContext.topTracks?.[0]
+          || session.artistContext.tracks?.[0]
+          || null;
+
+        await syncArtistContext(session.artistContext);
+        session.isFollowing = await follows.isFollowing(
+          session.userId,
+          session.artistContext.artist
+        );
+        session.artistBack = 'rs';
+        session.albums = null;
+        session.albumsEmptyConfirmed = false;
+        session.busy = false;
+
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          session.artistContext.artist,
+          {
+            reply_markup: artistHomeKeyboard(
+              job.sessionId,
+              session.artistContext,
+              session.isFollowing,
+              { backAction: 'rs' }
+            ),
+          }
+        );
+
+        console.log(
+          `[perf.artist_from_album] artist=${JSON.stringify(session.artistContext.artist)} `
+          + `route=${artistRoute} tracks=${artistContextTracks(session.artistContext).length} `
+          + `total_ms=${Date.now() - artistStartedAt}`
+        );
+      } catch (err) {
+        console.error('[artist from album]', err.message);
+        console.log(
+          `[perf.artist_from_album] route=${artistRoute} `
+          + `total_ms=${Date.now() - artistStartedAt} error=true`
+        );
+        session.busy = false;
+        await showResults(job.sessionId, session, job.messageId);
       }
       return;
     }
