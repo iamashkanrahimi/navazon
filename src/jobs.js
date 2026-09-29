@@ -23,7 +23,7 @@ import {
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, openMeloBotAlbumContext, openMeloBotAlbumByTitle,
-  downloadMeloBotTrack, discoverMeloBotHome,
+  downloadMeloBotTrack, discoverMeloBotHome, getMeloBotStateVersion,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
@@ -44,6 +44,15 @@ import {
 } from './text.js';
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
+
+const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
+
+function sourceJobPriority(job = {}) {
+  if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
+  if (job.type === 'download' || job.type?.startsWith('download_')) return 120;
+  if (job.type === 'album' || job.type === 'albums' || job.type === 'artist') return 110;
+  return 100;
+}
 
 async function syncArtistContext(artistContext) {
   if (!artistContext?.artist) return;
@@ -414,6 +423,8 @@ async function setBrowseResults(sessionId, session, messageId, tracks, {
 }
 
 export const sourceQueue = new SerialQueue(async job => {
+  const runStartedAt = Date.now();
+  const queueWaitMs = Math.max(0, runStartedAt - Number(job?._queueMeta?.queuedAt || runStartedAt));
   const session = job.sessionId ? await sessions.get(job.sessionId) : null;
   try {
     if (job.type === 'search') {
@@ -1497,5 +1508,9 @@ export const sourceQueue = new SerialQueue(async job => {
       session.expiresAt = Date.now() + (session.busy ? BUSY_SESSION_TTL_MS : SESSION_TTL_MS);
       try { await sessions.set(job.sessionId,session); } catch (err) { console.warn('[session save]',err.message); }
     }
+    const runMs = Date.now() - runStartedAt;
+    console.log(
+      `[perf] job=${job.type} queue_wait_ms=${queueWaitMs} run_ms=${runMs} total_ms=${queueWaitMs + runMs}`
+    );
   }
-});
+}, { priorityOf: sourceJobPriority });
