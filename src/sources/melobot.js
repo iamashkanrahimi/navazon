@@ -1280,7 +1280,7 @@ export async function getMeloBotLyrics(
     };
   }
 
-  const text = sanitizeMeloBotLyricsText(raw, candidate);
+  const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
   if (!text) {
     throw new Error('MeloBot lyrics response contained no usable lyrics.');
   }
