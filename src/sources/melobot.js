@@ -535,17 +535,34 @@ export async function searchMeloBot(client, query, {
 }
 
 async function findArtistSeed(client, artist, preferredSeed = null) {
-  let seed = preferredSeed;
+  const target = normalize(artist);
+  const preferredArtist = normalize(preferredSeed?.artist || '');
 
+  // A seed already selected by the user is enough to reopen the live track
+  // menu. If its source state is stale, openTrackMenu will refresh that exact
+  // track once; doing an artist search here first only duplicates navigation.
+  if (
+    preferredSeed?.rawText
+    && preferredSeed?.source !== 'ahangify'
+    && preferredArtist
+    && (
+      preferredArtist === target
+      || preferredArtist.includes(target)
+      || target.includes(preferredArtist)
+    )
+  ) {
+    return preferredSeed;
+  }
+
+  let seed = null;
   try {
     const results = await searchMeloBot(client, artist);
-    const target = normalize(artist);
     seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track =>
-        normalize(track.artist).includes(target) ||
-        target.includes(normalize(track.artist))
-      )
-      || seed;
+      || results.find(track => {
+        const candidateArtist = normalize(track.artist);
+        return candidateArtist.includes(target) || target.includes(candidateArtist);
+      })
+      || null;
   } catch (err) {
     console.warn('[melobot artist seed]', artist, err.message);
   }
