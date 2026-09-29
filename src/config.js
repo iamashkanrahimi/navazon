@@ -44,7 +44,8 @@ export const config = {
   downloadTimeoutMs: Number(process.env.DOWNLOAD_TIMEOUT_MS || 90000),
 
   discoveryEnabled: boolEnv('DISCOVERY_ENABLED', true),
-  discoveryIdleMs: Number(process.env.DISCOVERY_IDLE_MINUTES || 2) * 60 * 1000,
+  discoveryIdleMs: Number(process.env.DISCOVERY_IDLE_MINUTES || 8) * 60 * 1000,
+  discoveryHeavyIdleMs: Number(process.env.DISCOVERY_HEAVY_IDLE_MINUTES || 25) * 60 * 1000,
   discoveryArtistMinAgeMs: Number(process.env.DISCOVERY_ARTIST_MIN_AGE_HOURS || 168) * 60 * 60 * 1000,
   discoveryAlbumsPerRun: Math.max(0, Number(process.env.DISCOVERY_ALBUMS_PER_RUN || 1)),
   discoveryContinueDelayMs: Number(process.env.DISCOVERY_CONTINUE_MINUTES || 2) * 60 * 1000,
