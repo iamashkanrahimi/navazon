@@ -894,7 +894,7 @@ export const sourceQueue = new SerialQueue(async job => {
 
         let tracks = mode === 'recent'
           ? (session.artistContext.recentTracks || [])
-          : (session.artistContext.topTracks || session.artistContext.tracks || []);
+          : (session.artistContext.topTracks || []);
 
         if (tracks.length) {
           route = 'session';
@@ -909,42 +909,53 @@ export const sourceQueue = new SerialQueue(async job => {
             tracks = indexed;
             route = 'deep_catalog';
           } else {
-            const resolved = await resolveMeloBotArtistTrackList(
-              tg,
+            const derived = await deepCatalog.deriveArtistList(
               artist,
               mode,
-              session.artistSeed || null
-            );
-            tracks = resolved.tracks || [];
-            route = resolved.route || 'live';
-            session.artistSeed = resolved.seed || session.artistSeed || null;
+              TOP_TRACKS_LIMIT
+            ).catch(() => []);
 
-            if (mode === 'recent') {
-              session.artistContext = {
-                ...session.artistContext,
-                artist: resolved.artist || artist,
-                recentTracks: tracks,
-                recentBulkHighButton:
-                  resolved.context?.recentBulkHighButton
-                  || session.artistContext.recentBulkHighButton
-                  || null,
-                recentBulkNormalButton:
-                  resolved.context?.recentBulkNormalButton
-                  || session.artistContext.recentBulkNormalButton
-                  || null,
-              };
+            if (derived.length) {
+              tracks = derived;
+              route = `derived_${mode}`;
             } else {
-              session.artistContext = {
-                ...session.artistContext,
-                ...(resolved.context || {}),
-                artist: resolved.artist || artist,
-                topTracks: tracks,
-                tracks,
-                recentTracks:
-                  session.artistContext.recentTracks?.length
-                    ? session.artistContext.recentTracks
-                    : (resolved.context?.recentTracks || []),
-              };
+              const resolved = await resolveMeloBotArtistTrackList(
+                tg,
+                artist,
+                mode,
+                session.artistSeed || null
+              );
+              tracks = resolved.tracks || [];
+              route = resolved.route || 'live';
+              session.artistSeed = resolved.seed || session.artistSeed || null;
+
+              if (mode === 'recent') {
+                session.artistContext = {
+                  ...session.artistContext,
+                  artist: resolved.artist || artist,
+                  recentTracks: tracks,
+                  recentBulkHighButton:
+                    resolved.context?.recentBulkHighButton
+                    || session.artistContext.recentBulkHighButton
+                    || null,
+                  recentBulkNormalButton:
+                    resolved.context?.recentBulkNormalButton
+                    || session.artistContext.recentBulkNormalButton
+                    || null,
+                };
+              } else {
+                session.artistContext = {
+                  ...session.artistContext,
+                  ...(resolved.context || {}),
+                  artist: resolved.artist || artist,
+                  topTracks: tracks,
+                  tracks,
+                  recentTracks:
+                    session.artistContext.recentTracks?.length
+                      ? session.artistContext.recentTracks
+                      : (resolved.context?.recentTracks || []),
+                };
+              }
             }
           }
 
