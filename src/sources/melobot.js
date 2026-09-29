@@ -782,7 +782,16 @@ export async function classifyMeloBotTypedSearchExact(client, query, typedResult
   const exact = exactSearchTrackMatch(query, tracks);
   if (exact?.rawText) {
     const confidentTrack = Number.isFinite(exact.sourcePopularityCount);
-    if (confidentTrack) {
+    const sameNamedAlbum = albums.some(album =>
+      normalize(album.artist || '') === normalize(exact.artist || '')
+      && normalize(album.title || '') === normalize(exact.title || '')
+    );
+
+    // Popularity is normally strong evidence for a real track, but when the
+    // same live search surface simultaneously exposes an album with the exact
+    // same artist/title, the row is genuinely ambiguous. Probe that rare case
+    // instead of trusting the metric blindly.
+    if (confidentTrack && !sameNamedAlbum) {
       exactProbe = 'skipped_confident_track';
     } else {
       try {
