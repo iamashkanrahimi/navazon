@@ -147,6 +147,11 @@ async function collectFromInbox(client, peer, afterId, {
       },
     };
 
+    totalTimer = setTimeout(
+      () => finish(),
+      Math.max(1, Number(timeoutMs || config.searchTimeoutMs || 18000))
+    );
+
     state.waiters.add(waiter);
 
     // Close the tiny race between the initial buffer snapshot and waiter
@@ -155,15 +160,12 @@ async function collectFromInbox(client, peer, afterId, {
       waiter.push(message);
     }
 
-    totalTimer = setTimeout(
-      () => finish(),
-      Math.max(1, Number(timeoutMs || config.searchTimeoutMs || 18000))
-    );
-
-    // Messages may have arrived between latestMessageId() and waiter creation.
-    const initial = evaluateCollector(seen, { stopWhen, stopWhenBatch });
-    if (initial.done) finish(initial.messages, initial.hit);
-    else scheduleQuiet();
+    if (!settled) {
+      // Messages may have arrived between latestMessageId() and waiter creation.
+      const initial = evaluateCollector(seen, { stopWhen, stopWhenBatch });
+      if (initial.done) finish(initial.messages, initial.hit);
+      else scheduleQuiet();
+    }
   });
 }
 
