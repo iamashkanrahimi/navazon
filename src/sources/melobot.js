@@ -94,7 +94,9 @@ function clean(value = '') {
 function sourceBudget(timeoutMs, fallbackMs = config.searchTimeoutMs) {
   const total = Math.max(800, Number(timeoutMs || fallbackMs));
   const deadline = Date.now() + total;
-  return () => Math.max(450, deadline - Date.now());
+  const remaining = () => Math.max(450, deadline - Date.now());
+  remaining.expired = () => Date.now() >= deadline;
+  return remaining;
 }
 
 function normalize(value = '') {
@@ -1070,10 +1072,11 @@ export async function downloadMeloBotTrackQuality(
     menuTimeoutMs = Math.min(config.searchTimeoutMs, 6000),
   } = {}
 ) {
+  const remaining = sourceBudget(timeoutMs, config.downloadTimeoutMs);
   const menuMessages = (await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: menuTimeoutMs }
+    { timeoutMs: Math.min(menuTimeoutMs, remaining()) }
   )).messages;
   const wantsHigh = quality === 'hq';
   const button = findButton(menuMessages, text => {
@@ -1085,9 +1088,12 @@ export async function downloadMeloBotTrackQuality(
   if (!button) {
     throw new Error(`MeloBot ${quality} quality button not found.`);
   }
+  if (remaining.expired()) {
+    throw new Error(`MeloBot ${quality} quality request exceeded its source budget.`);
+  }
 
   const result = await sendAndCollect(client, button, {
-    timeoutMs,
+    timeoutMs: remaining(),
     quietMs: 650,
     stopWhen: isAudioMessage,
   });
@@ -1292,12 +1298,29 @@ export async function getMeloBotCover(
   return photo ? { source: 'melobot', photoMessage: photo } : null;
 }
 
-export async function enrichMeloBotTrack(client, candidate) {
-  const liveCandidate = await resolveMeloBotTrackCandidate(client, candidate);
-  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+export async function enrichMeloBotTrack(
+  client,
+  candidate,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const liveCandidate = await resolveMeloBotTrackCandidate(
+    client,
+    candidate,
+    {
+      timeoutMs: remaining(),
+      forceIdentity: Boolean(candidate?.artistInferred),
+    }
+  );
+  if (!liveCandidate?.rawText) {
+    throw new Error('MeloBot live track button was not found.');
+  }
+  if (liveCandidate.artistInferred) {
+    throw new Error('MeloBot primary artist identity is still inferred.');
+  }
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: remaining(),
     quietMs: 550,
     stopWhen: message => replyButtons(message).some(text =>
       text.includes('کیفیت عالی') || text.includes('کیفیت معمولی')
@@ -1322,8 +1345,8 @@ export async function enrichMeloBotTrack(client, candidate) {
         clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
       ),
       hasLyrics: menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text))),
-      hasCover: false,
-      hasMetadata: false,
+      hasCover: menuButtons.some(text => /کاور/u.test(clean(text))),
+      hasMetadata: menuButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))),
       hasArtistPage: menuButtons.some(text =>
         /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
       ),
@@ -1332,10 +1355,10 @@ export async function enrichMeloBotTrack(client, candidate) {
   };
 
   const lyricsButton = menuButtons.find(text => /متن\s*آهنگ/u.test(clean(text))) || null;
-  if (lyricsButton) {
+  if (lyricsButton && !remaining.expired()) {
     try {
       const lyricsResult = await sendAndCollect(client, lyricsButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 650,
       });
       const raw = lyricsResult.messages.map(messageText).filter(Boolean).join('\n\n').trim();
@@ -1350,56 +1373,70 @@ export async function enrichMeloBotTrack(client, candidate) {
     }
   }
 
+  let extraMessages = menuMessages;
   const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
-  if (moreButton) {
+  if (moreButton && !remaining.expired()) {
     try {
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: config.searchTimeoutMs,
+        timeoutMs: remaining(),
         quietMs: 550,
       });
+      extraMessages = more.messages;
       const moreButtons = buttonsFromMessages(more.messages);
-      result.capabilities.hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
-      result.capabilities.hasMetadata = moreButtons.some(text =>
+      result.capabilities.hasCover ||= moreButtons.some(text => /کاور/u.test(clean(text)));
+      result.capabilities.hasMetadata ||= moreButtons.some(text =>
         /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
       );
-
-      const detailsButton = moreButtons.find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
-      if (detailsButton) {
-        try {
-          const details = await sendAndCollect(client, detailsButton, {
-            timeoutMs: config.searchTimeoutMs,
-            quietMs: 600,
-          });
-          const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
-          result.metadata = {
-            raw,
-            ...parseReleaseDate(raw),
-            ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
-          };
-        } catch (err) {
-          result.errors.push(`metadata: ${err.message}`);
-        }
-      }
-
-      const coverButton = moreButtons.find(text => /کاور/u.test(clean(text))) || null;
-      if (coverButton) {
-        try {
-          const coverResult = await sendAndCollect(client, coverButton, {
-            timeoutMs: config.searchTimeoutMs,
-            quietMs: 600,
-            stopWhen: photoMessage,
-          });
-          const photo = coverResult.messages.find(photoMessage);
-          if (photo) result.cover = { source: 'melobot', photoMessage: photo };
-        } catch (err) {
-          result.errors.push(`cover: ${err.message}`);
-        }
-      }
     } catch (err) {
       result.errors.push(`more: ${err.message}`);
     }
   }
 
+  const extraButtons = buttonsFromMessages(extraMessages);
+  const detailsButton = [
+    ...menuButtons,
+    ...extraButtons,
+  ].find(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))) || null;
+
+  if (detailsButton && !remaining.expired()) {
+    try {
+      const details = await sendAndCollect(client, detailsButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+      });
+      const raw = details.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+      result.metadata = {
+        raw,
+        ...parseReleaseDate(raw),
+        ...parsePopularityValue(raw || liveCandidate.rawText || candidate?.rawText || ''),
+      };
+    } catch (err) {
+      result.errors.push(`metadata: ${err.message}`);
+    }
+  }
+
+  const coverButton = [
+    ...menuButtons,
+    ...extraButtons,
+  ].find(text => /کاور/u.test(clean(text))) || null;
+
+  if (coverButton && !remaining.expired()) {
+    try {
+      const coverResult = await sendAndCollect(client, coverButton, {
+        timeoutMs: remaining(),
+        quietMs: 600,
+        stopWhen: photoMessage,
+      });
+      const photo = coverResult.messages.find(photoMessage);
+      if (photo) result.cover = { source: 'melobot', photoMessage: photo };
+    } catch (err) {
+      result.errors.push(`cover: ${err.message}`);
+    }
+  }
+
+  if (remaining.expired()) {
+    result.errors.push('enrichment budget exhausted');
+  }
   return result;
 }
 
