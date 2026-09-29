@@ -21,9 +21,37 @@ jobs:
       - run: npm test
       - run: npm run check
 
+  pilot:
+    needs: tests
+    if: contains(github.event.head_commit.message, '[archive-pilot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Run fixed 50-song pilot
+        env:
+          RJ_REQUEST_DELAY_MS: '1200'
+          RJ_MAX_ATTEMPTS: '4'
+          RJ_TIMEOUT_MS: '20000'
+          RJ_SYSTEMIC_FAILURE_THRESHOLD: '3'
+        run: node src/pilot.js --urls-file ./data/pilot-urls.txt --limit 50 --out ./out/pilot
+      - name: Upload pilot diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rj-pilot
+          path: archive-builder/out/pilot
+          retention-days: 14
+          if-no-files-found: error
+
   snapshot:
     needs: tests
-    if: contains(github.event.head_commit.message, '[archive-pilot]') || contains(github.event.head_commit.message, '[archive-run]')
+    if: contains(github.event.head_commit.message, '[archive-run]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -38,38 +66,6 @@ jobs:
         with:
           name: rj-snapshot
           path: archive-builder/runtime
-          retention-days: 14
-          if-no-files-found: error
-
-  pilot:
-    needs: [tests, snapshot]
-    if: contains(github.event.head_commit.message, '[archive-pilot]')
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    defaults:
-      run:
-        working-directory: archive-builder
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - uses: actions/download-artifact@v4
-        with:
-          name: rj-snapshot
-          path: archive-builder/runtime
-      - name: Run stratified 50-song pilot
-        env:
-          RJ_REQUEST_DELAY_MS: '1200'
-          RJ_MAX_ATTEMPTS: '4'
-          RJ_TIMEOUT_MS: '20000'
-          RJ_SYSTEMIC_FAILURE_THRESHOLD: '3'
-        run: node src/pilot.js --limit 50 --out ./out/pilot
-      - name: Upload pilot diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rj-pilot
-          path: archive-builder/out/pilot
           retention-days: 14
           if-no-files-found: error
 
