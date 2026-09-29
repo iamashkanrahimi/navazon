@@ -321,7 +321,12 @@ export async function getTrackInfoText(track) {
   if (details?.popularity_text) lines.push(`📈 بازدید حدودی: ${details.popularity_text}`);
   else if (details?.popularity_count) lines.push(`📈 بازدید حدودی: ${Number(details.popularity_count).toLocaleString('en-US')}`);
 
-  const qualities = Object.keys(details?.media || {});
+  const qualitySet = new Set(Object.keys(details?.media || {}));
+  const knownCapabilities = details?.metadata?.capabilities || {};
+  if (knownCapabilities.hasHq === true) qualitySet.add('hq');
+  if (knownCapabilities.hasNormal === true) qualitySet.add('normal');
+  const qualities = [...qualitySet];
+
   if (qualities.length) {
     const labels = qualities.map(q =>
       q === 'hq'
