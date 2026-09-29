@@ -1648,3 +1648,29 @@ test('query-shape matrix covers punctuation ordering numerals and Persian spacin
   assert.equal(hasAlbumIntent('البوم های شایع'), true);
   assert.equal(hasAlbumIntent('album Shayea'), true);
 });
+
+test('same-name track and album collision is probed even when the track has popularity', async () => {
+  const exactTrack = '🎵 Shayea, Do Be Shak x 2M';
+  const client = new FakeTelegramClient({
+    [exactTrack]: [[
+      fakeBotMessage(
+        'خب حالا میخوای با این آلبوم چه کنی ؟',
+        ['دانلود همه (عالی)', '🎵 One x 1M', '🎵 Two x 900K']
+      ),
+    ]],
+  });
+
+  const classified = await classifyMeloBotTypedSearchExact(
+    client,
+    'Shayea Do Be Shak',
+    {
+      tracks: [parseTrackButton(exactTrack)],
+      albums: [{ type: 'album', artist: 'Shayea', title: 'Do Be Shak' }],
+    }
+  );
+
+  assert.equal(classified.exactProbe, 'album');
+  assert.equal(classified.tracks.length, 0);
+  assert.equal(classified.albums.length, 1);
+  assert.equal(classified.albums[0].tracks.length, 2);
+});
