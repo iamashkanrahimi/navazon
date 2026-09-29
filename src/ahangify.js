@@ -64,14 +64,18 @@ export function parseAhangifyResults(messages) {
     .sort((a, b) => a.rank - b.rank);
 }
 
-export async function searchAhangify(client, query) {
+export async function searchAhangify(
+  client,
+  query,
+  { timeoutMs = config.searchTimeoutMs } = {}
+) {
   const peer = config.ahangifyUsername;
   const beforeSearch = await latestMessageId(client, peer);
 
   await client.sendMessage(peer, { message: query });
 
   const search = await collectNewMessages(client, peer, beforeSearch, {
-    timeoutMs: config.searchTimeoutMs,
+    timeoutMs: Math.max(800, Number(timeoutMs || config.searchTimeoutMs)),
     quietMs: 1000,
   });
 
