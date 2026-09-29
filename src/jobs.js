@@ -369,6 +369,7 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
 
   let sent = 0;
   let missing = 0;
+  const missingTracks = [];
   for (const sourceTrack of sourceTracks) {
     const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
     try {
@@ -386,14 +387,22 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
         sent += 1;
       } else {
         missing += 1;
+        missingTracks.push(sourceTrack);
       }
     } catch (err) {
       console.warn(`[${label} deliver]`, track.artist, track.title, err.message);
       missing += 1;
+      missingTracks.push(sourceTrack);
     }
   }
 
-  return { sent, missing, matched: sourceMatches.length, quality: 'hq' };
+  return {
+    sent,
+    missing,
+    missingTracks,
+    matched: sourceMatches.length,
+    quality: 'hq',
+  };
 }
 
 async function deliverBulkFromCacheIfComplete(session, tracks) {
@@ -1283,6 +1292,20 @@ export const sourceQueue = new SerialQueue(async job => {
           });
           sent = delivered.sent;
           missing = delivered.missing;
+
+          if (delivered.missingTracks?.length) {
+            const tail = await deliverBulkIndividuallyHq(
+              session,
+              delivered.missingTracks,
+              {
+                label: 'recent native gaps',
+                sourceTimeoutMs: 5000,
+                totalBudgetMs: 15000,
+              }
+            );
+            sent += tail.sent;
+            missing = tail.missing;
+          }
         }
       } catch (err) {
         console.warn('[native bulk recent failed]', err.message);
@@ -1399,6 +1422,20 @@ export const sourceQueue = new SerialQueue(async job => {
           });
           sent = delivered.sent;
           missing = delivered.missing;
+
+          if (delivered.missingTracks?.length) {
+            const tail = await deliverBulkIndividuallyHq(
+              session,
+              delivered.missingTracks,
+              {
+                label: 'top native gaps',
+                sourceTimeoutMs: 5000,
+                totalBudgetMs: 15000,
+              }
+            );
+            sent += tail.sent;
+            missing = tail.missing;
+          }
         }
       } catch (err) {
         console.warn('[native bulk top failed]', err.message);
@@ -1538,6 +1575,20 @@ export const sourceQueue = new SerialQueue(async job => {
           );
           sent = delivered.sent;
           missing = delivered.missing;
+
+          if (delivered.missingTracks?.length) {
+            const tail = await deliverBulkIndividuallyHq(
+              session,
+              delivered.missingTracks,
+              {
+                label: 'album native gaps',
+                sourceTimeoutMs: 5000,
+                totalBudgetMs: 15000,
+              }
+            );
+            sent += tail.sent;
+            missing = tail.missing;
+          }
         }
       } catch (err) {
         console.warn('[native bulk album failed]', err.message);
