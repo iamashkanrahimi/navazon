@@ -221,10 +221,15 @@ export async function searchPrimaryTyped(query) {
       .map(album => ({ ...album, source: 'melobot' }));
 
     if (tracks.length || albums.length) {
+      const trackSources = new Set(tracks.map(track => track.source).filter(Boolean));
+      const resultSource = trackSources.size > 1
+        ? 'hybrid'
+        : (trackSources.values().next().value || 'melobot');
+
       return {
         tracks,
         albums,
-        source: 'melobot',
+        source: resultSource,
         typed: true,
         exactProbe: typed.exactProbe || 'not_needed',
         relevanceCoverage: selectedMelo[0]?.coverage || 0,
