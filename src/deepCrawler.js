@@ -13,6 +13,7 @@ import {
   getMeloBotTrackMetadata,
   listMeloBotAlbums,
   resolveMeloBotAlbums,
+  resolveMeloBotArtistAlbums,
   matchBulkAudioToTracks,
   openMeloBotAlbum,
   openMeloBotAlbumContext,
@@ -591,65 +592,77 @@ async function runAlbumIndex(task) {
   const { artist, seedTrack = null } = task.payload || {};
   if (!artist) throw new Error('Album index task is missing artist.');
 
-  const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
-  const resolved = await resolveMeloBotAlbums(tg, live, { allowEmpty: true });
+  const resolved = await resolveMeloBotArtistAlbums(
+    tg,
+    artist,
+    seedTrack,
+    { allowEmpty: true }
+  );
   const albums = resolved.albums;
 
-  await catalog.recordAlbums(live.artist, albums, {
+  await catalog.recordAlbums(resolved.artist, albums, {
     emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
   });
 
   if (!albums.length) {
     return {
-      artist: live.artist,
+      artist: resolved.artist,
       albums: 0,
       confirmedEmpty: Boolean(resolved.confirmedEmpty && resolved.complete),
     };
   }
 
   await Promise.all(albums.map(async album => {
-    await deepCatalog.upsertAlbum(live.artist, album);
+    await deepCatalog.upsertAlbum(resolved.artist, album);
     await deepCatalog.enqueueTask(
       'album_detail',
-      { artist: live.artist, album, seedTrack: seedTrack || live.recentTracks?.[0] || live.topTracks?.[0] || null },
+      { artist: resolved.artist, album, seedTrack: resolved.seed || seedTrack || null },
       {
         priority: 76,
-        taskKey: `album_detail:${deepNormalize(live.artist)}:${deepNormalize(album.title)}:${albumRefreshBucket()}`,
+        taskKey: `album_detail:${deepNormalize(resolved.artist)}:${deepNormalize(album.title)}:${albumRefreshBucket()}`,
       }
     );
   }));
 
-  return { artist: live.artist, albums: albums.length };
+  return { artist: resolved.artist, albums: albums.length };
 }
 
 async function runAlbumDetail(task) {
   const { artist, album, seedTrack = null } = task.payload || {};
   if (!artist || !album?.title) throw new Error('Album detail task is incomplete.');
 
-  const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
-  const resolved = await resolveMeloBotAlbums(tg, live, { allowEmpty: true });
+  const resolved = await resolveMeloBotArtistAlbums(
+    tg,
+    artist,
+    seedTrack,
+    { allowEmpty: true }
+  );
   const albums = resolved.albums;
-  const target = albums.find(item => deepNormalize(item.title) === deepNormalize(album.title)) || album;
-  const albumContext = await openMeloBotAlbumContext(tg, live.artist, target);
+  const target = albums.find(item =>
+    deepNormalize(item.title) === deepNormalize(album.title)
+  ) || album;
+
+  const albumContext = await openMeloBotAlbumContext(tg, resolved.artist, target);
   const tracks = albumContext.tracks;
 
   if (resolved.complete) {
-    await catalog.recordAlbums(live.artist, albums, {
+    await catalog.recordAlbums(resolved.artist, albums, {
       emptyConfirmed: Boolean(resolved.confirmedEmpty),
     });
   } else {
-    await catalog.mergeAlbums(live.artist, albums);
+    await catalog.mergeAlbums(resolved.artist, albums);
   }
-  await catalog.recordAlbumTracks(live.artist, target, tracks);
-  await deepCatalog.setAlbumTracks(live.artist, target, tracks);
+
+  await catalog.recordAlbumTracks(resolved.artist, target, tracks);
+  await deepCatalog.setAlbumTracks(resolved.artist, target, tracks);
   await seedTracks(tracks, 84, {
     discoveredFrom: `album:${target.title}`,
     album: target.title,
     preferBulk: true,
   });
 
-  const albumSeed = seedTrack || tracks[0] || live.recentTracks?.[0] || live.topTracks?.[0] || null;
-  const albumKey = `${deepNormalize(live.artist)}:${deepNormalize(target.title)}`;
+  const albumSeed = resolved.seed || seedTrack || tracks[0] || null;
+  const albumKey = `${deepNormalize(resolved.artist)}:${deepNormalize(target.title)}`;
 
   let albumHqComplete = false;
   if (albumContext.bulkHighButton && tracks.length) {
@@ -668,7 +681,7 @@ async function runAlbumDetail(task) {
       }
       albumHqComplete = (await deepCatalog.missingMediaTracks(tracks, 'hq')).length === 0;
     } catch (err) {
-      console.warn('[album detail inline HQ]', live.artist, target.title, err.message);
+      console.warn('[album detail inline HQ]', resolved.artist, target.title, err.message);
     }
   }
 
@@ -677,8 +690,17 @@ async function runAlbumDetail(task) {
     if (shouldUseBulk(tracks.length, missingHq.length)) {
       await deepCatalog.enqueueTask(
         'album_bulk_media',
-        { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
-        { priority: 92, taskKey: `album_bulk:hq:${albumKey}`, reviveDone: true }
+        {
+          artist: resolved.artist,
+          albumTitle: target.title,
+          seedTrack: albumSeed,
+          quality: 'hq',
+        },
+        {
+          priority: 92,
+          taskKey: `album_bulk:hq:${albumKey}`,
+          reviveDone: true,
+        }
       );
     } else if (missingHq.length) {
       await enqueueSparseMediaFallback(missingHq, 'hq', 110);
@@ -689,15 +711,24 @@ async function runAlbumDetail(task) {
   if (shouldUseBulk(tracks.length, missingNormal.length)) {
     await deepCatalog.enqueueTask(
       'album_bulk_media',
-      { artist: live.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
-      { priority: 68, taskKey: `album_bulk:normal:${albumKey}`, reviveDone: true }
+      {
+        artist: resolved.artist,
+        albumTitle: target.title,
+        seedTrack: albumSeed,
+        quality: 'normal',
+      },
+      {
+        priority: 68,
+        taskKey: `album_bulk:normal:${albumKey}`,
+        reviveDone: true,
+      }
     );
   } else if (missingNormal.length) {
     await enqueueSparseMediaFallback(missingNormal, 'normal', 70);
   }
 
   return {
-    artist: live.artist,
+    artist: resolved.artist,
     album: target.title,
     tracks: tracks.length,
     hqComplete: albumHqComplete,
