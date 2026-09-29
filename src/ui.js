@@ -28,7 +28,9 @@ export function truncate(text, max = 47) {
 
 export function trackButtonLabel(track, index, { numbered = false } = {}) {
   const prefix = `${numbered ? `${numberEmoji(index)} ` : ''}🎵 `;
-  const body = track.artist ? `${track.artist} — ${track.title}` : track.title;
+  const body = track.artist && !track.artistInferred
+    ? `${track.artist} — ${track.title}`
+    : track.title;
   return truncate(`${prefix}${body}`);
 }
 
@@ -207,21 +209,24 @@ export function artistSongsKeyboard(sessionId, tracks, { mode = 'top' } = {}) {
 export function trackPageTitle(track = {}) {
   const artist = clean(track.artist || '');
   const title = clean(track.title || '');
-  return [artist, title].filter(Boolean).join(' - ') || 'آهنگ';
+  return [track.artistInferred ? '' : artist, title].filter(Boolean).join(' - ') || 'آهنگ';
 }
 
 export function trackPageKeyboard(sessionId, track, details = {}, capabilities = {}) {
   const rows = [];
   const media = details?.media || {};
+  const isMeloBot = track?.source === 'melobot';
 
+  // MeloBot capability discovery is intentionally lazy. A temporary source
+  // timeout must never make an action disappear from the page.
   const qualityRow = [];
-  if (media.hq || capabilities.hasHq) {
+  if (isMeloBot || media.hq || capabilities.hasHq) {
     qualityRow.push({
       text: track?.source === 'ahangify' ? '📥 بهترین کیفیت موجود' : '📥 کیفیت عالی',
       callback_data: `tqh:${sessionId}`,
     });
   }
-  if (media.normal || capabilities.hasNormal) {
+  if (isMeloBot || media.normal || capabilities.hasNormal) {
     qualityRow.push({ text: '📥 کیفیت معمولی', callback_data: `tqn:${sessionId}` });
   }
   if (qualityRow.length) rows.push(qualityRow);
@@ -229,10 +234,10 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
   const extras = [];
   const hasKnownLyrics = Boolean(details?.lyrics_text);
   const lyricsKnownMissing = details?.metadata?.hasLyrics === false;
-  if (hasKnownLyrics || (!lyricsKnownMissing && capabilities.hasLyrics)) {
+  if (isMeloBot || hasKnownLyrics || (!lyricsKnownMissing && capabilities.hasLyrics)) {
     extras.push({ text: '📝 متن', callback_data: `tly:${sessionId}` });
   }
-  if (details?.cover_file_id || capabilities.hasCover) {
+  if (isMeloBot || details?.cover_file_id || capabilities.hasCover) {
     extras.push({ text: '🖼 کاور', callback_data: `tcv:${sessionId}` });
   }
   if (extras.length) rows.push(extras);
@@ -243,8 +248,8 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
     details?.popularity_count || details?.popularity_text || details?.albumInfo ||
     capabilities.hasMetadata
   );
-  if (hasInfo) infoRow.push({ text: '📋 مشخصات', callback_data: `tif:${sessionId}` });
-  if (track?.artist && (capabilities.hasArtistPage || track?.source === 'melobot')) {
+  if (isMeloBot || hasInfo) infoRow.push({ text: '📋 مشخصات', callback_data: `tif:${sessionId}` });
+  if (track?.artist && (isMeloBot || capabilities.hasArtistPage)) {
     infoRow.push({ text: '🗣 صفحه‌ی خواننده', callback_data: `tar:${sessionId}` });
   }
   if (infoRow.length) rows.push(infoRow);
