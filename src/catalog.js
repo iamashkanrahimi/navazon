@@ -174,10 +174,12 @@ export class CatalogStore {
       && list.length
       && list.every(track => {
         const repaired = markLegacyInferredArtist(track);
+        const raw = normalize(repaired.rawText || '');
         return (
           !repaired.artistInferred
           && normalize(repaired.artist || '') === targetArtist
           && Boolean(normalize(repaired.title || ''))
+          && raw.startsWith(`${targetArtist} `)
         );
       })
     );
