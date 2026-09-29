@@ -706,6 +706,54 @@ function inspectSelectedCandidateSurface(messages = [], candidate = {}) {
   return { kind: 'unknown', tracks: [] };
 }
 
+function exactSearchTrackMatch(query, tracks = []) {
+  const wanted = normalize(query);
+  if (!wanted) return null;
+
+  return (tracks || []).find(track => {
+    const forward = normalize(
+      [track?.artist, track?.title].filter(Boolean).join(' ')
+    );
+    const reverse = normalize(
+      [track?.title, track?.artist].filter(Boolean).join(' ')
+    );
+    return wanted === forward || wanted === reverse;
+  }) || null;
+}
+
+export async function classifyMeloBotTypedSearchExact(client, query, typedResult = {}) {
+  let tracks = [...(typedResult.tracks || [])];
+  let albums = [...(typedResult.albums || [])];
+  let exactProbe = 'not_needed';
+
+  if (!albums.length) {
+    const exact = exactSearchTrackMatch(query, tracks);
+    if (exact?.rawText) {
+      try {
+        const probed = await probeMeloBotCandidateSurface(client, exact);
+        exactProbe = probed.kind || 'unknown';
+        if (probed.kind === 'album' && probed.album?.title) {
+          tracks = tracks.filter(track => track !== exact);
+          albums = [{
+            ...probed.album,
+            artist: probed.album.artist || exact.artist,
+          }];
+        }
+      } catch (err) {
+        exactProbe = 'failed';
+        console.warn('[melobot exact candidate probe]', err.message);
+      }
+    }
+  }
+
+  return {
+    ...typedResult,
+    tracks,
+    albums,
+    exactProbe,
+  };
+}
+
 export async function probeMeloBotCandidateSurface(client, candidate) {
   if (!candidate?.rawText) {
     throw new Error('MeloBot candidate surface probe requires a raw button.');
