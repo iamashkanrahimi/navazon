@@ -36,6 +36,184 @@ function safeJson(value) {
 }
 
 export class DeepCatalog {
+  async setTrackAlias(aliasTrack = {}, canonicalTrack = {}, {
+    source = null,
+    evidence = 'unknown',
+  } = {}) {
+    const aliasKey = deepTrackKey(aliasTrack);
+    const canonicalKey = deepTrackKey(canonicalTrack);
+    if (!aliasKey || aliasKey === '|' || !canonicalKey || canonicalKey === '|') return canonicalTrack;
+    if (aliasKey === canonicalKey) return canonicalTrack;
+    if (aliasTrack?.artistInferred || canonicalTrack?.artistInferred) return canonicalTrack;
+
+    await this.upsertTrack(canonicalTrack, {
+      discoveredFrom: 'canonical-alias',
+    });
+
+    await db.query(`
+      INSERT INTO track_aliases (
+        alias_key, alias_artist, alias_title, canonical_track_key, source, evidence, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,NOW())
+      ON CONFLICT (alias_key) DO UPDATE SET
+        alias_artist = EXCLUDED.alias_artist,
+        alias_title = EXCLUDED.alias_title,
+        canonical_track_key = EXCLUDED.canonical_track_key,
+        source = COALESCE(EXCLUDED.source, track_aliases.source),
+        evidence = EXCLUDED.evidence,
+        updated_at = NOW()
+    `, [
+      aliasKey,
+      clean(aliasTrack.artist),
+      clean(aliasTrack.title),
+      canonicalKey,
+      source || aliasTrack.source || null,
+      evidence,
+    ]);
+
+    return canonicalTrack;
+  }
+
+  async resolveTrackAlias(track = {}, { learnFromCache = true } = {}) {
+    const aliasKey = deepTrackKey(track);
+    if (!aliasKey || aliasKey === '|' || track?.artistInferred) return track;
+
+    const aliasResult = await db.query(`
+      SELECT
+        a.canonical_track_key,
+        t.artist,
+        t.title,
+        t.source_data,
+        t.duration_seconds,
+        t.popularity_count,
+        t.popularity_text
+      FROM track_aliases a
+      JOIN deep_tracks t ON t.track_key = a.canonical_track_key
+      WHERE a.alias_key = $1
+      LIMIT 1
+    `, [aliasKey]);
+
+    const known = aliasResult.rows[0];
+    if (known) {
+      const sourceData = known.source_data || {};
+      return applyPolicyDefaults({
+        ...track,
+        artist: known.artist,
+        title: known.title,
+        durationSeconds: known.duration_seconds || track.durationSeconds,
+        sourcePopularityCount: known.popularity_count
+          ? Number(known.popularity_count)
+          : track.sourcePopularityCount,
+        sourcePopularityText: known.popularity_text || track.sourcePopularityText,
+        ...sourceData,
+        source: sourceData.source || track.source,
+        rawText: sourceData.rawText || track.rawText,
+        cmd: sourceData.cmd || track.cmd,
+        artistInferred: false,
+      });
+    }
+
+    if (!learnFromCache) return track;
+
+    const cacheResult = await db.query(`
+      SELECT track, media
+      FROM track_cache
+      WHERE track_key LIKE $1
+      ORDER BY updated_at DESC
+      LIMIT 3
+    `, [`${aliasKey}|%`]);
+
+    for (const row of cacheResult.rows) {
+      const performer = clean(row.media?.performer || '');
+      const mediaTitle = clean(row.media?.title || '');
+      if (!performer || !mediaTitle) continue;
+
+      const candidate = applyPolicyDefaults({
+        ...track,
+        artist: performer,
+        title: mediaTitle,
+        artistInferred: false,
+      });
+      const candidateKey = deepTrackKey(candidate);
+      if (!candidateKey || candidateKey === '|' || candidateKey === aliasKey) continue;
+
+      const canonicalResult = await db.query(`
+        SELECT artist, title, source_data, duration_seconds, popularity_count, popularity_text
+        FROM deep_tracks
+        WHERE track_key = $1
+        LIMIT 1
+      `, [candidateKey]);
+
+      const canonical = canonicalResult.rows[0];
+      const resolved = canonical
+        ? applyPolicyDefaults({
+            ...track,
+            artist: canonical.artist,
+            title: canonical.title,
+            durationSeconds: canonical.duration_seconds || track.durationSeconds,
+            sourcePopularityCount: canonical.popularity_count
+              ? Number(canonical.popularity_count)
+              : track.sourcePopularityCount,
+            sourcePopularityText: canonical.popularity_text || track.sourcePopularityText,
+            ...(canonical.source_data || {}),
+            source: canonical.source_data?.source || track.source,
+            rawText: canonical.source_data?.rawText || track.rawText,
+            cmd: canonical.source_data?.cmd || track.cmd,
+            artistInferred: false,
+          })
+        : candidate;
+
+      await this.setTrackAlias(track, resolved, {
+        source: row.track?.source || track.source || null,
+        evidence: 'telegram_audio_metadata',
+      });
+      return resolved;
+    }
+
+    return track;
+  }
+
+  async canonicalizeKnownTracks(tracks = []) {
+    const out = [];
+    const seen = new Set();
+    for (const track of tracks || []) {
+      let resolved = track;
+      try {
+        resolved = await this.resolveTrackAlias(track);
+      } catch (err) {
+        console.warn('[track alias resolve]', track?.artist, track?.title, err.message);
+      }
+      const key = deepTrackKey(resolved);
+      if (!key || key === '|' || seen.has(key)) continue;
+      seen.add(key);
+      out.push(resolved);
+    }
+    return out;
+  }
+
+  async clearCapability(track = {}, capability = '') {
+    const trackKey = deepTrackKey(track);
+    const allowed = new Set([
+      'hasHq', 'hasNormal', 'hasLyrics', 'hasCover', 'hasMetadata', 'hasArtistPage',
+    ]);
+    if (!trackKey || trackKey === '|' || !allowed.has(capability)) return;
+
+    await db.query(`
+      UPDATE deep_tracks
+      SET metadata = CASE
+        WHEN metadata ? 'capabilities' THEN
+          jsonb_set(
+            metadata,
+            '{capabilities}',
+            COALESCE(metadata->'capabilities', '{}'::jsonb) - $2,
+            TRUE
+          )
+        ELSE metadata
+      END,
+      updated_at = NOW()
+      WHERE track_key = $1
+    `, [trackKey, capability]);
+  }
+
   async upsertTrack(track = {}, extra = {}) {
     const policy = applyPolicyDefaults({ ...track, ...extra });
     const trackKey = deepTrackKey(policy);
