@@ -21,10 +21,11 @@ import {
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
   matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums, resolveMeloBotArtistAlbums,
   resolveMeloBotAlbumsFromLiveArtistContext, resolveMeloBotArtistAlbumsDirectFirst,
+  resolveMeloBotArtistTrackList,
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, openMeloBotAlbumContext, openMeloBotAlbumByTitle,
-  openMeloBotAlbumDirectByTitle,
+  openMeloBotAlbumDirectByTitle, openMeloBotAlbumRobustByTitle,
   downloadMeloBotTrack, discoverMeloBotHome, getMeloBotStateVersion,
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
@@ -85,7 +86,7 @@ function sourceJobPriority(job = {}) {
   if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
   if (BULK_JOB_TYPES.has(job.type)) return 80;
   if (job.type === 'download') return 115;
-  if (['album','albums','artist','artist_from_album'].includes(job.type)) return 110;
+  if (['album','albums','artist','artist_from_album','artist_list'].includes(job.type)) return 110;
   return 100;
 }
 
@@ -106,15 +107,21 @@ async function syncArtistContext(artistContext) {
     return false;
   }
 
-  const results = await Promise.allSettled([
+  const writes = [
     catalog.recordArtist(artistContext.artist, {
       topTracks,
       recentTracks,
       albumButton: artistContext.albumButton || null,
     }),
-    deepCatalog.setArtistList(artistContext.artist, 'top', topTracks),
-    deepCatalog.setArtistList(artistContext.artist, 'recent', recentTracks),
-  ]);
+  ];
+  if (topTracks.length) {
+    writes.push(deepCatalog.setArtistList(artistContext.artist, 'top', topTracks));
+  }
+  if (recentTracks.length) {
+    writes.push(deepCatalog.setArtistList(artistContext.artist, 'recent', recentTracks));
+  }
+
+  const results = await Promise.allSettled(writes);
   for (const result of results) {
     if (result.status === 'rejected') {
       console.warn('[artist sync]', artistContext.artist, result.reason?.message || result.reason);
@@ -384,6 +391,22 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
 
   console.log(`[fastpath] bulk_hq_cache=complete count=${sent}`);
   return { complete: true, sent, quality: 'hq' };
+}
+
+function bulkFallbackMessage(kind, sent, missing) {
+  if (!missing) return null;
+
+  const label = kind === 'album'
+    ? 'آلبوم'
+    : kind === 'top'
+      ? 'پربازدیدترین‌ها'
+      : 'جدیدترین‌ها';
+
+  if (sent > 0) {
+    return `بخشی از ${label} دانلود شد؛ ${missing} آهنگ فعلاً دریافت نشد. دوباره امتحان کن.`;
+  }
+
+  return `دانلود یکجای ${label} فعلاً انجام نشد. دوباره امتحان کن.`;
 }
 
 async function deliverAvailableBulkCache(session, tracks) {
@@ -720,14 +743,14 @@ export const sourceQueue = new SerialQueue(async job => {
           ) || null;
 
           const directStartedAt = Date.now();
-          const opened = await openMeloBotAlbumDirectByTitle(
+          const opened = await openMeloBotAlbumRobustByTitle(
             tg,
             album.artist,
             album.title,
             {
-              timeoutMs: 6000,
+              album,
+              timeoutMs: 4500,
               maxPages: 12,
-              allowSeedFallback: true,
             }
           );
 
@@ -750,7 +773,7 @@ export const sourceQueue = new SerialQueue(async job => {
           ]);
 
           console.log(
-            `[fastpath] search_album=direct_title direct_ms=${Date.now() - directStartedAt}`
+            `[fastpath] search_album=${opened.route || 'robust'} open_ms=${Date.now() - directStartedAt}`
           );
         }
 
@@ -851,6 +874,133 @@ export const sourceQueue = new SerialQueue(async job => {
       }
       session.busy = false;
       try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
+      return;
+    }
+
+    if (job.type === 'artist_list') {
+      const startedAt = Date.now();
+      const mode = job.mode === 'recent' ? 'recent' : 'top';
+      const label = mode === 'recent' ? 'جدیدترین آثار' : 'پربازدیدترین آثار';
+      let route = 'unknown';
+
+      try {
+        const artist = session.artistContext?.artist;
+        if (!artist) throw new Error('Artist context missing for list.');
+
+        let tracks = mode === 'recent'
+          ? (session.artistContext.recentTracks || [])
+          : (session.artistContext.topTracks || session.artistContext.tracks || []);
+
+        if (tracks.length) {
+          route = 'session';
+        } else {
+          const indexed = await deepCatalog.getArtistList(
+            artist,
+            mode,
+            TOP_TRACKS_LIMIT
+          ).catch(() => []);
+
+          if (indexed.length) {
+            tracks = indexed;
+            route = 'deep_catalog';
+          } else {
+            const resolved = await resolveMeloBotArtistTrackList(
+              tg,
+              artist,
+              mode,
+              session.artistSeed || null
+            );
+            tracks = resolved.tracks || [];
+            route = resolved.route || 'live';
+            session.artistSeed = resolved.seed || session.artistSeed || null;
+
+            if (mode === 'recent') {
+              session.artistContext = {
+                ...session.artistContext,
+                artist: resolved.artist || artist,
+                recentTracks: tracks,
+                recentBulkHighButton:
+                  resolved.context?.recentBulkHighButton
+                  || session.artistContext.recentBulkHighButton
+                  || null,
+                recentBulkNormalButton:
+                  resolved.context?.recentBulkNormalButton
+                  || session.artistContext.recentBulkNormalButton
+                  || null,
+              };
+            } else {
+              session.artistContext = {
+                ...session.artistContext,
+                ...(resolved.context || {}),
+                artist: resolved.artist || artist,
+                topTracks: tracks,
+                tracks,
+                recentTracks:
+                  session.artistContext.recentTracks?.length
+                    ? session.artistContext.recentTracks
+                    : (resolved.context?.recentTracks || []),
+              };
+            }
+          }
+
+          if (mode === 'recent') {
+            session.artistContext = {
+              ...session.artistContext,
+              recentTracks: tracks,
+            };
+          } else {
+            session.artistContext = {
+              ...session.artistContext,
+              topTracks: tracks,
+              tracks,
+            };
+          }
+
+          await syncArtistContext(session.artistContext);
+        }
+
+        if (!tracks.length) throw new Error(`No ${mode} artist tracks available.`);
+
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          `${session.artistContext.artist}\n${mode === 'recent' ? '🆕' : '🎵'} ${label}`,
+          {
+            reply_markup: artistSongsKeyboard(
+              job.sessionId,
+              tracks,
+              { mode }
+            ),
+          }
+        );
+
+        console.log(
+          `[perf.artist_list] artist=${JSON.stringify(session.artistContext.artist)} `
+          + `mode=${mode} route=${route} count=${tracks.length} `
+          + `total_ms=${Date.now() - startedAt}`
+        );
+      } catch (err) {
+        console.error('[artist list]', mode, err.message);
+        session.busy = false;
+        await bot.editMessageText(
+          session.chatId,
+          job.messageId,
+          `${session.artistContext?.artist || 'خواننده'}\n\n${label} فعلاً قابل دریافت نیست.`,
+          {
+            reply_markup: artistHomeKeyboard(
+              job.sessionId,
+              session.artistContext || {},
+              session.isFollowing,
+              { backAction: session.artistBack || 'rs' }
+            ),
+          }
+        );
+        console.log(
+          `[perf.artist_list] mode=${mode} route=${route} `
+          + `total_ms=${Date.now() - startedAt} error=true`
+        );
+      }
       return;
     }
 
@@ -1019,11 +1169,9 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
-        if (missing) {
-          await bot.sendMessage(
-            session.chatId,
-            'دانلود یکجای جدیدترین‌ها با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
-          );
+        const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
+        if (fallbackMessage) {
+          await bot.sendMessage(session.chatId, fallbackMessage);
         }
       }
 
@@ -1131,11 +1279,9 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
-        if (missing) {
-          await bot.sendMessage(
-            session.chatId,
-            'دانلود یکجای پربازدیدترین‌ها با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
-          );
+        const fallbackMessage = bulkFallbackMessage('top', sent, missing);
+        if (fallbackMessage) {
+          await bot.sendMessage(session.chatId, fallbackMessage);
         }
       }
 
@@ -1264,11 +1410,9 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
-        if (missing) {
-          await bot.sendMessage(
-            session.chatId,
-            'دانلود یکجای آلبوم با کیفیت عالی از منبع انجام نشد؛ فقط فایل‌های HQ موجود در کش ارسال شدند. دوباره امتحان کن.'
-          );
+        const fallbackMessage = bulkFallbackMessage('album', sent, missing);
+        if (fallbackMessage) {
+          await bot.sendMessage(session.chatId, fallbackMessage);
         }
       }
 

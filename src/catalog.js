@@ -260,18 +260,26 @@ export class CatalogStore {
     const { key, node } = await this.readArtist(name);
     if (!node) return false;
 
-    // Never let a transient/failed MeloBot artist surface overwrite a healthy
-    // catalog entry with an empty profile. getArtistContext already ignores
-    // empty profiles; this also prevents creating them in the first place.
-    if (!topTracks.length && !recentTracks.length) return false;
+    const hasTop = Array.isArray(topTracks) && topTracks.length > 0;
+    const hasRecent = Array.isArray(recentTracks) && recentTracks.length > 0;
 
-    node.topTracks = topTracks.map(track => this.compactTrack(track));
-    node.recentTracks = recentTracks.map(track => this.compactTrack(track));
+    // A missing list means "not observed on this source surface", not
+    // "confirmed empty". Preserve the last known healthy list instead of
+    // erasing it when a transient artist layout returns only one mode.
+    if (!hasTop && !hasRecent) return false;
+
+    if (hasTop) node.topTracks = topTracks.map(track => this.compactTrack(track));
+    if (hasRecent) node.recentTracks = recentTracks.map(track => this.compactTrack(track));
     node.albumButton = clean(albumButton || node.albumButton || '') || null;
     node.artistUpdatedAt = new Date().toISOString();
-    this.addTracksToNode(node, [...topTracks, ...recentTracks]);
+
+    const observedTracks = [
+      ...(hasTop ? topTracks : []),
+      ...(hasRecent ? recentTracks : []),
+    ];
+    this.addTracksToNode(node, observedTracks);
     await this.writeArtist(key, node);
-    await this.seedArtistsFromTracks([...topTracks, ...recentTracks], `artist:${clean(name)}`);
+    await this.seedArtistsFromTracks(observedTracks, `artist:${clean(name)}`);
     return true;
   }
 

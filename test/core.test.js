@@ -25,6 +25,8 @@ const {
   openMeloBotArtist,
   openMeloBotAlbumByTitle,
   openMeloBotAlbumDirectByTitle,
+  openMeloBotAlbumRobustByTitle,
+  resolveMeloBotArtistTrackList,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
@@ -49,6 +51,7 @@ const { DeepCatalog, deepTrackKey } = await import('../src/deepCatalog.js');
 const { db } = await import('../src/db.js');
 const {
   resultsKeyboard,
+  artistHomeKeyboard,
   albumTracksKeyboard,
   noAlbumsKeyboard,
   albumsErrorKeyboard,
@@ -1724,4 +1727,68 @@ test('interactive album bulk honors a short caller timeout instead of the legacy
   const elapsed = Date.now() - startedAt;
 
   assert.ok(elapsed < 1200, `expected bounded failure, got ${elapsed}ms`);
+});
+
+test('artist home always shows top and recent actions even when one list is missing', () => {
+  const keyboard = artistHomeKeyboard(
+    'always1',
+    { artist: 'Haamim', topTracks: [{ artist: 'Haamim', title: 'One' }], recentTracks: [] },
+    false
+  );
+  const texts = keyboard.inline_keyboard.flat().map(button => button.text);
+  assert.ok(texts.includes('🎵 پربازدیدترین آثار'));
+  assert.ok(texts.includes('🆕 جدیدترین آثار'));
+});
+
+test('recent artist list can be recovered from the release-date sort surface', async () => {
+  const seedRaw = '🎵 Artist, Seed';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[fakeBotMessage('track', ['کیفیت عالی', '🎤 خواننده'])]],
+    '🎤 خواننده': [[fakeBotMessage('Artist', ['نمایش به ترتیب تاریخ انتشار'])]],
+    'نمایش به ترتیب تاریخ انتشار': [[
+      fakeBotMessage(
+        'جدیدترین آثار',
+        ['🎵 Artist, New One', '🎵 Artist, New Two', 'دانلود همه (عالی)']
+      ),
+    ]],
+  });
+
+  const resolved = await resolveMeloBotArtistTrackList(
+    client,
+    'Artist',
+    'recent',
+    { ...parseTrackButton(seedRaw), source: 'melobot' }
+  );
+
+  assert.equal(resolved.mode, 'recent');
+  assert.equal(resolved.route, 'artist_sort_direct_recent');
+  assert.deepEqual(resolved.tracks.map(track => track.title), ['New One', 'New Two']);
+  assert.equal(resolved.context.recentBulkHighButton, 'دانلود همه (عالی)');
+});
+
+test('robust album opener falls back to a collaborator component when combined artist lookup misses', async () => {
+  const targetRow = '💿 Khoone Khorshid (2)';
+  const client = new FakeTelegramClient({
+    'Bahram & Ali Sorena': [[fakeBotMessage('albums', ['💿 Other Album (1)'])]],
+    'Bahram & Ali Sorena Khoone Khorshid': [[]],
+    'Khoone Khorshid': [[]],
+    'Bahram': [[fakeBotMessage('albums', [targetRow])]],
+    [targetRow]: [[
+      fakeBotMessage(
+        'album page',
+        ['🎵 Bahram, Track One', '🎵 Bahram, Track Two', 'دانلود همه (عالی)']
+      ),
+    ]],
+  });
+
+  const opened = await openMeloBotAlbumRobustByTitle(
+    client,
+    'Bahram & Ali Sorena',
+    'Khoone Khorshid',
+    { timeoutMs: 30, maxPages: 3 }
+  );
+
+  assert.equal(opened.route, 'artist_component_direct');
+  assert.equal(opened.album.title, 'Khoone Khorshid');
+  assert.deepEqual(opened.tracks.map(track => track.title), ['Track One', 'Track Two']);
 });
