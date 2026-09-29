@@ -430,13 +430,22 @@ async function runTrackEnrich(task) {
   }
 
   if (bundle.metadata) {
-    try {
-      await deepCatalog.setMetadata(liveTrack, bundle.metadata);
-      summary.metadata = true;
-      summary.releaseDate = bundle.metadata.releaseDate || bundle.metadata.releaseDateRaw || null;
-      summary.popularity = bundle.metadata.popularityCount || bundle.metadata.popularityText || null;
-    } catch (err) {
-      summary.errors.push(`metadata-save: ${err.message}`);
+    const meaningfulMetadata = Boolean(
+      bundle.metadata.releaseDate
+      || bundle.metadata.releaseDateRaw
+      || bundle.metadata.popularityCount
+      || bundle.metadata.popularityText
+      || String(bundle.metadata.raw || '').trim()
+    );
+    if (meaningfulMetadata) {
+      try {
+        await deepCatalog.setMetadata(liveTrack, bundle.metadata);
+        summary.metadata = true;
+        summary.releaseDate = bundle.metadata.releaseDate || bundle.metadata.releaseDateRaw || null;
+        summary.popularity = bundle.metadata.popularityCount || bundle.metadata.popularityText || null;
+      } catch (err) {
+        summary.errors.push(`metadata-save: ${err.message}`);
+      }
     }
   }
 
@@ -464,7 +473,31 @@ async function runTrackEnrich(task) {
     try { await deepCatalog.markNoLyrics(liveTrack, 'melobot'); } catch {}
   }
 
-  if (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length) {
+  const unresolvedPositiveCapabilities = [];
+  if (bundle.capabilities?.hasMetadata && !summary.metadata) {
+    unresolvedPositiveCapabilities.push('metadata');
+  }
+  if (bundle.capabilities?.hasCover && !summary.cover) {
+    unresolvedPositiveCapabilities.push('cover');
+  }
+  if (
+    bundle.capabilities?.hasLyrics
+    && !summary.lyrics
+    && bundle.lyrics?.checked !== true
+  ) {
+    unresolvedPositiveCapabilities.push('lyrics');
+  }
+
+  if (unresolvedPositiveCapabilities.length) {
+    summary.errors.push(
+      `unresolved capabilities: ${unresolvedPositiveCapabilities.join(', ')}`
+    );
+  }
+
+  if (
+    unresolvedPositiveCapabilities.length
+    || (!summary.metadata && !summary.cover && !summary.lyrics && summary.errors.length)
+  ) {
     throw new Error(`Track enrichment failed: ${summary.errors.join(' | ')}`);
   }
   return summary;
