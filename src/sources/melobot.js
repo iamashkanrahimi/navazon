@@ -307,20 +307,28 @@ export async function searchMeloBot(client, query) {
   return tracks;
 }
 
-export async function openMeloBotArtistFresh(client, artist, preferredSeed = null) {
+async function findArtistSeed(client, artist, preferredSeed = null) {
   let seed = preferredSeed;
 
   try {
     const results = await searchMeloBot(client, artist);
     const target = normalize(artist);
     seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track => normalize(track.artist).includes(target) || target.includes(normalize(track.artist)))
+      || results.find(track =>
+        normalize(track.artist).includes(target) ||
+        target.includes(normalize(track.artist))
+      )
       || seed;
   } catch (err) {
-    console.warn('[melobot fresh artist search]', artist, err.message);
+    console.warn('[melobot artist seed]', artist, err.message);
   }
 
   if (!seed) throw new Error(`No usable MeloBot seed track found for artist: ${artist}`);
+  return seed;
+}
+
+export async function openMeloBotArtistFresh(client, artist, preferredSeed = null) {
+  const seed = await findArtistSeed(client, artist, preferredSeed);
   return openMeloBotArtist(client, seed);
 }
 
@@ -789,24 +797,6 @@ async function openMeloBotArtistBase(client, seedTrack) {
     recentBulkNormalButton,
     relatedArtists,
   };
-}
-
-async function findArtistSeed(client, artist, preferredSeed = null) {
-  let seed = preferredSeed;
-  try {
-    const results = await searchMeloBot(client, artist);
-    const target = normalize(artist);
-    seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track =>
-        normalize(track.artist).includes(target) ||
-        target.includes(normalize(track.artist))
-      )
-      || seed;
-  } catch (err) {
-    console.warn('[melobot bulk artist seed]', artist, err.message);
-  }
-  if (!seed) throw new Error(`No usable MeloBot seed track found for artist: ${artist}`);
-  return seed;
 }
 
 export async function openMeloBotArtist(client, seedTrack) {
@@ -1295,6 +1285,27 @@ export async function resolveMeloBotAlbums(client, artistContext, { allowEmpty =
   return {
     ...listing,
     source: 'navigation',
+  };
+}
+
+export async function resolveMeloBotArtistAlbums(
+  client,
+  artist,
+  preferredSeed = null,
+  { allowEmpty = true } = {}
+) {
+  const seed = await findArtistSeed(client, artist, preferredSeed);
+  const artistContext = await openMeloBotArtistBase(client, seed);
+
+  // MeloBot uses a stateful reply keyboard. Resolve albums immediately from
+  // the base artist page before sorting/top-track navigation changes that state.
+  const resolved = await resolveMeloBotAlbums(client, artistContext, { allowEmpty });
+
+  return {
+    artist: artistContext.artist,
+    seed,
+    artistContext,
+    ...resolved,
   };
 }
 

@@ -19,7 +19,7 @@ import {
   openMeloBotArtist, openMeloBotArtistFresh,
   prepareMeloBotBulkTopTracks, prepareMeloBotBulkRecentTracks,
   downloadMeloBotTopTracks, downloadMeloBotRecentTracks, downloadMeloBotAlbumTracks,
-  matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums,
+  matchBulkAudioToTracks, listMeloBotAlbums, resolveMeloBotAlbums, resolveMeloBotArtistAlbums,
   albumQueryMatches, discoverMeloBotAlbumsForQuery, discoverMeloBotAlbumsByArtistQuery,
   discoverMeloBotFeed, openMeloBotCuratedPlaylist,
   openMeloBotAlbum, openMeloBotAlbumContext, downloadMeloBotTrack, discoverMeloBotHome,
@@ -625,21 +625,17 @@ export const sourceQueue = new SerialQueue(async job => {
           let liveAlbums = [];
 
           if (seed) {
-            const liveArtist = await openMeloBotArtistFresh(tg, album.artist, seed);
-            liveArtistName = liveArtist.artist;
-            session.artistSeed = seed
-              || liveArtist.recentTracks?.[0]
-              || liveArtist.topTracks?.[0]
-              || null;
-            await syncArtistContext(liveArtist);
-
-            const resolved = await resolveMeloBotAlbums(
+            const resolved = await resolveMeloBotArtistAlbums(
               tg,
-              liveArtist,
+              album.artist,
+              seed,
               { allowEmpty: true }
             );
+            liveArtistName = resolved.artist;
             liveAlbums = resolved.albums;
-            await syncAlbumIndex(liveArtist.artist, liveAlbums, {
+            session.artistSeed = resolved.seed || seed;
+
+            await syncAlbumIndex(resolved.artist, liveAlbums, {
               complete: Boolean(resolved.complete),
               emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
             });
@@ -1049,10 +1045,19 @@ export const sourceQueue = new SerialQueue(async job => {
           let lastError;
           for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-              // Reset MeloBot to the artist's album listing first. Reusing a
-              // stale seed/keyboard here was the same class of bug that made
-              // the Albums button bounce back to the artist page.
-              const resolved = await resolveArtistAlbumsDirect(artist, { maxAlbums: 30 });
+              const preferredSeed = session.artistSeed
+                || session.albumOriginTrack
+                || session.currentTrack
+                || null;
+              const resolved = preferredSeed
+                ? await resolveMeloBotArtistAlbums(
+                    tg,
+                    artist,
+                    preferredSeed,
+                    { allowEmpty: true }
+                  )
+                : await resolveArtistAlbumsDirect(artist, { maxAlbums: 30 });
+
               const target = resolved.albums.find(item =>
                 normalize(item.title) === normalize(albumTitle)
               );
@@ -1299,17 +1304,42 @@ export const sourceQueue = new SerialQueue(async job => {
             session.albums = cachedAlbums;
             session.albumsEmptyConfirmed = cachedAlbums.length === 0;
           } else {
-            const resolved = await resolveArtistAlbumsDirect(artist, { maxAlbums: 30 });
+            const seed = session.artistSeed || session.options.find(x =>
+              x.source === 'melobot' && normalize(x.artist) === normalize(artist)
+            ) || null;
+
+            const resolved = seed
+              ? await resolveMeloBotArtistAlbums(
+                  tg,
+                  artist,
+                  seed,
+                  { allowEmpty: true }
+                )
+              : await resolveArtistAlbumsDirect(artist, { maxAlbums: 30 });
+
+            session.artistSeed = resolved.seed || session.artistSeed || seed || null;
             session.artistContext = {
               ...session.artistContext,
               artist: resolved.artist,
+              albumButton: resolved.artistContext?.albumButton || null,
+              albumList: resolved.albums || [],
+              albumListingConfirmed: Boolean(resolved.confirmed),
+              albumListingConfirmedEmpty: Boolean(resolved.confirmedEmpty),
+              albumDeclaredCount: resolved.declaredCount ?? null,
             };
             session.albums = resolved.albums;
-            session.albumsEmptyConfirmed = resolved.confirmedEmpty;
+            session.albumsEmptyConfirmed = Boolean(
+              resolved.confirmedEmpty && resolved.complete
+            );
 
-            if (!session.albums.length && !resolved.confirmedEmpty) {
+            if (!session.albums.length && !session.albumsEmptyConfirmed) {
               throw new Error('MeloBot returned no album rows without confirming an empty catalog.');
             }
+
+            await syncAlbumIndex(resolved.artist, session.albums, {
+              complete: Boolean(resolved.complete),
+              emptyConfirmed: session.albumsEmptyConfirmed,
+            });
           }
         }
 
@@ -1361,10 +1391,24 @@ export const sourceQueue = new SerialQueue(async job => {
         let resolvedArtist = session.artistContext.artist;
 
         if (!tracks) {
-          const resolved = await resolveArtistAlbumsDirect(
-            session.artistContext.artist,
-            { maxAlbums: 30 }
-          );
+          const seed = session.artistSeed || session.options.find(x =>
+            x.source === 'melobot' &&
+            normalize(x.artist) === normalize(session.artistContext.artist)
+          ) || null;
+
+          const resolved = seed
+            ? await resolveMeloBotArtistAlbums(
+                tg,
+                session.artistContext.artist,
+                seed,
+                { allowEmpty: true }
+              )
+            : await resolveArtistAlbumsDirect(
+                session.artistContext.artist,
+                { maxAlbums: 30 }
+              );
+
+          session.artistSeed = resolved.seed || session.artistSeed || seed || null;
           resolvedArtist = resolved.artist;
           liveAlbum = resolved.albums.find(item =>
             normalize(item.title) === normalize(album.title)
@@ -1374,6 +1418,10 @@ export const sourceQueue = new SerialQueue(async job => {
           }
 
           tracks = await openMeloBotAlbum(tg, resolvedArtist, liveAlbum);
+          await syncAlbumIndex(resolvedArtist, resolved.albums, {
+            complete: Boolean(resolved.complete),
+            emptyConfirmed: Boolean(resolved.confirmedEmpty && resolved.complete),
+          });
           await syncAlbumTracks(resolvedArtist, liveAlbum, tracks);
         }
 
