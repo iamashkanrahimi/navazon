@@ -18,6 +18,19 @@ export function deepAlbumKey(artist = '', title = '') {
   return `${deepNormalize(artist)}|${deepNormalize(title)}`;
 }
 
+function inferredArtistFromFeaturedTitle(artist = '', title = '') {
+  const artistKey = deepNormalize(artist);
+  const titleKey = deepNormalize(title);
+  return Boolean(
+    artistKey
+    && (
+      titleKey.includes(`feat ${artistKey}`)
+      || titleKey.includes(`ft ${artistKey}`)
+      || titleKey.includes(`featuring ${artistKey}`)
+    )
+  );
+}
+
 function safeJson(value) {
   return JSON.stringify(value ?? {});
 }
@@ -411,6 +424,8 @@ export class DeepCatalog {
       ...(row.source_data || {}),
       source: row.source_data?.source || 'melobot',
       rawText: row.source_data?.rawText || undefined,
+      artistInferred: Boolean(row.source_data?.artistInferred)
+        || inferredArtistFromFeaturedTitle(row.artist, row.title),
     }));
   }
 
@@ -454,7 +469,8 @@ export class DeepCatalog {
       ...(row.source_data || {}),
       source: row.source_data?.source || 'melobot',
       rawText: row.source_data?.rawText || undefined,
-      artistInferred: Boolean(row.source_data?.artistInferred),
+      artistInferred: Boolean(row.source_data?.artistInferred)
+        || inferredArtistFromFeaturedTitle(row.artist, row.title),
     }));
   }
 
