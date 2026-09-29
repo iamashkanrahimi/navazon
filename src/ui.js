@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
-import { cleanText, normalizeText } from './text.js';
+import { cleanText, normalizeText, meaningfulSearchTokens } from './text.js';
 
 export const SESSION_TTL_MS = 12 * 60 * 1000;
 export const BUSY_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -38,6 +38,13 @@ export function albumButtonLabel(album) {
   const body = album.artist ? `${album.artist} — ${album.title}` : album.title;
   const suffix = album.trackCount ? ` · ${album.trackCount} آهنگ` : '';
   return truncate(`💿 ${body}${suffix}`);
+}
+
+function artistShortcutMatchesQuery(query = '', artist = '') {
+  const queryTokens = meaningfulSearchTokens(query);
+  const artistTokens = new Set(normalize(artist).split(' ').filter(Boolean));
+  if (!queryTokens.length || !artistTokens.size) return false;
+  return queryTokens.every(token => artistTokens.has(token));
 }
 
 function dominantArtist(tracks) {
@@ -120,7 +127,10 @@ export function followedArtistsKeyboard(sessionId, artists = []) {
 }
 
 export function resultsKeyboard(sessionId, session) {
-  const artist = dominantArtist(session.options || []);
+  const dominant = dominantArtist(session.options || []);
+  const artist = dominant && artistShortcutMatchesQuery(session.query, dominant)
+    ? dominant
+    : null;
   const trackRows = (session.options || []).map((track,index) => ([{
     text: trackButtonLabel(track,index,{ numbered: true }),
     callback_data: `t:${sessionId}:${index}`,
@@ -158,6 +168,15 @@ export function resultsKeyboard(sessionId, session) {
 
     if (albumArtists.size === 1) {
       const only = [...albumArtists.values()][0];
+      if (!artistShortcutMatchesQuery(session.query, only.artist)) {
+        if (session.resultsBackAction) {
+          rows.push([{
+            text: session.resultsBackText || '🔙 برگشت',
+            callback_data: `${session.resultsBackAction}:${sessionId}`,
+          }]);
+        }
+        return { inline_keyboard: rows };
+      }
       rows.push([{
         text: `صفحه‌ی 🗣 ${truncate(only.artist,30)}`,
         callback_data: `aar:${sessionId}:${only.index}`,
