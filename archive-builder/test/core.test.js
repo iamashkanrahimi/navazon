@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeSongResponse } from '../src/catalog.js';
+import { canonicalMatchKey, normalizeText, selectReleaseDate, splitArtistNames } from '../src/utils.js';
+import { shardUrls, selectPilotUrls } from '../src/snapshot.js';
+const context={sourceUrl:'https://www.radiojavan.com/mp3s/mp3/Artist-Song',sourceSlug:'Artist-Song',rawText:'{"x":1}'};
+test('normalizes Persian/Arabic character variants',()=>assert.equal(normalizeText('علي كريمي'),normalizeText('علی کریمی')));
+test('canonical key is order-independent for structured artist tags',()=>assert.equal(canonicalMatchKey({artist:'Sijal & Sogand',artistTags:['Sijal','Sogand'],title:'X'}),canonicalMatchKey({artist:'Sogand & Sijal',artistTags:['Sogand','Sijal'],title:'X'})));
+test('source identity is preserved even when canonical key collides',()=>{const a=normalizeSongResponse({id:1,song:'Same',artist:'A'},context);const b=normalizeSongResponse({id:2,song:'Same',artist:'A'},{...context,sourceUrl:context.sourceUrl+'-2'});assert.equal(a.canonical_match_key,b.canonical_match_key);assert.notEqual(a.source_id,b.source_id);assert.notEqual(a.source_url,b.source_url)});
+test('release date provenance prefers release_date then date then created_at fallback',()=>{assert.equal(selectReleaseDate({release_date:'2020-01-02',date:'2021-01-02'}).release_date_source,'release_date');assert.equal(selectReleaseDate({date:'2021-01-02',created_at:'2022-01-02'}).release_date_source,'date');assert.equal(selectReleaseDate({created_at:'2022-01-02'}).release_date_source,'created_at_fallback')});
+test('song normalization stores whitelist fields and lyrics',()=>{const r=normalizeSongResponse({id:7,song:'Track',artist:'A & B',artist_tags:['A','B'],duration:202.2,lyric:'hello',date:'2026-09-01',album:{album:'Album X',id:99},photo:'https://img.test/a.jpg',hq_link:'https://no.test/file.mp3'},context);assert.equal(r.source_id,'7');assert.equal(r.duration_seconds,202);assert.equal(r.lyrics_text,'hello');assert.equal(r.album_title,'Album X');assert.equal(r.album_source_id,'99');assert.equal('hq_link' in r,false)});
+test('artist splitting prefers structured tags and deduplicates',()=>assert.deepEqual(splitArtistNames('Ignored',['Arta','Poobon','Arta']),['Arta','Poobon']));
+test('static shards partition every URL exactly once',()=>{const urls=Array.from({length:101},(_,i)=>`u${i}`);const pieces=Array.from({length:7},(_,i)=>shardUrls(urls,i,7)).flat();assert.equal(pieces.length,urls.length);assert.equal(new Set(pieces).size,urls.length)});
+test('pilot selection is deterministic and unique',()=>{const urls=Array.from({length:100},(_,i)=>`https://x/mp3s/mp3/A-${i}${i===20?'-Remix':''}`);const a=selectPilotUrls(urls,30);assert.deepEqual(a,selectPilotUrls(urls,30));assert.equal(new Set(a).size,30)});
