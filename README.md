@@ -1,4 +1,4 @@
-# Navazon Cloud v1.5.2 — Instant Albums List
+# Navazon Cloud v1.5.3 — Typed Search & Artist Recovery
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -156,3 +156,16 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Artist sorting now records the final source keyboard separately from stale base-page controls.
 - Artist sort/navigation buttons are explicitly rejected by the track parser, preventing them from being mistaken for title-only songs.
 - Adds dedicated Albums telemetry with route, cache time, source time, total time, and album count.
+
+
+## Typed Search & Artist Recovery v1.5.3
+
+- MeloBot search surfaces are parsed as typed track/album results instead of assuming every comma/dash row is a song.
+- Disc-prefixed album rows are never parsed as tracks, including search rows without a track-count suffix.
+- Exact low-confidence `artist + title` results are probed once while live; if MeloBot opens an album page, Navazon converts the result to an album and indexes its visible tracks immediately.
+- Exact high-confidence track rows with source popularity metadata stay on the no-probe fast path.
+- User search cache is namespaced for v1.5.3 so previously misclassified search rows do not survive the fix.
+- Artist navigation detects when a selected search row opened an album and jumps through a real visible album track to the artist page instead of failing on a missing singer button.
+- Artist navigation and sorting use bounded timeouts so a malformed source surface cannot hold the UI for ~18 seconds.
+- Empty artist profiles fail closed and are never written over a healthy catalog artist context.
+- Search telemetry now includes source, exact-probe outcome, track count, album count, and phase timing; artist telemetry includes route and recovered track counts.
