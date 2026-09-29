@@ -181,6 +181,8 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Search-result albums open target-first through the direct album route instead of resolving a whole discography first.
 - Followed-artist pages now reject stale/empty cached Artist contexts just like normal Artist pages.
 - Native bulk downloads (album, top, recent) use only explicit `hq` rows from `deep_track_media` when served from cache; untyped legacy cache is never treated as HQ.
+- Media rows now carry a `verified_quality` provenance flag. Existing pre-v1.5.4 rows migrate as unverified and are ignored for quality-labelled delivery until MeloBot refreshes them; every new HQ/normal source fetch is stored as verified.
+- The crawler treats unverified legacy media as missing and can revive completed media tasks, gradually rebuilding a trustworthy quality-aware cache.
 - Explicit single-track HQ requests also bypass untyped legacy cache, so the “quality عالی” label is quality-strict.
 - Batched HQ cache lookup fetches all requested media in one database query to keep cached bulk delivery fast.
 - Regression coverage includes mixed track+album queries, real low-confidence tracks, single-row Artist shortcuts, multi-row Artist recovery, Persian/Latin query shapes, counted albums, and quality-aware media lookup.
