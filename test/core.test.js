@@ -1896,7 +1896,7 @@ test('inferred featured-artist rows resolve to the explicit primary artist by ti
   const resolved = await resolveMeloBotTrackCandidate(
     client,
     inferred,
-    { timeoutMs: 100 }
+    { timeoutMs: 100, forceIdentity: true }
   );
   assert.equal(resolved.artist, 'Sadegh');
   assert.equal(resolved.title, 'Khalesaneh (feat. T-Dey)');
