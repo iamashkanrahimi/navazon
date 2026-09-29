@@ -135,7 +135,7 @@ export class CatalogStore {
   async seedArtistsFromTracks(tracks = [], discoveredFrom = 'tracks') {
     const names = new Map();
     for (const track of tracks) {
-      if (track?.artist) {
+      if (track?.artist && !track?.artistInferred) {
         const key = normalize(track.artist);
         if (key) names.set(key, { name: track.artist, seedTracks: [track], discoveredFrom });
       }
