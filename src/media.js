@@ -4,7 +4,12 @@ import { applyPolicyDefaults, canDeliverTrack } from './policy.js';
 import { forwardHiddenToOurBot, forwardHiddenManyToOurBot } from './mtproto.js';
 import { minimalBrandCaption, MAX_RESULTS } from './ui.js';
 import { normalizeText } from './text.js';
-import { searchMeloBot, downloadMeloBotTrack } from './sources/melobot.js';
+import {
+  searchMeloBot,
+  searchMeloBotTyped,
+  classifyMeloBotTypedSearchExact,
+  downloadMeloBotTrack,
+} from './sources/melobot.js';
 import { searchAhangify, downloadAhangifyResult } from './sources/ahangify.js';
 
 function splitAhangifyTitle(value = '') {
@@ -150,15 +155,47 @@ export async function downloadTrackWithSources(track, originalQuery) {
   };
 }
 
-export async function searchPrimary(query) {
+export async function searchPrimaryTyped(query) {
   try {
-    const tracks = await searchMeloBot(tg,query);
-    return tracks.slice(0,MAX_RESULTS).map(track => applyPolicyDefaults({ ...track, source: 'melobot' }));
+    const typed = await classifyMeloBotTypedSearchExact(
+      tg,
+      query,
+      await searchMeloBotTyped(tg, query)
+    );
+    const tracks = (typed.tracks || []).slice(0, MAX_RESULTS).map(track =>
+      applyPolicyDefaults({ ...track, source: 'melobot' })
+    );
+    const albums = (typed.albums || [])
+      .filter(album => album?.artist && album?.title)
+      .slice(0, MAX_RESULTS)
+      .map(album => ({ ...album, source: 'melobot' }));
+
+    if (tracks.length || albums.length) {
+      return {
+        tracks,
+        albums,
+        source: 'melobot',
+        typed: true,
+        exactProbe: typed.exactProbe || 'not_needed',
+      };
+    }
+
+    throw new Error('MeloBot typed search returned no visible results.');
   } catch (err) {
-    console.warn('[melobot search]',err.message);
-    const results = await searchAhangify(tg,query);
-    return results.slice(0,MAX_RESULTS).map(candidate => applyPolicyDefaults({
-      ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }), source: 'ahangify',
-    }));
+    console.warn('[melobot search]', err.message);
+    const results = await searchAhangify(tg, query);
+    return {
+      tracks: results.slice(0, MAX_RESULTS).map(candidate => applyPolicyDefaults({
+        ...sourceCandidateToTrack({ ...candidate, source: 'ahangify' }),
+        source: 'ahangify',
+      })),
+      albums: [],
+      source: 'ahangify',
+      typed: false,
+    };
   }
+}
+
+export async function searchPrimary(query) {
+  return (await searchPrimaryTyped(query)).tracks;
 }

@@ -258,7 +258,13 @@ export class CatalogStore {
 
   async recordArtist(name, { topTracks = [], recentTracks = [], albumButton = null } = {}) {
     const { key, node } = await this.readArtist(name);
-    if (!node) return;
+    if (!node) return false;
+
+    // Never let a transient/failed MeloBot artist surface overwrite a healthy
+    // catalog entry with an empty profile. getArtistContext already ignores
+    // empty profiles; this also prevents creating them in the first place.
+    if (!topTracks.length && !recentTracks.length) return false;
+
     node.topTracks = topTracks.map(track => this.compactTrack(track));
     node.recentTracks = recentTracks.map(track => this.compactTrack(track));
     node.albumButton = clean(albumButton || node.albumButton || '') || null;
@@ -266,6 +272,7 @@ export class CatalogStore {
     this.addTracksToNode(node, [...topTracks, ...recentTracks]);
     await this.writeArtist(key, node);
     await this.seedArtistsFromTracks([...topTracks, ...recentTracks], `artist:${clean(name)}`);
+    return true;
   }
 
   async recordAlbums(name, albums = [], { emptyConfirmed = false } = {}) {
