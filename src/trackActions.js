@@ -97,17 +97,30 @@ export async function prepareTrackPage(track) {
   // Cached media/content is authoritative. Source capability snapshots are
   // trusted for only one hour; after that a positive becomes unknown instead
   // of being advertised forever.
+  const unavailable = track?.capabilityUnavailable || {};
+  const hasStoredInfo = Boolean(
+    details?.release_date || details?.release_date_raw || details?.duration_seconds ||
+    details?.popularity_count || details?.popularity_text || details?.albumInfo
+  );
   const capabilities = {
-    hasHq: Boolean(details?.media?.hq) || snapshot.hasHq === true
-      || (track?.source === 'ahangify' && Boolean(track?.cmd)),
-    hasNormal: Boolean(details?.media?.normal) || snapshot.hasNormal === true,
-    hasLyrics: Boolean(details?.lyrics_text) || snapshot.hasLyrics === true,
-    hasCover: Boolean(details?.cover_file_id) || snapshot.hasCover === true,
-    hasMetadata: Boolean(
-      details?.release_date || details?.release_date_raw || details?.duration_seconds ||
-      details?.popularity_count || details?.popularity_text || details?.albumInfo ||
-      snapshot.hasMetadata === true
-    ),
+    hasHq: unavailable.hasHq
+      ? false
+      : (Boolean(details?.media?.hq) || snapshot.hasHq === true
+          || (track?.source === 'ahangify' && Boolean(track?.cmd))
+        ? true
+        : null),
+    hasNormal: unavailable.hasNormal
+      ? false
+      : (Boolean(details?.media?.normal) || snapshot.hasNormal === true ? true : null),
+    hasLyrics: details?.metadata?.hasLyrics === false
+      ? false
+      : (Boolean(details?.lyrics_text) || snapshot.hasLyrics === true ? true : null),
+    hasCover: unavailable.hasCover
+      ? false
+      : (Boolean(details?.cover_file_id) || snapshot.hasCover === true ? true : null),
+    hasMetadata: unavailable.hasMetadata
+      ? false
+      : (hasStoredInfo || snapshot.hasMetadata === true ? true : null),
     hasArtistPage: Boolean(
       track?.artist
       && !track?.artistInferred
@@ -218,12 +231,14 @@ export async function sendTrackQuality(
           }
         }
       } catch (err) {
+        const capability = quality === 'hq' ? 'hasHq' : 'hasNormal';
+        track.capabilityUnavailable = {
+          ...(track.capabilityUnavailable || {}),
+          [capability]: true,
+        };
         if (hasCanonicalTrackIdentity(track)) {
           try {
-            await deepCatalog.clearCapability(
-              track,
-              quality === 'hq' ? 'hasHq' : 'hasNormal'
-            );
+            await deepCatalog.clearCapability(track, capability);
           } catch {}
         }
         throw err;
