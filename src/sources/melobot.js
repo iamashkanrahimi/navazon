@@ -1433,6 +1433,8 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       albums: resolved.albums,
       complete: resolved.complete,
       confirmedEmpty: resolved.confirmedEmpty,
+      sourceStateVersion,
+      sourceStateSinglePage: !(resolved.pages > 1),
     };
   }
 
@@ -1452,6 +1454,8 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
         albums: resolved.albums,
         complete: resolved.complete,
         confirmedEmpty: resolved.confirmedEmpty,
+        sourceStateVersion,
+        sourceStateSinglePage: !(resolved.pages > 1),
       };
     }
   }
@@ -1497,6 +1501,8 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
       artistContext,
       declaredCount: resolved.declaredCount ?? null,
       confirmed: resolved.confirmed,
+      sourceStateVersion: resolved.sourceStateVersion,
+      sourceStateSinglePage: resolved.sourceStateSinglePage,
     };
   }
 
@@ -1753,6 +1759,8 @@ export async function resolveMeloBotArtistAlbums(
       confirmed: Boolean(direct.confirmed || direct.albums?.length || direct.confirmedEmpty),
       declaredCount: direct.declaredCount ?? null,
       source: 'direct_fallback',
+      sourceStateVersion: direct.sourceStateVersion ?? sourceStateVersion,
+      sourceStateSinglePage: direct.sourceStateSinglePage !== false,
     };
   } catch (directError) {
     throw new Error(
