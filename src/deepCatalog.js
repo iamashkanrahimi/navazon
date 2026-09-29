@@ -32,6 +32,7 @@ export class DeepCatalog {
       rawText: policy.rawText || undefined,
       cmd: policy.cmd || undefined,
       source: policy.source || undefined,
+      artistInferred: Boolean(policy.artistInferred) || undefined,
       sourcePopularityText: policy.sourcePopularityText || undefined,
       sourcePopularityCount: Number.isFinite(policy.sourcePopularityCount)
         ? policy.sourcePopularityCount
@@ -410,6 +411,50 @@ export class DeepCatalog {
     }));
   }
 
+  async deriveArtistList(artist, listType = 'top', limit = 10) {
+    const artistKey = deepNormalize(artist);
+    if (!artistKey) return [];
+
+    const order = listType === 'recent'
+      ? 't.release_date DESC NULLS LAST, t.updated_at DESC'
+      : 't.popularity_count DESC NULLS LAST, t.updated_at DESC';
+
+    const result = await db.query(`
+      SELECT
+        t.track_key,
+        t.artist,
+        t.title,
+        t.album,
+        t.duration_seconds,
+        t.release_date,
+        t.popularity_count,
+        t.popularity_text,
+        t.content_origin,
+        t.availability_policy,
+        t.source_data
+      FROM deep_tracks t
+      WHERE LOWER(t.artist) = $1
+      ORDER BY ${order}
+      LIMIT $2
+    `, [artistKey, Math.max(1, Number(limit || 10))]);
+
+    return result.rows.map(row => ({
+      artist: row.artist,
+      title: row.title,
+      album: row.album || undefined,
+      durationSeconds: row.duration_seconds || undefined,
+      releaseDate: row.release_date || undefined,
+      sourcePopularityCount: row.popularity_count ? Number(row.popularity_count) : undefined,
+      sourcePopularityText: row.popularity_text || undefined,
+      contentOrigin: row.content_origin || 'unknown',
+      availabilityPolicy: row.availability_policy || 'unknown',
+      ...(row.source_data || {}),
+      source: row.source_data?.source || 'melobot',
+      rawText: row.source_data?.rawText || undefined,
+      artistInferred: Boolean(row.source_data?.artistInferred),
+    }));
+  }
+
   async searchAlbums(query, limit = 4) {
     const allTokens = deepNormalize(query).split(' ').filter(Boolean);
     const albumWords = new Set([
@@ -440,14 +485,19 @@ export class DeepCatalog {
       LIMIT ${limitParam}
     `, params);
 
-    return result.rows.map(row => ({
-      albumKey: row.album_key,
-      artist: row.artist,
-      title: row.title,
-      trackCount: row.track_count || undefined,
-      rawText: row.metadata?.rawText || undefined,
-      source: 'catalog',
-    }));
+    return result.rows
+      .filter(row =>
+        !row.metadata?.rawText
+        || /^[💿📀]/u.test(clean(row.metadata.rawText))
+      )
+      .map(row => ({
+        albumKey: row.album_key,
+        artist: row.artist,
+        title: row.title,
+        trackCount: row.track_count || undefined,
+        rawText: row.metadata?.rawText || undefined,
+        source: 'catalog',
+      }));
   }
 
   async getAlbumTracksByKey(albumKey) {
