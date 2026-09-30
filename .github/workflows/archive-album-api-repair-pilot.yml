@@ -1,0 +1,33 @@
+name: Radio Javan Album API Repair Pilot
+on:
+  push:
+    branches: [archive-builder-cloud]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  pilot:
+    if: contains(github.event.head_commit.message, '[album-api-pilot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete-v4
+          path: archive-builder/runtime/v4
+          run-id: 36752120633
+          github-token: ${{ github.token }}
+      - run: node --check src/album-api-repair-pilot.js
+      - run: node src/album-api-repair-pilot.js ./runtime/v4/albums/rj-albums.jsonl.gz ./out/album-api-pilot
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-album-api-repair-pilot
+          path: archive-builder/out/album-api-pilot
+          retention-days: 30
