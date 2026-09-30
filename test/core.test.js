@@ -904,7 +904,9 @@ test('cover delivery follows More and waits for the actual photo target', async 
   const raw = '🎵 Navid, Rah Mire';
   const more = 'بیشتر...';
   const cover = 'کاور';
+  const query = 'Navid Rah Mire';
   const client = new FakeTelegramClient({
+    [query]: [[fakeBotMessage('search results', [raw])]],
     [raw]: [[fakeBotMessage('track menu', [
       '📥 کیفیت عالی',
       '📥 کیفیت معمولی',
@@ -935,7 +937,7 @@ test('cover delivery follows More and waits for the actual photo target', async 
   );
 
   assert.equal(result.available, true);
-  assert.deepEqual(client.sent, [raw, more, cover]);
+  assert.deepEqual(client.sent, [query, raw, more, cover]);
   assert.ok(result.photoMessage?.media?.photo);
 });
 
