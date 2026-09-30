@@ -140,7 +140,7 @@ function artistPickerItems(messages = []) {
     .filter(item => item.name && !/خواننده|پیشنهاد/u.test(item.name));
 }
 
-function findArtistButtonFor(messages = [], artist = '') {
+export function findArtistButtonFor(messages = [], artist = '') {
   const target = normalize(artist);
   const pickers = artistPickerItems(messages);
   const exact = pickers.find(item => normalize(item.name) === target);
