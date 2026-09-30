@@ -32,6 +32,7 @@ const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
 const MAX_SOURCE_QUEUE = 30;
 const BULK_SOURCE_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
+const BULK_CALLBACK_ACTIONS = new Set(['ata', 'rta', 'adl']);
 
 function queueSessionSource(sessionId, session, job) {
   return sourceQueue.push({
@@ -171,6 +172,15 @@ export async function handleUpdate(update) {
       return;
     }
     try {
+      // A newer interactive action from the same user supersedes an older
+      // queued bulk download, even when it belongs to another still-valid
+      // session. Do this before the busy guard so an explicitly new intent can
+      // release a stale queued bulk instead of waiting behind it.
+      if (!BULK_CALLBACK_ACTIONS.has(action)) {
+        const cancelled = await cancelQueuedBulkForUser(session.userId);
+        if (cancelled) session.busy = false;
+      }
+
       if (session.busy) {
         await bot.answerCallbackQuery(callback.id,{ text: 'یک لحظه…' });
         return;
