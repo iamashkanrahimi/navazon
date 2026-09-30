@@ -2674,11 +2674,12 @@ export const sourceQueue = new SerialQueue(async job => {
         const seed = indexedSeed?.source === 'melobot'
           ? indexedSeed
           : session.options.find(x => x.source === 'melobot');
-        if (!seed) throw new Error('Artist profile currently requires MeloBot result.');
+        const targetArtist = String(job.artistOverride || seed?.artist || '').trim();
+        if (!targetArtist) throw new Error('Artist profile currently requires a known artist.');
 
         const cacheStartedAt = Date.now();
         const cachedArtist = await catalog.getArtistContext(
-          seed.artist,
+          targetArtist,
           config.catalogArtistTtlMs
         );
         cacheMs = Date.now() - cacheStartedAt;
@@ -2688,7 +2689,9 @@ export const sourceQueue = new SerialQueue(async job => {
           artistRoute = 'catalog';
         } else {
           sourceStartedAt = Date.now();
-          session.artistContext = await openMeloBotArtistFast(tg, seed);
+          session.artistContext = job.artistOverride
+            ? await openMeloBotArtistFastFresh(tg, targetArtist, null)
+            : await openMeloBotArtistFast(tg, seed);
           sourceMs = Date.now() - sourceStartedAt;
           artistRoute = session.artistContext.recoveredFromAlbum
             ? 'live_album_recovery'
@@ -2699,7 +2702,8 @@ export const sourceQueue = new SerialQueue(async job => {
           throw new Error('MeloBot returned an empty artist context.');
         }
 
-        session.artistSeed = session.artistContext.seedTrack || seed;
+        session.artistSeed = session.artistContext.seedTrack
+          || (job.artistOverride ? null : seed);
         await syncArtistContext(session.artistContext);
 
         if (!cachedArtist) {
