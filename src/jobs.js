@@ -2317,7 +2317,8 @@ export const sourceQueue = new SerialQueue(async job => {
                   albumTitle,
                   {
                     album: session.currentAlbum,
-                    timeoutMs: 4200,
+                    timeoutMs: 3600,
+                    totalTimeoutMs: 6500,
                     maxPages: 8,
                   }
                 );
