@@ -1367,6 +1367,10 @@ export const sourceQueue = new SerialQueue(async job => {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
         if (cached.complete) {
           sent = cached.sent;
+          if (cached.canonicalTracks?.length) {
+            session.artistContext.recentTracks = cached.canonicalTracks;
+            await syncArtistContext(session.artistContext);
+          }
         } else {
           const seed = session.artistSeed || session.options.find(x =>
             x.source === 'melobot' &&
@@ -1438,6 +1442,10 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
+        if (fallback.canonicalTracks?.length) {
+          session.artistContext.recentTracks = fallback.canonicalTracks;
+          await syncArtistContext(session.artistContext);
+        }
         const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -1501,6 +1509,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
         if (cached.complete) {
           sent = cached.sent;
+          if (cached.canonicalTracks?.length) {
+            session.artistContext.topTracks = cached.canonicalTracks;
+            session.artistContext.tracks = cached.canonicalTracks;
+            await syncArtistContext(session.artistContext);
+          }
         } else {
           const seed = session.artistSeed || session.options.find(x =>
             x.source === 'melobot' &&
@@ -1565,6 +1578,11 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
+        if (fallback.canonicalTracks?.length) {
+          session.artistContext.topTracks = fallback.canonicalTracks;
+          session.artistContext.tracks = fallback.canonicalTracks;
+          await syncArtistContext(session.artistContext);
+        }
         const fallbackMessage = bulkFallbackMessage('top', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -1600,6 +1618,17 @@ export const sourceQueue = new SerialQueue(async job => {
         const cached = await deliverBulkFromCacheIfComplete(session, requestedTracks);
         if (cached.complete) {
           sent = cached.sent;
+          if (cached.canonicalTracks?.length) {
+            session.currentAlbum.tracks = cached.canonicalTracks;
+            await syncAlbumTracks(
+              session.currentAlbum?.artist
+                || session.artistContext?.artist
+                || session.albumOriginTrack?.artist
+                || session.currentTrack?.artist,
+              session.currentAlbum,
+              cached.canonicalTracks
+            );
+          }
         } else {
           const artist = session.currentAlbum?.artist
             || session.artistContext?.artist
@@ -1717,6 +1746,17 @@ export const sourceQueue = new SerialQueue(async job => {
         const fallback = await deliverAvailableBulkCache(session, requestedTracks);
         sent = fallback.sent;
         missing = fallback.missing;
+        if (fallback.canonicalTracks?.length) {
+          session.currentAlbum.tracks = fallback.canonicalTracks;
+          await syncAlbumTracks(
+            session.currentAlbum?.artist
+              || session.artistContext?.artist
+              || session.albumOriginTrack?.artist
+              || session.currentTrack?.artist,
+            session.currentAlbum,
+            fallback.canonicalTracks
+          );
+        }
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
