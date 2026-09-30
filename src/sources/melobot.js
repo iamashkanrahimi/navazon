@@ -2787,8 +2787,13 @@ export async function openMeloBotArtist(
 
       if (exactTracks.length) {
         topTracks = exactTracks;
-        // The recovery search changed MeloBot state, so invalidate any live
-        // controls captured from the previous artist surface.
+        // The recovery search changed MeloBot state, so every reply-keyboard
+        // control captured from the previous Artist page is stale. Keep the
+        // recovered list as catalog identity only; a later bulk request must
+        // either use cache or deliberately rebuild a live Artist page.
+        bulkHighButton = null;
+        bulkNormalButton = null;
+        artistSourceStateVersion = sourceStateVersion;
         liveAlbumButton = null;
         liveAlbumList = [];
         liveAlbumListingConfirmed = false;
