@@ -3439,3 +3439,143 @@ test('search ranking penalizes an unrequested remix and requests relevance fallb
     true
   );
 });
+
+
+test('exact probe Track surface is reused for immediate HQ and Normal actions', async () => {
+  const query = 'Artist Real Song';
+  const raw = '🎵 Artist, Real Song';
+  const hq = '📥 کیفیت عالی';
+  const normal = '📥 کیفیت معمولی';
+  const audio = title => ({
+    message: '',
+    media: {
+      document: {
+        mimeType: 'audio/mpeg',
+        attributes: [{
+          className: 'DocumentAttributeAudio',
+          title,
+          performer: 'Artist',
+        }],
+      },
+    },
+  });
+
+  const client = new FakeTelegramClient({
+    [query]: [[fakeBotMessage('نتیجه جستجو', [raw])]],
+    [raw]: [[fakeBotMessage('خب حالا میخوای با این آهنگ چه کنی ؟', [hq, normal, 'بیشتر...'])]],
+    [hq]: [[audio('Real Song')]],
+    [normal]: [[audio('Real Song')]],
+  });
+
+  const typed = await searchMeloBotTyped(client, query);
+  const classified = await classifyMeloBotTypedSearchExact(client, query, typed);
+  assert.equal(classified.exactProbe, 'track');
+
+  await downloadMeloBotTrackQuality(
+    client,
+    classified.tracks[0],
+    'hq',
+    { timeoutMs: 900, menuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  await downloadMeloBotTrackQuality(
+    client,
+    classified.tracks[0],
+    'normal',
+    { timeoutMs: 900, menuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+
+  // Search + exact probe open the Track once. Both quality actions then reuse
+  // the verified live Track menu instead of searching/opening it again.
+  assert.deepEqual(client.sent, [query, raw, hq, normal]);
+});
+
+test('Track resolver handles reordered collaboration credits with title-first lookup', async () => {
+  const row = '🎵 Bahram & Ali Sorena, Khoone Khorshid x 1.1M';
+  const client = new FakeTelegramClient({
+    'Khoone Khorshid': [[fakeBotMessage('نتیجه جستجو', [row])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Ali Sorena & Bahram',
+      title: 'Khoone Khorshid',
+      rawText: '🎵 Ali Sorena & Bahram, Khoone Khorshid',
+      sourceStateVersion: 1,
+    },
+    { timeoutMs: 900 }
+  );
+
+  assert.equal(resolved.artist, 'Bahram & Ali Sorena');
+  assert.equal(resolved.title, 'Khoone Khorshid');
+  assert.deepEqual(client.sent, ['Khoone Khorshid']);
+});
+
+test('deep alias resolution preserves a live MeloBot row instead of stale stored rawText', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_aliases a')) {
+      return {
+        rows: [{
+          canonical_track_key: 'reze bahram|yar',
+          artist: 'Reza Bahram',
+          title: 'Yar',
+          source_data: {
+            source: 'melobot',
+            rawText: '🎵 Reza Bahram, Yar x 10k',
+          },
+          duration_seconds: 200,
+          popularity_count: 10000,
+          popularity_text: '10k',
+        }],
+        rowCount: 1,
+      };
+    }
+    throw new Error('Unexpected SQL in live rawText regression: ' + text.slice(0, 100));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const liveRawText = '🎵 Reza Bahram, Yar x 2.5M';
+    const resolved = await catalog.resolveTrackAlias({
+      artist: 'Reza Bahram',
+      title: 'Yar',
+      source: 'melobot',
+      rawText: liveRawText,
+      sourceStateVersion: getMeloBotStateVersion(),
+    });
+
+    assert.equal(resolved.rawText, liveRawText);
+    assert.equal(resolved.sourceStateVersion, getMeloBotStateVersion());
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('SerialQueue coalesces duplicate active and pending keys', async () => {
+  const order = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const queue = new SerialQueue(async item => {
+    order.push(item.id);
+    if (item.id === 'first') await gate;
+  }, {
+    keyOf: item => item.key,
+  });
+
+  assert.equal(queue.push({ id: 'first', key: 'same' }), true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(queue.push({ id: 'duplicate-active', key: 'same' }), false);
+  assert.equal(queue.push({ id: 'other', key: 'other' }), true);
+  assert.equal(queue.push({ id: 'duplicate-pending', key: 'other' }), false);
+
+  release();
+  const deadline = Date.now() + 500;
+  while (!queue.isIdle() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+
+  assert.deepEqual(order, ['first', 'other']);
+});

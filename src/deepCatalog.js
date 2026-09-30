@@ -127,7 +127,12 @@ export class DeepCatalog {
         sourcePopularityText: known.popularity_text || track.sourcePopularityText,
         ...sourceData,
         source: sourceData.source || track.source,
-        rawText: sourceData.rawText || track.rawText,
+        // Never replace a live MeloBot search-row button with a rawText value
+        // loaded from durable catalog storage. rawText is reply-keyboard state,
+        // not Track identity; an old value can point at the wrong source page.
+        rawText: track?.source === 'melobot' && track?.rawText
+          ? track.rawText
+          : (sourceData.rawText || track.rawText),
         cmd: sourceData.cmd || track.cmd,
         artistInferred: false,
       });
@@ -177,7 +182,9 @@ export class DeepCatalog {
             sourcePopularityText: canonical.popularity_text || track.sourcePopularityText,
             ...(canonical.source_data || {}),
             source: canonical.source_data?.source || track.source,
-            rawText: canonical.source_data?.rawText || track.rawText,
+            rawText: track?.source === 'melobot' && track?.rawText
+              ? track.rawText
+              : (canonical.source_data?.rawText || track.rawText),
             cmd: canonical.source_data?.cmd || track.cmd,
             artistInferred: false,
           })

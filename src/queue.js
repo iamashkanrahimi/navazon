@@ -1,9 +1,11 @@
 export class SerialQueue {
   constructor(worker, {
     priorityOf = () => 0,
+    keyOf = () => null,
   } = {}) {
     this.worker = worker;
     this.priorityOf = priorityOf;
+    this.keyOf = keyOf;
     this.items = [];
     this.busy = false;
     this.sequence = 0;
@@ -11,8 +13,16 @@ export class SerialQueue {
   }
 
   push(item) {
+    const key = this.keyOf(item);
+    if (key) {
+      if (this.activeItem?.key === key || this.items.some(entry => entry.key === key)) {
+        return false;
+      }
+    }
+
     const wrapped = {
       item,
+      key,
       priority: Number(this.priorityOf(item) || 0),
       sequence: this.sequence++,
       queuedAt: Date.now(),
@@ -22,6 +32,7 @@ export class SerialQueue {
       b.priority - a.priority || a.sequence - b.sequence
     );
     this.drain().catch(err => console.error('[queue]', err));
+    return true;
   }
 
   isIdle() {
