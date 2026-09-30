@@ -2408,6 +2408,129 @@ function isArtistNavigationSurface(message = {}, artist = '') {
   return tracks.length > 0 && !looksLikeSearchResults;
 }
 
+
+function buildArtistContextFromPage(
+  messages = [],
+  selectedArtist = '',
+  {
+    seedTrack = null,
+    recoveredFromAlbum = false,
+    relatedArtists = [],
+    stateVersion = sourceStateVersion,
+  } = {}
+) {
+  const allButtons = buttonsFromMessages(messages);
+  const recentTracks = parseTracksFromMessages(messages, selectedArtist);
+  const albumListing = inspectMeloBotAlbumListing(messages);
+  const albumButton = albumListing.confirmed
+    ? null
+    : albumNavigationButton(messages);
+  const orderButton = allButtons.find(text => /ترتیب/u.test(clean(text))) || null;
+  const moreButton = allButtons.find(text => /بیشتر|more/iu.test(clean(text))) || null;
+  const recentBulkHighButton = findButton(messages, text =>
+    /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
+  );
+  const recentBulkNormalButton = findButton(messages, text =>
+    /دانلود همه/u.test(clean(text)) && /معمولی/u.test(clean(text))
+  );
+
+  return {
+    artist: selectedArtist,
+    tracks: recentTracks,
+    recentTracks,
+    albumButton,
+    albumList: albumListing.albums,
+    albumListingConfirmed: albumListing.confirmed,
+    albumListingConfirmedEmpty: albumListing.confirmedEmpty,
+    albumDeclaredCount: albumListing.declaredCount,
+    albumListingComplete: albumListing.complete,
+    albumNextButton: albumListing.nextButton || null,
+    orderButton,
+    moreButton,
+    sourceAfterId: maxMessageId(messages),
+    sourceButtons: allButtons.slice(0, 30),
+    sourceStateVersion: Number(stateVersion || sourceStateVersion),
+    recentBulkHighButton,
+    recentBulkNormalButton,
+    relatedArtists,
+    seedTrack: seedTrack || recentTracks[0] || null,
+    recoveredFromAlbum,
+  };
+}
+
+async function openMeloBotArtistDirectBase(
+  client,
+  artist,
+  { timeoutMs = 4500 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 4500);
+  const first = await sendAndCollect(client, artist, {
+    timeoutMs: Math.min(2500, remaining()),
+    quietMs: 450,
+    stopWhen: message => {
+      const pickers = artistPickerItems([message]);
+      if (pickers.some(item => normalize(item.name) === normalize(artist))) return true;
+      return isArtistNavigationSurface(message, artist) && !pickers.length;
+    },
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+  });
+
+  const directPage = first.messages?.find(message => {
+    const pickers = artistPickerItems([message]);
+    return !pickers.length && isArtistNavigationSurface(message, artist);
+  });
+  if (directPage) {
+    return buildArtistContextFromPage(
+      first.messages,
+      artist,
+      { stateVersion: first.stateVersion }
+    );
+  }
+
+  const pickers = artistPickerItems(first.messages);
+  const chosen = pickers.find(item => normalize(item.name) === normalize(artist)) || null;
+  if (!chosen) {
+    throw meloError(
+      'MELOBOT_ARTIST_RESOLVE_FAILED',
+      `MeloBot direct Artist search did not expose an exact picker: ${artist}`
+    );
+  }
+  if (remaining.expired()) {
+    throw new Error(`MeloBot direct Artist budget exhausted: ${artist}`);
+  }
+
+  const page = await sendAndCollect(client, chosen.rawText, {
+    timeoutMs: remaining(),
+    quietMs: 650,
+    stopWhen: message => {
+      const nested = artistPickerItems([message]);
+      return !nested.length && isArtistNavigationSurface(message, chosen.name);
+    },
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+  });
+  const confirmed = page.messages?.some(message => {
+    const nested = artistPickerItems([message]);
+    return !nested.length && isArtistNavigationSurface(message, chosen.name);
+  });
+  if (!confirmed) {
+    throw meloError(
+      'MELOBOT_ARTIST_PAGE_TIMEOUT',
+      `MeloBot direct Artist picker did not open a confirmed page: ${chosen.name}`
+    );
+  }
+
+  return buildArtistContextFromPage(
+    page.messages,
+    chosen.name,
+    {
+      relatedArtists: pickers.map(item => item.name),
+      stateVersion: page.stateVersion,
+    }
+  );
+}
+
 async function openMeloBotArtistBase(
   client,
   seedTrack,
@@ -2591,45 +2714,16 @@ async function openMeloBotArtistBase(
     }
   }
 
-  const allButtons = buttonsFromMessages(artistPage.messages);
-  const recentTracks = parseTracksFromMessages(artistPage.messages, selectedArtist);
-  const albumListing = inspectMeloBotAlbumListing(artistPage.messages);
-  const albumButton = albumListing.confirmed
-    ? null
-    : albumNavigationButton(artistPage.messages);
-
-  const orderButton = allButtons.find(text => /ترتیب/u.test(clean(text))) || null;
-  const moreButton = allButtons.find(text => /بیشتر|more/iu.test(clean(text))) || null;
-  const sourceAfterId = maxMessageId(artistPage.messages);
-  const recentBulkHighButton = findButton(artistPage.messages, text =>
-    /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
+  return buildArtistContextFromPage(
+    artistPage.messages,
+    selectedArtist,
+    {
+      seedTrack: effectiveSeed,
+      recoveredFromAlbum,
+      relatedArtists,
+      stateVersion: artistPage.stateVersion || sourceStateVersion,
+    }
   );
-  const recentBulkNormalButton = findButton(artistPage.messages, text =>
-    /دانلود همه/u.test(clean(text)) && /معمولی/u.test(clean(text))
-  );
-
-  return {
-    artist: selectedArtist,
-    tracks: recentTracks,
-    recentTracks,
-    albumButton,
-    albumList: albumListing.albums,
-    albumListingConfirmed: albumListing.confirmed,
-    albumListingConfirmedEmpty: albumListing.confirmedEmpty,
-    albumDeclaredCount: albumListing.declaredCount,
-    albumListingComplete: albumListing.complete,
-    albumNextButton: albumListing.nextButton || null,
-    orderButton,
-    moreButton,
-    sourceAfterId,
-    sourceButtons: allButtons.slice(0, 30),
-    sourceStateVersion: sourceStateVersion,
-    recentBulkHighButton,
-    recentBulkNormalButton,
-    relatedArtists,
-    seedTrack: effectiveSeed,
-    recoveredFromAlbum,
-  };
 }
 
 export async function openMeloBotArtistFast(
