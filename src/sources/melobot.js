@@ -1397,6 +1397,61 @@ function photoMessage(message) {
   return Boolean(message?.media?.photo);
 }
 
+function isMoreMenuSurface(message = {}) {
+  const buttons = replyButtons(message);
+  if (buttons.some(text =>
+    /کاور|بقیه\s*مشخصات|مشخصات|متن\s*آهنگ/u.test(clean(text))
+  )) return true;
+
+  return /اینجا\s+امکانات\s+بیشتری|امکانات\s+بیشتری/u.test(
+    messageText(message)
+  );
+}
+
+async function openMoreMenuFromSurface(
+  client,
+  menuMessages = [],
+  {
+    timeoutMs = 3000,
+    capability = 'more',
+  } = {}
+) {
+  const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
+  if (!moreButton) {
+    throw meloError(
+      'MELOBOT_MORE_BUTTON_ABSENT',
+      'MeloBot more button not found.',
+      { capability }
+    );
+  }
+
+  await sleep(180);
+  const more = await sendAndCollect(client, moreButton, {
+    timeoutMs: Math.max(500, Number(timeoutMs || 3000)),
+    quietMs: 650,
+    stopWhen: isMoreMenuSurface,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    onMessage: message => {
+      console.log('[melobot.more.incoming]', JSON.stringify({
+        ...describeTargetMessage(message),
+        text: messageText(message).slice(0, 80),
+        buttons: replyButtons(message).slice(0, 8),
+      }));
+    },
+  });
+
+  if (!more.messages?.length || !more.messages.some(isMoreMenuSurface)) {
+    throw meloError(
+      'MELOBOT_SUBMENU_TIMEOUT',
+      'MeloBot more submenu did not reach a confirmed surface.',
+      { capability }
+    );
+  }
+
+  return more.messages;
+}
+
 async function openMoreMenu(
   client,
   candidate,
@@ -1408,14 +1463,12 @@ async function openMoreMenu(
     candidate,
     { timeoutMs: remaining() }
   )).messages;
-  const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
-  if (!moreButton) throw new Error('MeloBot more button not found.');
 
-  const more = await sendAndCollect(client, moreButton, {
-    timeoutMs: remaining(),
-    quietMs: 600,
-  });
-  return more.messages;
+  return openMoreMenuFromSurface(
+    client,
+    menuMessages,
+    { timeoutMs: remaining() }
+  );
 }
 
 export function sanitizeMeloBotLyricsText(raw = '', candidate = {}) {
