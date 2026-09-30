@@ -3126,9 +3126,12 @@ test('legacy trustworthy Artist lists self-heal their semantic version locally',
 });
 
 
-test('Artist picker matches icon labeled buttons', () => {
+test('Artist picker matches the requested icon-labeled artist and rejects a wrong lone picker', () => {
   const messages = [fakeBotMessage('results', ['🗣 Ali Yasini'])];
   assert.equal(findArtistButtonFor(messages, 'Ali Yasini'), '🗣 Ali Yasini');
+
+  const wrong = [fakeBotMessage('results', ['🗣 Ehaam'])];
+  assert.equal(findArtistButtonFor(wrong, 'Xaniar'), null);
 });
 
 
