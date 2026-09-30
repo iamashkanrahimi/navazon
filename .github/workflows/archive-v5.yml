@@ -1,0 +1,88 @@
+name: Radio Javan Album API Full Repair and Freeze V5
+on:
+  push:
+    branches: [archive-builder-cloud]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  gate:
+    if: contains(github.event.head_commit.message, '[archive-v5-run]')
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: archive-builder}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: node --check src/album-api-repair-shard.js && node --check src/album-api-repair-merge.js && node --check src/freeze-v5.js
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete-v4
+          path: archive-builder/runtime/v4
+          run-id: 36752120633
+          github-token: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-v5-album-input
+          path: archive-builder/runtime/v4/albums
+          retention-days: 30
+  repair:
+    needs: gate
+    if: needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: {shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]}
+    defaults: {run: {working-directory: archive-builder}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {name: rj-v5-album-input, path: archive-builder/runtime/albums}
+      - run: node src/album-api-repair-shard.js --in ./runtime/albums/rj-albums.jsonl.gz --out ./out/album-api --shard ${{ matrix.shard }} --shards 32
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: rj-v5-album-${{ matrix.shard }}, path: archive-builder/out/album-api, retention-days: 30}
+  merge-albums:
+    needs: [gate,repair]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: archive-builder}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with: {pattern: rj-v5-album-*, path: archive-builder/artifacts/albums}
+      - run: node src/album-api-repair-merge.js --in ./artifacts/albums --out ./out/albums-repaired
+      - uses: actions/upload-artifact@v4
+        with: {name: rj-v5-albums-repaired, path: archive-builder/out/albums-repaired, retention-days: 30}
+  freeze:
+    needs: merge-albums
+    if: needs.merge-albums.result == 'success'
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: archive-builder}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-full-final
+          path: archive-builder/runtime/songs
+          run-id: 36646058761
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete-v4
+          path: archive-builder/runtime/v4
+          run-id: 36752120633
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with: {name: rj-v5-albums-repaired, path: archive-builder/runtime/albums-repaired}
+      - run: node src/freeze-v5.js --tracks ./runtime/songs/rj-tracks.jsonl.gz --artists ./runtime/v4/artists/rj-artists.jsonl.gz --albums ./runtime/albums-repaired --out ./out/archive-v5
+      - uses: actions/upload-artifact@v4
+        with: {name: rj-archive-v5-final, path: archive-builder/out/archive-v5, retention-days: 90}
