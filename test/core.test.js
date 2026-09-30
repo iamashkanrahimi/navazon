@@ -3945,3 +3945,40 @@ test('MTProto reconciliation ignores an unchanged boundary surface after timeout
   assert.equal(result.hit, null);
   assert.equal(result.messages.length, 0);
 });
+
+
+test('single-token Persian artist search preserves strong Latin transliteration consensus', () => {
+  const hichkas = [
+    { artist: 'Hichkas', title: 'Ye Rooze Khoob Miad' },
+    { artist: 'Hichkas', title: 'Jangale Asfalt' },
+    { artist: 'Hichkas', title: 'Ekhtelaf' },
+    { artist: 'Hichkas', title: 'Bache Haye Iran' },
+    { artist: 'Hichkas', title: 'Oon Mano Naga Kard' },
+  ];
+
+  assert.equal(
+    shouldUseSearchRelevanceFallback('هیچکس', 0, hichkas[0], hichkas),
+    false,
+    'a strong opposite-script artist consensus is valid source evidence'
+  );
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('هیچکس', hichkas).map(track => track.artist),
+    ['Hichkas', 'Hichkas', 'Hichkas', 'Hichkas', 'Hichkas']
+  );
+
+  const mixedNoise = [
+    { artist: 'Artist One', title: 'A' },
+    { artist: 'Artist Two', title: 'B' },
+    { artist: 'Artist Three', title: 'C' },
+    { artist: 'Artist Four', title: 'D' },
+    { artist: 'Artist Five', title: 'E' },
+  ];
+  assert.equal(
+    shouldUseSearchRelevanceFallback('بشقاشی', 0, mixedNoise[0], mixedNoise),
+    true
+  );
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('بشقاشی', mixedNoise),
+    []
+  );
+});
