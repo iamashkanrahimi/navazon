@@ -8,6 +8,7 @@ import {
   rankTracksForQuery,
   meaningfulSearchTokens,
   shouldUseSearchRelevanceFallback,
+  primarySearchQueries,
 } from './text.js';
 import {
   searchMeloBot,
@@ -185,20 +186,6 @@ function interactionBudget(timeoutMs = Math.min(config.searchTimeoutMs, 14000)) 
   return remaining;
 }
 
-
-export function primarySearchQueries(query = '') {
-  const full = String(query || '').replace(/\s+/g, ' ').trim();
-  if (!full) return [];
-
-  // MeloBot often treats a verbose "Ft/feat" query as an Artist picker rather
-  // than a Track search. Search the stable pre-feature credit first; the
-  // original query is still used for ranking and remains the fallback.
-  const base = full
-    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
-    .trim();
-
-  return [...new Set([base, full].filter(Boolean))];
-}
 
 function chooseAhangifyMatch(results, track) {
   const wantedArtist = normalizeMatch(track?.artist || '');
