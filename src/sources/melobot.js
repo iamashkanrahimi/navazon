@@ -2388,6 +2388,27 @@ export async function inspectMeloBotTrack(client, candidate) {
   };
 }
 
+function isArtistNavigationSurface(message = {}, artist = '') {
+  const messages = [message];
+  const buttons = replyButtons(message);
+  if (!buttons.length) return false;
+
+  if (artistPickerItems(messages).length) return true;
+  if (inspectMeloBotAlbumListing(messages).confirmed) return true;
+
+  const hasArtistControls = buttons.some(text => {
+    const value = clean(text);
+    return /دانلود\s*همه|ترتیب|پربازدید|جدید|تازه|آلبوم|البوم|بیشتر|more/iu.test(value);
+  });
+  if (hasArtistControls) return true;
+
+  const tracks = parseTracksFromMessages(messages, artist);
+  const looksLikeSearchResults = buttons.some(text =>
+    /نتیجه\s*در\s*لیست\s*نیست|جستجوی\s*عمیق|deep\s*search/iu.test(clean(text))
+  );
+  return tracks.length > 0 && !looksLikeSearchResults;
+}
+
 async function openMeloBotArtistBase(
   client,
   seedTrack,
@@ -2505,8 +2526,23 @@ async function openMeloBotArtistBase(
     return sendAndCollect(client, artistButton, {
       timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       quietMs: 650,
+      stopWhen: message => isArtistNavigationSurface(message, effectiveSeed.artist),
+      waitForTarget: true,
+      reconcileOnTimeout: true,
     });
   })();
+
+  if (
+    !preOpenedArtistPage
+    && !artistPage.messages?.some(message =>
+      isArtistNavigationSurface(message, effectiveSeed.artist)
+    )
+  ) {
+    throw meloError(
+      'MELOBOT_ARTIST_PAGE_TIMEOUT',
+      `MeloBot Artist page did not reach a confirmed surface: ${effectiveSeed.artist}`
+    );
+  }
 
   // Collaborative tracks can open an intermediate artist picker.
   const pickerButtons = artistPickerItems(artistPage.messages);
@@ -2542,7 +2578,18 @@ async function openMeloBotArtistBase(
     artistPage = await sendAndCollect(client, chosen.rawText, {
       timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       quietMs: 750,
+      stopWhen: message => isArtistNavigationSurface(message, chosen.name),
+      waitForTarget: true,
+      reconcileOnTimeout: true,
     });
+    if (!artistPage.messages?.some(message =>
+      isArtistNavigationSurface(message, chosen.name)
+    )) {
+      throw meloError(
+        'MELOBOT_ARTIST_PAGE_TIMEOUT',
+        `MeloBot Artist picker did not open a confirmed Artist page: ${chosen.name}`
+      );
+    }
   }
 
   const allButtons = buttonsFromMessages(artistPage.messages);
