@@ -1,6 +1,8 @@
 import { config } from './config.js';
 import { getArchiveDb } from './archiveDb.js';
-import { bot } from './runtime.js';
+import { BotApi } from './botApi.js';
+
+const bot = new BotApi(config.botToken);
 
 let stopped = false;
 let workerPromise = null;
