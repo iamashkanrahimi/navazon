@@ -1998,7 +1998,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0) {
         const notice = bulkFallbackMessage('recent', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2164,7 +2164,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0) {
         const notice = bulkFallbackMessage('top', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2353,7 +2353,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0) {
         const notice = bulkFallbackMessage('album', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
