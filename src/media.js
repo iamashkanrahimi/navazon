@@ -185,6 +185,21 @@ function interactionBudget(timeoutMs = Math.min(config.searchTimeoutMs, 14000)) 
   return remaining;
 }
 
+
+function primarySearchQueries(query = '') {
+  const full = String(query || '').replace(/\s+/g, ' ').trim();
+  if (!full) return [];
+
+  // MeloBot often treats a verbose "Ft/feat" query as an Artist picker rather
+  // than a Track search. Search the stable pre-feature credit first; the
+  // original query is still used for ranking and remains the fallback.
+  const base = full
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
+
+  return [...new Set([base, full].filter(Boolean))];
+}
+
 function chooseAhangifyMatch(results, track) {
   const wantedArtist = normalizeMatch(track?.artist || '');
   const wantedTitle = normalizeMatch(track?.title || '');
@@ -317,16 +332,32 @@ export async function searchPrimaryTyped(
 ) {
   const remaining = interactionBudget(timeoutMs);
   try {
-    const typed = await classifyMeloBotTypedSearchExact(
-      tg,
-      query,
-      await searchMeloBotTyped(tg, query, {
-        timeoutMs: Math.min(7000, remaining()),
-      }),
-      {
-        probeTimeoutMs: Math.min(2500, remaining()),
+    let typed = null;
+    let lastMeloError = null;
+    for (const sourceQuery of primarySearchQueries(query)) {
+      if (remaining.expired()) break;
+      try {
+        const raw = await searchMeloBotTyped(tg, sourceQuery, {
+          timeoutMs: Math.min(
+            sourceQuery === query ? 7000 : 3600,
+            remaining()
+          ),
+        });
+        typed = await classifyMeloBotTypedSearchExact(
+          tg,
+          sourceQuery,
+          raw,
+          {
+            probeTimeoutMs: Math.min(2200, remaining()),
+          }
+        );
+        if (typed.tracks?.length || typed.albums?.length) break;
+      } catch (err) {
+        lastMeloError = err;
       }
-    );
+    }
+    if (!typed) throw lastMeloError || new Error('MeloBot typed search returned no usable results.');
+
     const rankedMelo = rankTracksForQuery(query, typed.tracks || []);
     const meaningful = meaningfulSearchTokens(query);
     let selectedMelo = rankedMelo;
