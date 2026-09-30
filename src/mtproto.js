@@ -43,6 +43,7 @@ export function installTelegramInbox(client) {
     // when its Telegram message id is <= the id captured before the action.
     message.__navazonInboxSeq = ++state.sequence;
     message.__navazonEdited = Boolean(edited);
+    message.__navazonChatId = peerId;
 
     const current = state.buffers.get(peerId) || [];
     current.push(message);
