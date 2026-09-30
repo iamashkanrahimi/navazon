@@ -514,6 +514,31 @@ async function deliverBulkIndividuallyHq(session, tracks, {
   return { sent, missing, quality: 'hq' };
 }
 
+function interactiveSourceFailureMessage(err, action = 'source', quality = '') {
+  if (err?.code === 'REGION_RESTRICTED_IRAN_ONLY') {
+    return 'این محتوا فقط برای کاربران داخل ایران در دسترسه.';
+  }
+  if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') {
+    if (action === 'quality') {
+      return `MeloBot دکمه‌ی ${quality === 'normal' ? 'کیفیت معمولی' : 'کیفیت عالی'} را برای این آهنگ نشان نداد.`;
+    }
+    if (action === 'cover') return 'MeloBot برای این آهنگ دکمه‌ی کاور نشان نداد.';
+    if (action === 'lyrics') return 'MeloBot برای این آهنگ گزینه‌ی متن آهنگ نشان نداد.';
+  }
+  if (
+    ['MELOBOT_DELIVERY_TIMEOUT','MELOBOT_TRACK_MENU_TIMEOUT','MELOBOT_TRACK_RESOLVE_FAILED']
+      .includes(err?.code)
+  ) {
+    if (action === 'quality') return 'دریافت این کیفیت از MeloBot این بار کامل نشد؛ دوباره امتحان کن.';
+    if (action === 'cover') return 'دریافت کاور از MeloBot این بار کامل نشد؛ دوباره امتحان کن.';
+    if (action === 'lyrics') return 'دریافت متن آهنگ از MeloBot این بار کامل نشد؛ دوباره امتحان کن.';
+  }
+  if (action === 'quality') return 'دریافت این کیفیت این بار ناموفق بود؛ دوباره امتحان کن.';
+  if (action === 'cover') return 'دریافت کاور این بار ناموفق بود؛ دوباره امتحان کن.';
+  if (action === 'lyrics') return 'دریافت متن آهنگ این بار ناموفق بود؛ دوباره امتحان کن.';
+  return 'دریافت اطلاعات از منبع این بار ناموفق بود؛ دوباره امتحان کن.';
+}
+
 function bulkFallbackMessage(kind, sent, missing) {
   if (!missing) return null;
 
@@ -975,11 +1000,11 @@ export const sourceQueue = new SerialQueue(async job => {
           { sourceTimeoutMs: 6500 }
         );
       } catch (err) {
-        console.error('[track quality]', err.message);
-        const text = err.code === 'REGION_RESTRICTED_IRAN_ONLY'
-          ? 'این محتوا فقط برای کاربران داخل ایران در دسترسه.'
-          : 'این کیفیت فعلاً در دسترس نیست.';
-        await bot.sendMessage(session.chatId, text);
+        console.error('[track quality]', err.code || 'SOURCE_ERROR', err.message);
+        await bot.sendMessage(
+          session.chatId,
+          interactiveSourceFailureMessage(err, 'quality', job.quality)
+        );
       }
       session.busy = false;
       try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
@@ -991,8 +1016,11 @@ export const sourceQueue = new SerialQueue(async job => {
         session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         await sendTrackLyrics(session.chatId, session.currentTrack);
       } catch (err) {
-        console.error('[track lyrics]', err.message);
-        await bot.sendMessage(session.chatId, 'متن این آهنگ فعلاً در دسترس نیست.');
+        console.error('[track lyrics]', err.code || 'SOURCE_ERROR', err.message);
+        await bot.sendMessage(
+          session.chatId,
+          interactiveSourceFailureMessage(err, 'lyrics')
+        );
       }
       session.busy = false;
       try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
@@ -1004,8 +1032,11 @@ export const sourceQueue = new SerialQueue(async job => {
         session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         await sendTrackCover(session.chatId, session.currentTrack);
       } catch (err) {
-        console.error('[track cover]', err.message);
-        await bot.sendMessage(session.chatId, 'کاور این آهنگ فعلاً در دسترس نیست.');
+        console.error('[track cover]', err.code || 'SOURCE_ERROR', err.message);
+        await bot.sendMessage(
+          session.chatId,
+          interactiveSourceFailureMessage(err, 'cover')
+        );
       }
       session.busy = false;
       try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
