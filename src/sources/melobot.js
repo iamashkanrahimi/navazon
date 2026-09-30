@@ -130,16 +130,6 @@ function normalize(value = '') {
   return normalizeText(value);
 }
 
-function artistPickerItems(messages = []) {
-  return buttonsFromMessages(messages)
-    .filter(text => /^[🗣🎤🎙]/u.test(clean(text)))
-    .map(rawText => ({
-      rawText,
-      name: clean(rawText).replace(/^[🗣🎤🎙]+\s*/u, '').trim(),
-    }))
-    .filter(item => item.name && !/خواننده|پیشنهاد/u.test(item.name));
-}
-
 export function findArtistButtonFor(messages = [], artist = '') {
   const target = normalize(artist);
   const pickers = artistPickerItems(messages);
