@@ -23,6 +23,7 @@ const {
   resolveMeloBotAlbumsFromLiveArtistContext,
   resolveMeloBotArtistAlbumsDirectFirst,
   openMeloBotArtist,
+  openMeloBotArtistFastFresh,
   openMeloBotAlbumByTitle,
   openMeloBotAlbumDirectByTitle,
   openMeloBotAlbumRobustByTitle,
@@ -37,6 +38,7 @@ const {
   downloadMeloBotTopTracks,
   downloadMeloBotRecentTracks,
   downloadMeloBotAlbumTracks,
+  downloadMeloBotBulkTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
   searchMeloBot,
@@ -58,6 +60,7 @@ const {
   collectNewMessages,
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
+const { primarySearchQueries } = await import('../src/media.js');
 const { trackCacheKey } = await import('../src/cache.js');
 const {
   DeepCatalog,
@@ -4010,5 +4013,129 @@ test('Artist navigation rejects a generic search-results surface after the Artis
       { timeoutMs: 500 }
     ),
     err => err?.code === 'MELOBOT_ARTIST_PAGE_TIMEOUT'
+  );
+});
+
+
+test('SerialQueue can remove stale pending bulk work without touching active work', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const order = [];
+  const queue = new SerialQueue(async item => {
+    order.push(item.id);
+    if (item.id === 'active') await gate;
+  });
+
+  queue.push({ id: 'active', type: 'track_quality', userId: 1 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  queue.push({ id: 'old-top', type: 'download_top', userId: 1 });
+  queue.push({ id: 'other-user', type: 'download_top', userId: 2 });
+  queue.push({ id: 'interactive', type: 'search', userId: 1 });
+
+  const removed = queue.removeWhere(item =>
+    item.userId === 1 && item.type === 'download_top'
+  );
+  assert.deepEqual(removed.map(item => item.id), ['old-top']);
+
+  release();
+  const deadline = Date.now() + 500;
+  while (!queue.isIdle() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(order, ['active', 'other-user', 'interactive']);
+});
+
+test('fresh Artist open uses exact Artist picker without reopening a Track seed', async () => {
+  const artistPicker = '🗣 Farhad';
+  const client = new FakeTelegramClient({
+    Farhad: [[
+      fakeBotMessage(
+        'یکی از خواننده ها رو انتخاب کن',
+        [artistPicker, '🗣 Farhad Ravanbakhsh', '🔍 نتیجه در لیست نیست (جستجوی عمیق) 🔍']
+      ),
+    ]],
+    [artistPicker]: [[
+      fakeBotMessage(
+        'Farhad',
+        [
+          '🎵 Farhad, Ayneha',
+          '🎵 Farhad, Gole Yakh',
+          '📥 دانلود همه (عالی)',
+          'نمایش به ترتیب پربازدیدترین',
+          '💿 آلبوم‌ها',
+        ]
+      ),
+    ]],
+  });
+
+  const context = await openMeloBotArtistFastFresh(
+    client,
+    'Farhad',
+    null,
+    { timeoutMs: 1600 }
+  );
+
+  assert.equal(context.artist, 'Farhad');
+  assert.equal(context.recentTracks.length, 2);
+  assert.deepEqual(client.sent, ['Farhad', artistPicker]);
+});
+
+test('collaboration Artist picker never silently collapses to one member', async () => {
+  const seedRaw = '🎵 Ali Sorena & Bahram, Khoone Khorshid';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[
+      fakeBotMessage('track', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])
+    ]],
+    [artistButton]: [[
+      fakeBotMessage('کدام خواننده؟', ['🗣 Bahram', '🗣 Ali Sorena'])
+    ]],
+  });
+
+  await assert.rejects(
+    () => openMeloBotArtist(
+      client,
+      {
+        ...parseTrackButton(seedRaw),
+        source: 'melobot',
+        sourceStateVersion: getMeloBotStateVersion(),
+      },
+      { timeoutMs: 1000 }
+    ),
+    err => err?.code === 'MELOBOT_ARTIST_RESOLVE_FAILED'
+  );
+
+  assert.deepEqual(client.sent, [seedRaw, artistButton]);
+});
+
+test('bulk download refuses a stale reply-keyboard surface before clicking it', async () => {
+  const state = getMeloBotStateVersion();
+  const client = new FakeTelegramClient({
+    unrelated: [[fakeBotMessage('results', ['🎵 Other, Song'])]],
+  });
+
+  await searchMeloBotTyped(client, 'unrelated', { timeoutMs: 300 });
+
+  await assert.rejects(
+    () => downloadMeloBotBulkTracks(client, {
+      button: '📥 دانلود همه (عالی)',
+      label: 'test bulk',
+      expectedCount: 10,
+      expectedStateVersion: state,
+      timeoutMs: 500,
+    }),
+    err => err?.code === 'MELOBOT_BULK_SURFACE_STALE'
+  );
+  assert.deepEqual(client.sent, ['unrelated']);
+});
+
+test('featured-query planner tries the stable base credit before the verbose query', () => {
+  assert.deepEqual(
+    primarySearchQueries('Sajadii Khoone Ft Shervin Hajipour'),
+    ['Sajadii Khoone', 'Sajadii Khoone Ft Shervin Hajipour']
+  );
+  assert.deepEqual(
+    primarySearchQueries('Shayea Sadegh'),
+    ['Shayea Sadegh']
   );
 });
