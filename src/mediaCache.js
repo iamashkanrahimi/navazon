@@ -27,16 +27,32 @@ async function claimNext(db) {
   const { rows } = await db.query(`
     WITH picked AS (
       SELECT source_url
-      FROM media_images
-      WHERE
-        status = 'pending'
-        OR (status = 'retry' AND COALESCE(next_attempt_at, now()) <= now())
-        OR (status = 'processing' AND updated_at < now() - interval '15 minutes')
+      FROM media_images m
+      WHERE (
+        m.status = 'pending'
+        OR (m.status = 'retry' AND COALESCE(m.next_attempt_at, now()) <= now())
+        OR (m.status = 'processing' AND m.updated_at < now() - interval '15 minutes')
+      )
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM rj_artists a
+          WHERE a.image_url = m.source_url
+            AND a.image_kind = 'artist_profile'
+        )
+        OR m.usage_types ? 'album_cover'
+        OR m.usage_types ? 'track_cover'
+      )
       ORDER BY
-        CASE WHEN usage_types ? 'artist_image' THEN 0
-             WHEN usage_types ? 'album_cover' THEN 1
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM rj_artists a
+          WHERE a.image_url = m.source_url
+            AND a.image_kind = 'artist_profile'
+        ) THEN 0
+             WHEN m.usage_types ? 'album_cover' THEN 1
              ELSE 2 END,
-        source_url
+        m.source_url
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
