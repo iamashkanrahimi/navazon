@@ -1,0 +1,96 @@
+name: Radio Javan Remaining Artist Image Full Repair
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  gate:
+    if: contains(github.event.head_commit.message, '[remaining-image-run]')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check src/remaining-artist-image-shard.js && node --check src/remaining-artist-image-merge.js
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete-v3
+          path: archive-builder/runtime/v3
+          run-id: 36746227263
+          github-token: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-remaining-artist-image-input
+          path: archive-builder/runtime/v3
+          retention-days: 30
+
+  repair:
+    needs: gate
+    if: needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-remaining-artist-image-input
+          path: archive-builder/runtime/v3
+      - name: Fetch related artwork fallback
+        run: node src/remaining-artist-image-shard.js --in ./runtime/v3/artists/rj-artists.jsonl.gz --out ./out/final-fallback --shard ${{ matrix.shard }} --shards 32
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-remaining-artist-image-${{ matrix.shard }}
+          path: archive-builder/out/final-fallback
+          retention-days: 30
+
+  merge:
+    needs: [gate, repair]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-remaining-artist-image-input
+          path: archive-builder/runtime/v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rj-remaining-artist-image-*
+          path: archive-builder/artifacts/final-fallback
+      - name: Merge final related artwork fallbacks
+        run: node src/remaining-artist-image-merge.js --original ./runtime/v3/artists/rj-artists.jsonl.gz --repairs ./artifacts/final-fallback --out ./out/v4/artists
+      - name: Carry Album dataset forward
+        run: cp -R ./runtime/v3/albums ./out/v4/albums
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-complete-v4
+          path: archive-builder/out/v4
+          retention-days: 30
