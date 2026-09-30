@@ -41,7 +41,7 @@ function queueSessionSource(sessionId, session, job) {
   });
 }
 
-function cancelQueuedBulkForUser(userId) {
+async function cancelQueuedBulkForUser(userId) {
   const removed = sourceQueue.removeWhere(item =>
     String(item?.userId || '') === String(userId || '')
     && BULK_SOURCE_TYPES.has(item?.type)
@@ -50,6 +50,23 @@ function cancelQueuedBulkForUser(userId) {
     console.log(
       `[queue supersede] user=${userId} removed_bulk=${removed.length}`
     );
+    await Promise.allSettled(removed.map(async item => {
+      if (!item?.sessionId) return;
+      const staleSession = await sessions.get(item.sessionId);
+      if (!staleSession) return;
+      staleSession.busy = false;
+      staleSession.expiresAt = Date.now() + SESSION_TTL_MS;
+      await sessions.set(item.sessionId, staleSession);
+      if (item.messageId) {
+        try {
+          await bot.editMessageText(
+            staleSession.chatId,
+            item.messageId,
+            'دانلود قبلی متوقف شد چون جست‌وجوی جدیدی شروع کردی.'
+          );
+        } catch {}
+      }
+    }));
   }
   return removed.length;
 }
@@ -675,7 +692,7 @@ export async function handleUpdate(update) {
   // A new explicit query supersedes queued bulk work from the same user.
   // Removing only pending bulk jobs keeps the shared MeloBot lane responsive
   // without cancelling another user's active request or ordinary navigation.
-  cancelQueuedBulkForUser(userId);
+  await cancelQueuedBulkForUser(userId);
 
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
   const servedFromCache = await tryHandleCachedSearch(
