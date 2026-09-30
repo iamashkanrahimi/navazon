@@ -1190,17 +1190,22 @@ async function findArtistSeed(
   const target = normalize(artist);
   const preferredArtist = normalize(preferredSeed?.artist || '');
 
-  // A seed already selected by the user is enough to reopen the live track
-  // menu. If its source state is stale, openTrackMenu will refresh that exact
-  // track once; doing an artist search here first only duplicates navigation.
+  // Reuse a preferred seed only while its source row/surface is genuinely
+  // current. A stale preferred seed used to force a slow resolve->click cycle
+  // for every Artist Top/Recent request; a fresh artist search is both faster
+  // and more reliable once the shared MeloBot state has moved elsewhere.
+  const preferredStillLive = Boolean(
+    currentLiveTrackSurface(client, preferredSeed || {})
+    || currentLiveMoreSurface(client, preferredSeed || {})
+  );
   if (
     preferredSeed?.rawText
     && preferredSeed?.source !== 'ahangify'
     && preferredArtist
+    && artistIdentityCompatible(artist, preferredSeed.artist)
     && (
-      preferredArtist === target
-      || preferredArtist.includes(target)
-      || target.includes(preferredArtist)
+      Number(preferredSeed.sourceStateVersion || -1) === Number(sourceStateVersion)
+      || preferredStillLive
     )
   ) {
     return preferredSeed;
@@ -1213,10 +1218,9 @@ async function findArtistSeed(
       maxRefinements: 3,
     });
     seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track => {
-        const candidateArtist = normalize(track.artist);
-        return candidateArtist.includes(target) || target.includes(candidateArtist);
-      })
+      || results.find(track =>
+        artistIdentityCompatible(artist, track.artist || '')
+      )
       || null;
   } catch (err) {
     console.warn('[melobot artist seed]', artist, err.message);
