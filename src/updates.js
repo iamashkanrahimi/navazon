@@ -42,7 +42,7 @@ function queueSessionSource(sessionId, session, job) {
   });
 }
 
-async function cancelQueuedBulkForUser(userId) {
+async function cancelQueuedBulkForUser(userId, currentSessionId = null) {
   const removed = sourceQueue.removeWhere(item =>
     String(item?.userId || '') === String(userId || '')
     && BULK_SOURCE_TYPES.has(item?.type)
@@ -63,13 +63,19 @@ async function cancelQueuedBulkForUser(userId) {
           await bot.editMessageText(
             staleSession.chatId,
             item.messageId,
-            'دانلود قبلی متوقف شد چون جست‌وجوی جدیدی شروع کردی.'
+            'درخواست قبلی متوقف شد چون درخواست جدیدی شروع کردی.'
           );
         } catch {}
       }
     }));
   }
-  return removed.length;
+  return {
+    count: removed.length,
+    currentSessionCancelled: Boolean(
+      currentSessionId
+      && removed.some(item => String(item?.sessionId || '') === String(currentSessionId))
+    ),
+  };
 }
 
 
@@ -177,8 +183,8 @@ export async function handleUpdate(update) {
       // session. Do this before the busy guard so an explicitly new intent can
       // release a stale queued bulk instead of waiting behind it.
       if (!BULK_CALLBACK_ACTIONS.has(action)) {
-        const cancelled = await cancelQueuedBulkForUser(session.userId);
-        if (cancelled) session.busy = false;
+        const cancelled = await cancelQueuedBulkForUser(session.userId, sessionId);
+        if (cancelled.currentSessionCancelled) session.busy = false;
       }
 
       if (session.busy) {
