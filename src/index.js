@@ -5,6 +5,9 @@ import { handleUpdate } from './updates.js';
 import { sourceQueue } from './jobs.js';
 import { getState, setState, getStats, getLastUserActivity } from './state.js';
 import { createNonOverlappingScheduler } from './crawlerScheduler.js';
+import { runArchiveImportIfEnabled } from './archiveImport.js';
+import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
+import { closeArchiveDb } from './archiveDb.js';
 
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
@@ -137,7 +140,12 @@ const server = http.createServer(async (req,res) => {
     if (req.method === 'GET' && url.pathname === '/health') {
       await db.query('SELECT 1');
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok:true, sourceQueue:sourceQueue.size(), mtproto:true }));
+      res.end(JSON.stringify({
+        ok:true,
+        sourceQueue:sourceQueue.size(),
+        mtproto:true,
+        mediaCache:getMediaCacheRuntimeStatus(),
+      }));
       return;
     }
     if ((req.method === 'HEAD' || req.method === 'GET') && url.pathname === '/wake') {
@@ -200,6 +208,15 @@ server.listen(config.port,'0.0.0.0',async () => {
     console.warn('RENDER_EXTERNAL_URL/PUBLIC_BASE_URL missing; Telegram webhook not changed.');
     return;
   }
+  void (async () => {
+    try {
+      await runArchiveImportIfEnabled();
+    } catch (err) {
+      console.error('[archive import]', err?.stack || err?.message || err);
+    }
+    startMediaCacheWorker();
+  })();
+
   try {
     const webhookUrl = `${config.publicBaseUrl}/telegram/webhook`;
     await bot.setWebhook(webhookUrl,config.webhookSecret);
@@ -212,9 +229,11 @@ server.listen(config.port,'0.0.0.0',async () => {
 async function shutdown(signal) {
   console.log(`${signal}: shutting down...`);
   crawlerScheduler.stop();
+  stopMediaCacheWorker();
   server.close();
   try { await tg.disconnect(); } catch {}
   try { await db.end(); } catch {}
+  try { await closeArchiveDb(); } catch {}
   process.exit(0);
 }
 process.once('SIGTERM',() => shutdown('SIGTERM'));
