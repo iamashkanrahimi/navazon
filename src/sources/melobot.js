@@ -1967,8 +1967,9 @@ async function openMeloBotArtistBase(
   let effectiveSeed = openedMenu.candidate || seedTrack;
   let recoveredFromAlbum = false;
 
-  let artistButton = findButton(menuMessages, text =>
-    text.includes('خواننده') && !text.includes('پیشنهاد')
+  let artistButton = findArtistButtonFor(
+    menuMessages,
+    effectiveSeed?.artist || seedTrack?.artist || ''
   );
 
   if (!artistButton) {
@@ -1993,8 +1994,9 @@ async function openMeloBotArtistBase(
       menuMessages = openedMenu.messages;
       effectiveSeed = openedMenu.candidate || recoverySeed;
       recoveredFromAlbum = true;
-      artistButton = findButton(menuMessages, text =>
-        text.includes('خواننده') && !text.includes('پیشنهاد')
+      artistButton = findArtistButtonFor(
+        menuMessages,
+        effectiveSeed?.artist || seedTrack?.artist || ''
       );
       if (artistButton) {
         console.log(
@@ -2026,13 +2028,7 @@ async function openMeloBotArtistBase(
   });
 
   // Collaborative tracks can open an intermediate artist picker.
-  const pickerButtons = buttonsFromMessages(artistPage.messages)
-    .filter(text => /^[🗣🎤🎙]/u.test(clean(text)))
-    .map(rawText => ({
-      rawText,
-      name: clean(rawText).replace(/^[🗣🎤🎙]+\s*/u, '').trim(),
-    }))
-    .filter(item => item.name && !/خواننده|پیشنهاد/u.test(item.name));
+  const pickerButtons = artistPickerItems(artistPage.messages);
 
   let selectedArtist = effectiveSeed.artist;
   const relatedArtists = pickerButtons.map(item => item.name);
