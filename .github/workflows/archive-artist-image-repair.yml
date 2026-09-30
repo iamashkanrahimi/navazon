@@ -1,0 +1,125 @@
+name: Radio Javan Artist Image Repair
+
+on:
+  workflow_run:
+    workflows:
+      - Radio Javan Artist Album Phase 2
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  prepare:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'archive-builder-cloud' &&
+      contains(github.event.workflow_run.display_title, '[phase2-run]')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download completed Artist dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-artists-final
+          path: archive-builder/runtime/artists
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Build missing-image repair plan
+        run: node src/phase2-image-repair-plan.js --in ./runtime/artists/rj-artists.jsonl.gz --out ./runtime/image-repair/candidates.jsonl
+      - name: Check repair scripts
+        run: node --check src/phase2-pages.js && node --check src/phase2-image-repair-plan.js && node --check src/phase2-image-repair-shard.js && node --check src/phase2-image-repair-merge.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-artist-image-repair-plan
+          path: archive-builder/runtime/image-repair
+          retention-days: 30
+
+  repair:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63]
+    defaults:
+      run:
+        working-directory: archive-builder
+    env:
+      RJ_PHASE2_DELAY_MS: '1400'
+      RJ_PHASE2_TIMEOUT_MS: '20000'
+      RJ_PHASE2_MAX_ATTEMPTS: '3'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-artist-image-repair-plan
+          path: archive-builder/runtime/image-repair
+      - name: Repair Artist image shard
+        run: node src/phase2-image-repair-shard.js --in ./runtime/image-repair/candidates.jsonl --out ./out/image-repair --shard ${{ matrix.shard }} --shards 64
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-artist-image-repair-${{ matrix.shard }}
+          path: archive-builder/out/image-repair
+          retention-days: 30
+
+  merge:
+    needs: [prepare, repair]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download original Artist dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-artists-final
+          path: archive-builder/runtime/artists
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Download completed Phase 2 dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-final
+          path: archive-builder/runtime/phase2-final
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rj-artist-image-repair-*
+          path: archive-builder/artifacts/image-repair
+      - name: Merge repaired Artist images
+        run: node src/phase2-image-repair-merge.js --original ./runtime/artists/rj-artists.jsonl.gz --repairs ./artifacts/image-repair --out ./out/complete/artists
+      - name: Carry final Album dataset forward
+        run: cp -R ./runtime/phase2-final/albums ./out/complete/albums
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-complete
+          path: archive-builder/out/complete
+          retention-days: 30
