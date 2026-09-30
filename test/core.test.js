@@ -3163,3 +3163,24 @@ test('MTProto inbox routes forwarded media by chat id', async () => {
   assert.equal(result.messages.length, 1);
   assert.ok(result.messages[0]?.media?.document);
 });
+
+
+test('MTProto inbox accepts edited menu events with an existing message id', async () => {
+  const client = new FakeEventTelegramClient();
+  installTelegramInbox(client);
+  client.handlers[0]({ message: { id: 10, senderId: 42n, out: false, message: 'old' }, chatId: 42n });
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  const pending = collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 300, waitForTarget: true, afterSequence,
+    stopWhen: message => Boolean(message?.replyMarkup),
+  });
+  client.handlers[1]({ message: {
+    id: 10, senderId: 42n, out: false, message: 'edited',
+    replyMarkup: { rows: [{ buttons: [{ text: 'کاور' }] }] },
+  }, chatId: 42n });
+  const result = await pending;
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].message, 'edited');
+  assert.equal(result.messages[0].__navazonEdited, true);
+});
