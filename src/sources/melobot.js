@@ -1159,21 +1159,28 @@ export async function resolveMeloBotTrackCandidate(
         maxRefinements: 2,
       });
 
+      const requestedTitle = titleIdentity(candidate?.title || '');
       const exactTitle = results.filter(track =>
-        title && normalize(track.title) === title
+        requestedTitle
+        && titleIdentity(track.title || '') === requestedTitle
       );
 
-      const exactArtistTitle = exactTitle.find(track =>
-        artist && normalize(track.artist) === artist
-      );
+      let resolved = null;
+      if (candidate?.artistInferred) {
+        // A title-only page row may legitimately reveal a different primary
+        // source artist. Still require the title itself to match.
+        resolved = exactTitle.find(track => track.artist && !track.artistInferred)
+          || exactTitle[0]
+          || null;
+      } else {
+        resolved = exactTitle.find(track =>
+          artistIdentityCompatible(candidate?.artist || '', track.artist || '')
+        ) || null;
+      }
 
-      // For inferred artist rows, an explicit source artist is more trustworthy
-      // than the page-context fallback. This repairs cases like a T-Dey page
-      // containing "Khalesaneh (feat. T-Dey)" whose primary artist is Sadegh.
-      const resolved = candidate?.artistInferred
-        ? (exactTitle.find(track => track.artist && !track.artistInferred) || exactTitle[0])
-        : (exactArtistTitle || exactTitle[0] || results[0]);
-
+      // Never fall back to results[0]. Returning an unrelated Track is worse
+      // than a recoverable resolve failure and previously caused cases like
+      // Xaniar — Shabe Mahtab resolving to Ehaam — Boghze Modaam.
       if (resolved) {
         return {
           ...resolved,
@@ -1186,7 +1193,10 @@ export async function resolveMeloBotTrackCandidate(
   }
 
   if (lastError) console.warn('[melobot resolve track]', lastError.message);
-  return candidate;
+  throw meloError(
+    'MELOBOT_TRACK_RESOLVE_FAILED',
+    `MeloBot could not resolve the requested Track exactly: ${trackLabel(candidate)}`
+  );
 }
 
 async function openTrackMenuWithCandidate(
