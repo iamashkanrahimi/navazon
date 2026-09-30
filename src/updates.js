@@ -14,6 +14,8 @@ import {
   getTrackInfoText,
   renderTrackPage,
   trySendCachedTrackQuality,
+  trySendCachedTrackLyrics,
+  trySendCachedTrackCover,
 } from './trackActions.js';
 
 const lastSearchAt = new Map();
@@ -381,12 +383,28 @@ export async function handleUpdate(update) {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال دریافت متن…');
-        sourceQueue.push({ type: 'track_lyrics', sessionId, messageId });
+        const servedLyrics = await trySendCachedTrackLyrics(
+          session.chatId,
+          session.currentTrack
+        ).catch(() => false);
+        if (servedLyrics) {
+          await openTrackPageLocal(sessionId, session, messageId);
+        } else {
+          sourceQueue.push({ type: 'track_lyrics', sessionId, messageId });
+        }
       } else if (action === 'tcv') {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال دریافت کاور…');
-        sourceQueue.push({ type: 'track_cover', sessionId, messageId });
+        const servedCover = await trySendCachedTrackCover(
+          session.chatId,
+          session.currentTrack
+        ).catch(() => false);
+        if (servedCover) {
+          await openTrackPageLocal(sessionId, session, messageId);
+        } else {
+          sourceQueue.push({ type: 'track_cover', sessionId, messageId });
+        }
       } else if (action === 'tif') {
         if (!session.currentTrack) return;
         session.busy = true;
