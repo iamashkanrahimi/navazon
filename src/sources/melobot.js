@@ -2589,7 +2589,14 @@ async function openMeloBotArtistDirectBase(
     stopWhen: message => {
       const pickers = artistPickerItems([message]);
       if (pickers.some(item => normalize(item.name) === normalize(artist))) return true;
-      return isArtistNavigationSurface(message, artist) && !pickers.length;
+      if (isArtistNavigationSurface(message, artist) && !pickers.length) return true;
+
+      // A plain search-result layout is still useful if it already exposes an
+      // exact/compatible Track row for this artist; stop collecting and reuse
+      // that live row instead of waiting for the Artist-search timeout.
+      return parseTracksFromMessages([message], artist).some(track =>
+        artistIdentityCompatible(artist, track.artist || '')
+      );
     },
     waitForTarget: true,
     reconcileOnTimeout: true,
