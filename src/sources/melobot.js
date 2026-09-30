@@ -24,6 +24,7 @@ let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
 // This is deliberately NOT persisted: reply-keyboard buttons/raw text are
 // ephemeral source state, while artist/title are durable catalog identity.
 let liveTrackSurface = null;
+let liveMoreSurface = null;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -123,11 +124,25 @@ function trackLabel(candidate = {}) {
     || 'unknown track';
 }
 
+function sameTrackIdentity(left = {}, right = {}) {
+  const leftTitle = titleIdentity(left?.title || '');
+  const rightTitle = titleIdentity(right?.title || '');
+  if (!leftTitle || leftTitle !== rightTitle) return false;
+
+  const leftArtist = left?.artist || '';
+  const rightArtist = right?.artist || '';
+  if (leftArtist && rightArtist && !artistIdentityCompatible(leftArtist, rightArtist)) {
+    return false;
+  }
+  return true;
+}
+
 function rememberLiveTrackSurface(client, candidate = {}, messages = [], version = sourceStateVersion) {
   if (!client || !candidate?.title || !hasTrackActionMenu(messages)) {
     liveTrackSurface = null;
     return null;
   }
+  liveMoreSurface = null;
   liveTrackSurface = {
     client,
     candidate: { ...candidate },
@@ -137,20 +152,42 @@ function rememberLiveTrackSurface(client, candidate = {}, messages = [], version
   return liveTrackSurface;
 }
 
+function rememberLiveMoreSurface(
+  client,
+  candidate = {},
+  messages = [],
+  version = sourceStateVersion,
+  trackMenuMessages = []
+) {
+  if (!client || !candidate?.title || !(messages || []).some(isMoreMenuSurface)) {
+    liveMoreSurface = null;
+    return null;
+  }
+  liveTrackSurface = null;
+  liveMoreSurface = {
+    client,
+    candidate: { ...candidate },
+    messages: [...messages],
+    trackMenuMessages: [...(trackMenuMessages || [])],
+    version: Number(version || sourceStateVersion),
+  };
+  return liveMoreSurface;
+}
+
 function currentLiveTrackSurface(client, candidate = {}) {
   if (!liveTrackSurface || liveTrackSurface.client !== client) return null;
   if (Number(liveTrackSurface.version) !== Number(sourceStateVersion)) return null;
+  return sameTrackIdentity(candidate, liveTrackSurface.candidate)
+    ? liveTrackSurface
+    : null;
+}
 
-  const wantedTitle = titleIdentity(candidate?.title || '');
-  const liveTitle = titleIdentity(liveTrackSurface.candidate?.title || '');
-  if (!wantedTitle || wantedTitle !== liveTitle) return null;
-
-  const wantedArtist = candidate?.artist || '';
-  const liveArtist = liveTrackSurface.candidate?.artist || '';
-  if (wantedArtist && liveArtist && !artistIdentityCompatible(wantedArtist, liveArtist)) {
-    return null;
-  }
-  return liveTrackSurface;
+function currentLiveMoreSurface(client, candidate = {}) {
+  if (!liveMoreSurface || liveMoreSurface.client !== client) return null;
+  if (Number(liveMoreSurface.version) !== Number(sourceStateVersion)) return null;
+  return sameTrackIdentity(candidate, liveMoreSurface.candidate)
+    ? liveMoreSurface
+    : null;
 }
 
 function hasTrackActionMenu(messages = []) {
@@ -167,16 +204,20 @@ function normalize(value = '') {
   return normalizeText(value);
 }
 
+function artistIdentityParts(value = '') {
+  return clean(value)
+    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .map(normalize)
+    .filter(Boolean);
+}
+
 export function findArtistButtonFor(messages = [], artist = '') {
   const target = normalize(artist);
   const pickers = artistPickerItems(messages);
   const exact = pickers.find(item => normalize(item.name) === target);
   if (exact) return exact.rawText;
 
-  const parts = target
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
-    .map(normalize)
-    .filter(Boolean);
+  const parts = artistIdentityParts(artist);
   const compatible = pickers.find(item => {
     const name = normalize(item.name);
     return name && parts.some(part => part === name || part.includes(name) || name.includes(part));
@@ -207,12 +248,8 @@ function artistIdentityCompatible(requested = '', actual = '') {
   // Split the original credit before normalization. normalizeText deliberately
   // removes punctuation such as "&", so splitting the normalized value loses
   // collaboration boundaries and makes reordered credits impossible to match.
-  const split = value => clean(value)
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
-    .map(normalize)
-    .filter(Boolean);
-  const requestedParts = split(requested);
-  const actualParts = split(actual);
+  const requestedParts = artistIdentityParts(requested);
+  const actualParts = artistIdentityParts(actual);
   const partMatches = (left, right) =>
     left === right || left.includes(right) || right.includes(left);
 
@@ -789,10 +826,11 @@ async function sendAndCollect(client, text, {
   const afterId = await latestMessageId(client, peer);
   const afterSequence = getTelegramInboxSequence(client);
 
-  // Any outbound command can move the shared MeloBot conversation away from a
-  // Track menu. Track-specific callers explicitly restore the snapshot after
-  // they verify the resulting surface.
+  // Any outbound command moves the one shared MeloBot conversation. Callers
+  // that know the resulting surface explicitly restore Track/More state after
+  // the target is verified.
   liveTrackSurface = null;
+  liveMoreSurface = null;
   const stateVersion = ++sourceStateVersion;
   await client.sendMessage(peer, { message: text });
   const result = await collectNewMessages(client, peer, afterId, {
@@ -1229,15 +1267,23 @@ export async function resolveMeloBotTrackCandidate(
 
   const title = normalize(candidate?.title || '');
   const artist = normalize(candidate?.artist || '');
+  const baseTitle = clean(candidate?.title || '')
+    .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
 
-  // Title-first resolution is both safer and faster for collaboration credits:
-  // the source may reorder "A & B" as "B & A", while we still verify artist
-  // compatibility before accepting the exact title.
-  const collaborationCredit = /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(
-    clean(candidate?.artist || '')
-  );
-  const queries = (candidate?.artistInferred || collaborationCredit)
-    ? [candidate?.title, primaryQuery]
+  // Featured/collaboration spelling varies heavily on MeloBot. Search a
+  // durable base-title form first, then verify the exact title identity and
+  // artist compatibility before accepting a row.
+  const collaborationCredit = artistIdentityParts(candidate?.artist || '').length > 1;
+  const featuredTitle = baseTitle && normalize(baseTitle) !== normalize(candidate?.title || '');
+  const queries = (candidate?.artistInferred || collaborationCredit || featuredTitle)
+    ? [
+        [candidate?.artist, baseTitle].filter(Boolean).join(' '),
+        baseTitle,
+        primaryQuery,
+        candidate?.title,
+      ]
     : [primaryQuery, candidate?.title];
   const uniqueQueries = [...new Set(queries.map(clean).filter(Boolean))];
 
@@ -1304,7 +1350,7 @@ async function openTrackMenuWithCandidate(
     directTimeoutMs = 3000,
     resolveTimeoutMs = 3500,
     menuTimeoutMs = 4000,
-    allowNonTrackSurface = false,
+    allowAlbumSurface = false,
   } = {}
 ) {
   const requested = candidate || {};
@@ -1326,6 +1372,42 @@ async function openTrackMenuWithCandidate(
     };
   }
 
+  // Cover/metadata can leave MeloBot on the More submenu. Return to the Track
+  // menu with the live Back control instead of throwing the whole context away
+  // and performing another search.
+  const liveMore = currentLiveMoreSurface(client, requested);
+  if (liveMore) {
+    const backButton = findButton(liveMore.messages, text => {
+      const value = clean(text);
+      return /^⬅️/u.test(value) || /بازگشت/u.test(value);
+    });
+    if (backButton) {
+      const back = await sendAndCollect(client, backButton, {
+        timeoutMs: Math.min(cap, 2200),
+        quietMs: 500,
+        stopWhen: message => hasTrackActionMenu([message]),
+        stopWhenBatch: messages => hasTrackActionMenu(messages),
+        waitForTarget: true,
+        reconcileOnTimeout: true,
+      });
+      if (hasTrackActionMenu(back.messages)) {
+        const restoredCandidate = {
+          ...requested,
+          sourceStateVersion: back.stateVersion,
+        };
+        rememberLiveTrackSurface(client, restoredCandidate, back.messages, back.stateVersion);
+        console.log(
+          `[melobot.track_menu] route=more_back track=${JSON.stringify(trackLabel(requested))}`
+        );
+        return {
+          messages: back.messages,
+          candidate: restoredCandidate,
+          route: 'more_back',
+        };
+      }
+    }
+  }
+
   const canClickCurrentSurface = Boolean(
     directText
     && Number(requested.sourceStateVersion || -1) === Number(sourceStateVersion)
@@ -1335,13 +1417,12 @@ async function openTrackMenuWithCandidate(
     const direct = await sendAndCollect(client, directText, {
       timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
       quietMs: 550,
-      stopWhen: m => replyButtons(m).some(text => {
-        const value = clean(text);
-        return (
-          (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
-          && !value.includes('دانلود همه')
-        );
-      }),
+      stopWhen: m =>
+        hasTrackActionMenu([m])
+        || inspectSelectedCandidateSurface([m], requested).kind === 'album',
+      stopWhenBatch: messages =>
+        hasTrackActionMenu(messages)
+        || inspectSelectedCandidateSurface(messages, requested).kind === 'album',
       waitForTarget: true,
       reconcileOnTimeout: true,
     });
@@ -1354,9 +1435,14 @@ async function openTrackMenuWithCandidate(
       console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
       return { messages: direct.messages, candidate: liveCandidate, route: 'direct_raw_text' };
     }
-    if (allowNonTrackSurface && direct.messages?.length) {
-      console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
-      return { messages: direct.messages, candidate: requested, route: 'direct_non_track' };
+    const directSurface = inspectSelectedCandidateSurface(direct.messages, requested);
+    if (allowAlbumSurface && directSurface.kind === 'album') {
+      console.log(`[melobot.track_menu] route=direct_album track=${JSON.stringify(trackLabel(requested))}`);
+      return {
+        messages: direct.messages,
+        candidate: { ...requested, sourceStateVersion: direct.stateVersion },
+        route: 'direct_album',
+      };
     }
     console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
   } else if (directText) {
@@ -1380,19 +1466,23 @@ async function openTrackMenuWithCandidate(
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
     timeoutMs: Math.min(cap, Math.max(2200, Number(menuTimeoutMs || 4000))),
     quietMs: 550,
-    stopWhen: m => replyButtons(m).some(text => {
-      const value = clean(text);
-      return (
-        (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
-        && !value.includes('دانلود همه')
-      );
-    }),
+    stopWhen: m =>
+      hasTrackActionMenu([m])
+      || inspectSelectedCandidateSurface([m], liveCandidate).kind === 'album',
+    stopWhenBatch: messages =>
+      hasTrackActionMenu(messages)
+      || inspectSelectedCandidateSurface(messages, liveCandidate).kind === 'album',
     waitForTarget: true,
     reconcileOnTimeout: true,
   });
   if (!hasTrackActionMenu(selected.messages)) {
-    if (allowNonTrackSurface && selected.messages?.length) {
-      return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_non_track' };
+    const selectedSurface = inspectSelectedCandidateSurface(selected.messages, liveCandidate);
+    if (allowAlbumSurface && selectedSurface.kind === 'album') {
+      return {
+        messages: selected.messages,
+        candidate: { ...liveCandidate, sourceStateVersion: selected.stateVersion },
+        route: 'resolved_album',
+      };
     }
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
@@ -1652,6 +1742,8 @@ export async function getMeloBotLyrics(
   const menuMessages = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
 
+  let actionSurface = 'track';
+  let actionSurfaceMessages = menuMessages;
   let lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
@@ -1663,6 +1755,15 @@ export async function getMeloBotLyrics(
           timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
           capability: 'hasLyrics',
         }
+      );
+      actionSurface = 'more';
+      actionSurfaceMessages = moreMessages;
+      rememberLiveMoreSurface(
+        client,
+        liveCandidate,
+        moreMessages,
+        sourceStateVersion,
+        menuMessages
       );
       lyricsButton = findButton(
         moreMessages,
@@ -1702,6 +1803,27 @@ export async function getMeloBotLyrics(
     );
   }
 
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+  if (actionSurface === 'more') {
+    rememberLiveMoreSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion,
+      menuMessages
+    );
+  } else {
+    rememberLiveTrackSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion
+    );
+  }
+
   const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
     .test(raw);
   if (unavailable) {
@@ -1710,7 +1832,7 @@ export async function getMeloBotLyrics(
       text: '',
       rawText: raw,
       checked: true,
-      candidate: liveCandidate,
+      candidate: refreshedCandidate,
     };
   }
 
@@ -1730,7 +1852,7 @@ export async function getMeloBotLyrics(
     text,
     rawText: raw,
     checked: true,
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
   };
 }
 
@@ -2176,7 +2298,7 @@ async function openMeloBotArtistBase(
     seedTrack,
     {
       timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
-      allowNonTrackSurface: true,
+      allowAlbumSurface: true,
     }
   );
   let menuMessages = openedMenu.messages;
@@ -2204,7 +2326,7 @@ async function openMeloBotArtistBase(
         recoverySeed,
         {
           timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
-          allowNonTrackSurface: true,
+          allowAlbumSurface: true,
         }
       );
       menuMessages = openedMenu.messages;
