@@ -1671,7 +1671,7 @@ export const sourceQueue = new SerialQueue(async job => {
           sent = cached.sent;
           if (cached.canonicalTracks?.length) {
             session.currentAlbum.tracks = cached.canonicalTracks;
-            await syncAlbumTracks(
+            const repairedOwner = await syncAlbumTracks(
               session.currentAlbum?.artist
                 || session.artistContext?.artist
                 || session.albumOriginTrack?.artist
@@ -1679,6 +1679,7 @@ export const sourceQueue = new SerialQueue(async job => {
               session.currentAlbum,
               cached.canonicalTracks
             );
+            if (repairedOwner) session.currentAlbum.artist = repairedOwner;
           }
         } else {
           const artist = session.currentAlbum?.artist
@@ -1784,11 +1785,12 @@ export const sourceQueue = new SerialQueue(async job => {
           missing = delivered.missing;
           if (delivered.canonicalTracks?.length) {
             session.currentAlbum.tracks = delivered.canonicalTracks;
-            await syncAlbumTracks(
+            const repairedOwner = await syncAlbumTracks(
               session.currentAlbum.artist || albumContext.artist,
               session.currentAlbum,
               delivered.canonicalTracks
             );
+            if (repairedOwner) session.currentAlbum.artist = repairedOwner;
           }
 
         }
@@ -1799,7 +1801,7 @@ export const sourceQueue = new SerialQueue(async job => {
         missing = fallback.missing;
         if (fallback.canonicalTracks?.length) {
           session.currentAlbum.tracks = fallback.canonicalTracks;
-          await syncAlbumTracks(
+          const repairedOwner = await syncAlbumTracks(
             session.currentAlbum?.artist
               || session.artistContext?.artist
               || session.albumOriginTrack?.artist
@@ -1807,6 +1809,7 @@ export const sourceQueue = new SerialQueue(async job => {
             session.currentAlbum,
             fallback.canonicalTracks
           );
+          if (repairedOwner) session.currentAlbum.artist = repairedOwner;
         }
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
         if (fallbackMessage) {
