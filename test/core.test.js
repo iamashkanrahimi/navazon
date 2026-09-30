@@ -3869,3 +3869,32 @@ test('live Recent artist context keeps its bulk button clickable without a secon
   assert.equal(bulk.audioItems.length, 2);
   assert.deepEqual(client.sent, [seedRaw, artistButton, bulkButton]);
 });
+
+
+test('Artist identity matching fails closed on ambiguous single-name and collaboration pickers', () => {
+  const farhadOnlyWrong = [
+    fakeBotMessage('results', ['🗣 Farhad Ravanbakhsh']),
+  ];
+  assert.equal(
+    findArtistButtonFor(farhadOnlyWrong, 'Farhad'),
+    null,
+    'Farhad must not silently resolve to Farhad Ravanbakhsh'
+  );
+
+  const collaborationMembers = [
+    fakeBotMessage('choose artist', ['🗣 Bahram', '🗣 Ali Sorena']),
+  ];
+  assert.equal(
+    findArtistButtonFor(collaborationMembers, 'Ali Sorena & Bahram'),
+    null,
+    'a collaboration must not silently collapse to one member'
+  );
+
+  const exactComposite = [
+    fakeBotMessage('choose artist', ['🗣 Ali Sorena & Bahram']),
+  ];
+  assert.equal(
+    findArtistButtonFor(exactComposite, 'Ali Sorena & Bahram'),
+    '🗣 Ali Sorena & Bahram'
+  );
+});
