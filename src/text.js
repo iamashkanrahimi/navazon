@@ -146,7 +146,15 @@ export function primarySearchQueries(query = '') {
     .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
     .trim();
 
-  return [...new Set([base, full].filter(Boolean))];
+  if (base === full) return [full];
+
+  // Explicit version intent is more important than shaving a source round
+  // trip: "feat ... remix/live" must not silently fall back to the original.
+  const hasVariantIntent = /(?:^|\s)(?:remix|live|acoustic|version|edit|mix|ریمیکس|اجرای\s*زنده|آکوستیک)(?:\s|$)/iu
+    .test(full);
+  return [...new Set(
+    (hasVariantIntent ? [full, base] : [base, full]).filter(Boolean)
+  )];
 }
 
 export function meaningfulSearchTokens(query = '') {
