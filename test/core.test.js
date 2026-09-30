@@ -3173,7 +3173,8 @@ test('tri-state track UI hides a quality after the current session confirms fail
     }
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 کیفیت عالی'));
+  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
   assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
 });
