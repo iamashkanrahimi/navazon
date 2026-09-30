@@ -32,7 +32,7 @@ import {
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { executeDeepTask } from './deepCrawler.js';
-import { deepTrackKey } from './deepCatalog.js';
+import { deepAlbumKey, deepTrackKey } from './deepCatalog.js';
 import { HOME_FEEDS, curatedPlaylistByKey } from './homeCatalog.js';
 import {
   renderTrackPage,
@@ -783,11 +783,19 @@ export async function tryOpenAlbumLocal(
   const artist = session?.artistContext?.artist;
   if (!album || !artist) return false;
 
-  const tracks = await catalog.getAlbumTracks(
+  let tracks = await catalog.getAlbumTracks(
     artist,
     album.title,
     config.catalogAlbumTracksTtlMs
   ).catch(() => null);
+  let route = 'catalog';
+
+  if (!Array.isArray(tracks) || !tracks.length) {
+    tracks = await deepCatalog.getAlbumTracksByKey(
+      album.albumKey || deepAlbumKey(artist, album.title)
+    ).catch(() => []);
+    route = tracks.length ? 'deep_catalog' : 'none';
+  }
   if (!Array.isArray(tracks) || !tracks.length) return false;
 
   session.currentAlbum = {
@@ -814,7 +822,7 @@ export async function tryOpenAlbumLocal(
     }
   );
   console.log(
-    `[fastpath.local] album artist=${JSON.stringify(artist)} title=${JSON.stringify(album.title)} count=${tracks.length}`
+    `[fastpath.local] album route=${route} artist=${JSON.stringify(artist)} title=${JSON.stringify(album.title)} count=${tracks.length}`
   );
   return true;
 }
