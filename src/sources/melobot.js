@@ -1723,7 +1723,7 @@ export async function getMeloBotCover(
     available: true,
     checked: true,
     photoMessage: photo,
-    candidate: liveCandidate,
+    candidate: { ...liveCandidate, sourceStateVersion: result.stateVersion },
   };
 }
 
