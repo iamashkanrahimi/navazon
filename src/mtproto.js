@@ -85,6 +85,27 @@ function orderedMessages(seen) {
   return [...seen.values()].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
 }
 
+function messageRevisionFingerprint(message = {}) {
+  const buttons = (message?.replyMarkup?.rows || [])
+    .flatMap(row => row?.buttons || [])
+    .map(button => String(button?.text || ''))
+    .join('\u001f');
+  const media = message?.media?.document
+    ? `doc:${message.media.document?.id || message.media.document?.mimeType || ''}`
+    : message?.media?.photo
+      ? `photo:${message.media.photo?.id || ''}`
+      : message?.media
+        ? 'media'
+        : 'none';
+  return [
+    Number(message?.id || 0),
+    String(message?.message || ''),
+    buttons,
+    media,
+    String(message?.editDate || ''),
+  ].join('\u001e');
+}
+
 function evaluateCollector(seen, { stopWhen, stopWhenBatch } = {}) {
   const ordered = orderedMessages(seen);
   if (stopWhen) {
@@ -113,8 +134,22 @@ async function collectFromInbox(client, peer, afterId, {
   const peerId = await resolveInboxPeerId(client, peer);
   if (!peerId) return null;
 
+  const peerBuffer = state.buffers.get(peerId) || [];
+  const bufferedBoundary = [...peerBuffer]
+    .reverse()
+    .find(message => Number(message?.id || 0) === Number(afterId || 0));
+  const primedBoundary = state.historyBoundaries.get(peerId);
+  const boundaryFingerprint = bufferedBoundary
+    ? messageRevisionFingerprint(bufferedBoundary)
+    : (
+        primedBoundary
+        && Number(primedBoundary.id || 0) === Number(afterId || 0)
+          ? primedBoundary.fingerprint
+          : null
+      );
+
   const seen = new Map();
-  for (const message of state.buffers.get(peerId) || []) {
+  for (const message of peerBuffer) {
     const idIsNew = Number(message?.id || 0) > Number(afterId || 0);
     const eventIsNew = Number(message?.__navazonInboxSeq || 0) > Number(afterSequence || 0);
     if (!message?.out && (idIsNew || eventIsNew)) {
@@ -189,7 +224,17 @@ async function collectFromInbox(client, peer, afterId, {
               // keyboard in place, so the current server-side form of
               // messageId === afterId may contain the target submenu even if
               // the EditedMessage event was missed locally.
-              if (Number(message?.id || 0) < Number(afterId || 0)) continue;
+              const messageId = Number(message?.id || 0);
+              if (messageId < Number(afterId || 0)) continue;
+
+              if (messageId === Number(afterId || 0)) {
+                // The equality case is only for a genuinely edited boundary
+                // message. Without this revision check an unchanged old search
+                // surface could satisfy a broad target predicate after timeout.
+                if (!boundaryFingerprint) continue;
+                if (messageRevisionFingerprint(message) === boundaryFingerprint) continue;
+              }
+
               seen.set(message.id, message);
             }
 
@@ -284,11 +329,16 @@ export async function primeTelegramInboxBoundary(client, peer) {
 
   const peerId = await resolveInboxPeerId(client, peer);
   const batch = await client.getMessages(peer, { limit: 1 });
-  const latest = (batch || []).reduce(
-    (max, message) => Math.max(max, Number(message?.id || 0)),
-    0
+  const latestMessage = (batch || []).reduce(
+    (best, message) =>
+      Number(message?.id || 0) > Number(best?.id || 0) ? message : best,
+    null
   );
-  state.historyBoundaries.set(peerId, latest);
+  const latest = Number(latestMessage?.id || 0);
+  state.historyBoundaries.set(peerId, {
+    id: latest,
+    fingerprint: latestMessage ? messageRevisionFingerprint(latestMessage) : null,
+  });
   return latest;
 }
 
@@ -302,7 +352,7 @@ export async function latestMessageId(client, peer) {
       0
     );
     if (bufferedLatest) return bufferedLatest;
-    return Number(state.historyBoundaries.get(peerId) || 0);
+    return Number(state.historyBoundaries.get(peerId)?.id || 0);
   }
 
   const msgs = await client.getMessages(peer, { limit: 1 });
