@@ -2345,6 +2345,35 @@ test('direct track-menu cover button works without requiring a More submenu', as
   assert.deepEqual(client.sent, [raw, 'کاور']);
 });
 
+test('confirmed More menu can report Cover absent without timing out', async () => {
+  const raw = '🎵 Artist, No Cover';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('track menu', ['کیفیت عالی', 'بیشتر...'])]],
+    'بیشتر...': [[
+      fakeBotMessage(
+        'اینجا امکانات بیشتری میتونی انتخاب کنی',
+        ['لینک اشتراک']
+      ),
+    ]],
+  });
+
+  const result = await getMeloBotCover(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    {
+      timeoutMs: 1200,
+      menuTimeoutMs: 500,
+      submenuTimeoutMs: 500,
+      deliveryTimeoutMs: 500,
+    }
+  );
+
+  assert.equal(result.available, false);
+  assert.equal(result.checked, true);
+  assert.equal(result.reason, 'button_absent');
+});
+
+
 test('direct track-menu metadata button works without requiring a More submenu', async () => {
   const raw = '🎵 Artist, Direct Info';
   const client = new FakeTelegramClient({
