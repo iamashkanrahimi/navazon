@@ -1,0 +1,23 @@
+[
+  {
+    "canonical_url": "https://play.radiojavan.com/artist/%2B98",
+    "display_name": "98",
+    "quality_flags": [
+      "display_name_lost_plus_prefix"
+    ]
+  },
+  {
+    "canonical_url": "https://play.radiojavan.com/artist/produced%3A+misagh+domirani+photo%3A+milad+sabet+cover+art%3A+avindar+ganji",
+    "display_name": "produced: misagh domirani photo: milad sabet cover art: avindar ganji",
+    "quality_flags": [
+      "suspected_credit_string_not_artist"
+    ]
+  },
+  {
+    "canonical_url": "https://play.radiojavan.com/artist/unknown+artist",
+    "display_name": "unknown artist",
+    "quality_flags": [
+      "generic_unknown_artist"
+    ]
+  }
+]

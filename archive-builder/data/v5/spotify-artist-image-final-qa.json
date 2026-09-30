@@ -1,0 +1,34 @@
+{
+  "base_counts": {
+    "tracks": 32737,
+    "artists": 9263,
+    "albums": 1923,
+    "album_tracks": 16710,
+    "media_images": 37072,
+    "artist_final_fallbacks": 8,
+    "suspicious_artists": 3,
+    "tracks_with_cover": 32737,
+    "artists_with_image": 9263,
+    "albums_with_cover": 1923,
+    "tracks_with_lyrics": 14867
+  },
+  "final_counts": {
+    "tracks": 32737,
+    "artists": 9263,
+    "albums": 1923,
+    "album_tracks": 16710,
+    "media_images": 37186,
+    "artist_final_fallbacks": 8,
+    "suspicious_artists": 3,
+    "tracks_with_cover": 32737,
+    "artists_with_image": 9263,
+    "albums_with_cover": 1923,
+    "tracks_with_lyrics": 14867
+  },
+  "spotify_profile_images_applied": 140,
+  "changed_artist_images": 140,
+  "media_image_delta": 114,
+  "preserved_fallbacks": 140,
+  "final_song_archive_fallbacks": 8,
+  "untouched_artist_image_mismatches": 0
+}
