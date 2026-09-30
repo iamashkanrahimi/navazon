@@ -19,6 +19,7 @@ import {
 } from './ui.js';
 import { noteUserActivity } from './state.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
+import { renderArtistHomePage, clearArtistProfilePhoto } from './artistProfile.js';
 import {
   getTrackInfoText,
   renderTrackPage,
@@ -191,6 +192,13 @@ export async function handleUpdate(update) {
       const messageId = callback.message?.message_id || session.messageId;
       await bot.answerCallbackQuery(callback.id);
       await noteUserActivity();
+
+      // Artist profile photos are companion messages. Remove them whenever the
+      // user leaves the Artist home surface so navigation never leaves orphan
+      // images behind. Follow/unfollow stays on the same surface.
+      if (session.artistPhotoMessageId && action !== 'fol') {
+        await clearArtistProfilePhoto(bot, session);
+      }
 
       if (action === 'hmn') {
         session.busy = false;
@@ -388,14 +396,18 @@ export async function handleUpdate(update) {
           await showResults(sessionId,session,messageId);
         }
       } else if (action === 'arh' && session.artistContext) {
-        await bot.editMessageText(session.chatId,messageId,session.artistContext.artist,{
-          reply_markup: artistHomeKeyboard(
+        await renderArtistHomePage(
+          bot,
+          sessionId,
+          session,
+          messageId,
+          artistHomeKeyboard(
             sessionId,
             session.artistContext,
             session.isFollowing,
             { backAction: session.artistBack || 'rs' }
-          ),
-        });
+          )
+        );
       } else if (action === 'fol' && session.artistContext) {
         session.isFollowing = await follows.toggle(session.userId,session.artistContext.artist);
         await bot.editMessageText(session.chatId,messageId,session.artistContext.artist,{
