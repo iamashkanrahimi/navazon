@@ -189,7 +189,15 @@ export function shouldUseSearchRelevanceFallback(
   bestTrack = null
 ) {
   const meaningful = meaningfulSearchTokens(query);
-  if (meaningful.length < 2) return false;
+  if (!meaningful.length) return false;
+
+  // A one-token nonsense/typo query used to accept whatever five MeloBot rows
+  // happened to be visible and then cache them. Zero lexical coverage is
+  // never sufficient, even for a single-token query.
+  if (meaningful.length === 1) {
+    return Number(bestCoverage || 0) < 1;
+  }
+
   if (Number(bestCoverage || 0) < meaningful.length) return true;
   return unrequestedTrackVariantWords(query, bestTrack || {}).length > 0;
 }
@@ -210,9 +218,19 @@ export function rankTracksForQuery(query = '', tracks = []) {
 
 export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   const tokens = meaningfulSearchTokens(query);
-  if (tokens.length < 2 || !(tracks || []).length) return tracks || [];
+  if (!tokens.length || !(tracks || []).length) return tracks || [];
 
   const ranked = rankTracksForQuery(query, tracks);
+
+  // For a single meaningful token, returning zero-coverage source suggestions
+  // is actively misleading and poisons the search cache. Require an actual
+  // lexical match.
+  if (tokens.length === 1) {
+    return ranked
+      .filter(item => item.coverage >= 1)
+      .map(item => item.track);
+  }
+
   const full = ranked.filter(item => item.total > 0 && item.coverage === item.total);
   return (full.length ? full : ranked).map(item => item.track);
 }
