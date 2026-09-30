@@ -18,7 +18,7 @@ for(const a of artists){
 }
 const media=new Map();const add=(url,type,ref)=>{if(!url)return;let m=media.get(url);if(!m){m={source_url:url,usage_types:new Set(),refs:[]};media.set(url,m);}m.usage_types.add(type);if(m.refs.length<5)m.refs.push(ref);};
 for(const t of tracks)add(t.cover_url,'track_cover',t.source_url);
-for(const a of artists)add(a.image_url,'artist_image',a.canonical_url);
+for(const a of artists)add(a.image_url,a.image_kind==='artist_profile'?'artist_image':'artist_artwork',a.canonical_url);
 for(const a of albums)add(a.cover_url,'album_cover',a.canonical_url);
 const mediaRows=[...media.values()].map(m=>({source_url:m.source_url,usage_types:[...m.usage_types].sort(),sample_refs:m.refs})).sort((a,b)=>a.source_url.localeCompare(b.source_url));
 const suspicious=artists.filter(a=>a.quality_flags?.length).map(a=>({canonical_url:a.canonical_url,display_name:a.display_name,quality_flags:a.quality_flags}));
