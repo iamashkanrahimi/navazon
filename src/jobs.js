@@ -32,7 +32,11 @@ import {
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { executeDeepTask } from './deepCrawler.js';
-import { deepAlbumKey, deepTrackKey } from './deepCatalog.js';
+import {
+  deepAlbumKey,
+  deepTrackKey,
+  isSuspendedBackgroundMediaTaskKind,
+} from './deepCatalog.js';
 import { HOME_FEEDS, curatedPlaylistByKey } from './homeCatalog.js';
 import {
   renderTrackPage,
@@ -1341,6 +1345,16 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'deep_crawl') {
       try {
+        const kind = job.task?.kind || 'unknown';
+
+        if (isSuspendedBackgroundMediaTaskKind(kind)) {
+          await deepCatalog.finishTask(job.task?.id, {
+            skipped: 'background_media_warming_suspended',
+          });
+          console.log('[deep crawler] suspended_media_task', kind);
+          return;
+        }
+
         // Background navigation gets a short grace window. If a user request
         // arrived just after the crawler was claimed, give the stateful
         // MeloBot lane back before starting the crawl instead of making that
@@ -1352,10 +1366,16 @@ export const sourceQueue = new SerialQueue(async job => {
             60_000,
             'foreground request arrived during crawler grace window'
           );
-          console.log('[deep crawler] deferred_for_foreground', job.task?.kind || 'unknown');
+          console.log('[deep crawler] deferred_for_foreground', kind);
           return;
         }
+
+        const crawlStartedAt = Date.now();
         await executeDeepTask(job.task);
+        const crawlMs = Date.now() - crawlStartedAt;
+        if (crawlMs > 3200) {
+          console.warn('[deep crawler] source_budget_overrun', kind, `run_ms=${crawlMs}`);
+        }
       } catch (err) {
         console.warn('[deep crawl job]', err.message);
       }
