@@ -1,0 +1,166 @@
+name: Radio Javan V5 Spotify Artist Image Candidate
+
+on:
+  push:
+    branches:
+      - experiment/spotify-artist-pilot
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  apply-freeze-qa:
+    if: contains(github.event.head_commit.message, '[spotify-v5-candidate]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check scripts
+        run: node --check src/apply-spotify-artist-images.js && node --check src/freeze-v5.js
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-recovery-candidate
+          path: archive-builder/runtime/v5-base
+          run-id: 36776483167
+          github-token: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: spotify-artist-direct-qa-report
+          path: archive-builder/runtime/spotify-direct
+          run-id: 36784744497
+          github-token: ${{ github.token }}
+
+      - name: Apply exactly 140 strict Spotify profile images
+        run: >-
+          node src/apply-spotify-artist-images.js
+          --artists ./runtime/v5-base/rj-artists.jsonl.gz
+          --patches ./runtime/spotify-direct/spotify-artist-image-patches-strict.jsonl.gz
+          --out ./out/spotify-patched-artists
+          --expected 140
+
+      - name: Re-freeze V5 candidate
+        run: >-
+          node src/freeze-v5.js
+          --tracks ./runtime/v5-base/rj-tracks.jsonl.gz
+          --artists ./out/spotify-patched-artists/rj-artists.jsonl.gz
+          --albums ./runtime/v5-base
+          --out ./out/archive-v5-spotify
+
+      - name: Strict semantic QA
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import zlib from 'node:zlib';
+          import readline from 'node:readline';
+
+          async function readGz(file){
+            const rows=[];
+            const rl=readline.createInterface({input:fs.createReadStream(file).pipe(zlib.createGunzip()),crlfDelay:Infinity});
+            for await(const line of rl) if(line.trim()) rows.push(JSON.parse(line));
+            return rows;
+          }
+
+          const baseManifest=JSON.parse(fs.readFileSync('./runtime/v5-base/manifest.json','utf8'));
+          const outManifest=JSON.parse(fs.readFileSync('./out/archive-v5-spotify/manifest.json','utf8'));
+          const applySummary=JSON.parse(fs.readFileSync('./out/spotify-patched-artists/spotify-artist-image-apply-summary.json','utf8'));
+          if(applySummary.applied!==140 || applySummary.fallbacks_preserved!==140) throw new Error('apply summary failed: '+JSON.stringify(applySummary));
+
+          const expected={
+            tracks:32737,
+            artists:9263,
+            albums:1923,
+            album_tracks:16710,
+            tracks_with_cover:32737,
+            artists_with_image:9263,
+            albums_with_cover:1923,
+            tracks_with_lyrics:14867,
+            suspicious_artists:3
+          };
+          for(const [k,v] of Object.entries(expected)) if(outManifest.counts[k]!==v) throw new Error(k+': expected '+v+', got '+outManifest.counts[k]);
+
+          const baseArtists=await readGz('./runtime/v5-base/rj-artists.jsonl.gz');
+          const outArtists=await readGz('./out/archive-v5-spotify/rj-artists.jsonl.gz');
+          const baseMap=new Map(baseArtists.map(a=>[a.canonical_url,a]));
+          const outMap=new Map(outArtists.map(a=>[a.canonical_url,a]));
+          if(baseMap.size!==9263 || outMap.size!==9263) throw new Error('artist cardinality mismatch');
+
+          let spotify=0, changedImages=0, untouchedMismatch=0;
+          for(const [url,a] of outMap){
+            const before=baseMap.get(url);
+            if(!before) throw new Error('new artist appeared: '+url);
+            if(a.image_source==='spotify_embed_artist_profile'){
+              spotify++;
+              if(!/^https:\/\/image-cdn-ak\.spotifycdn\.com\/image\/ab676161/i.test(a.image_url||'')) throw new Error('bad Spotify profile URL: '+url);
+              if(!a.radiojavan_fallback_image_url) throw new Error('missing preserved fallback: '+url);
+              if(a.radiojavan_fallback_image_url!==before.image_url) throw new Error('fallback does not equal previous image: '+url);
+              if(Number(a.spotify_match_shared_track_count||0)<2) throw new Error('below 2 shared tracks: '+url);
+              if(Number(a.spotify_direct_validated_track_count||0)<2) throw new Error('below 2 direct Spotify validations: '+url);
+              if(a.image_url!==before.image_url) changedImages++;
+            }else{
+              const keys=['image_url','image_source','image_kind','display_name'];
+              for(const k of keys){
+                if(JSON.stringify(a[k]??null)!==JSON.stringify(before[k]??null)){
+                  untouchedMismatch++;
+                  throw new Error('unpatched artist changed '+k+': '+url);
+                }
+              }
+            }
+          }
+          if(spotify!==140) throw new Error('expected 140 Spotify profile artists, got '+spotify);
+          if(changedImages!==140) throw new Error('expected 140 changed image URLs, got '+changedImages);
+
+          const finalFallbackCount=outArtists.filter(a=>a.image_source==='song_archive_track_cover_final_fallback').length;
+          if(outManifest.counts.artist_final_fallbacks!==finalFallbackCount) throw new Error('manifest final fallback count mismatch');
+
+          const delta=outManifest.counts.media_images-baseManifest.counts.media_images;
+          if(delta<1 || delta>140) throw new Error('unexpected media image delta: '+delta);
+
+          const baseTracks=await readGz('./runtime/v5-base/rj-tracks.jsonl.gz');
+          const outTracks=await readGz('./out/archive-v5-spotify/rj-tracks.jsonl.gz');
+          const baseAlbums=await readGz('./runtime/v5-base/rj-albums.jsonl.gz');
+          const outAlbums=await readGz('./out/archive-v5-spotify/rj-albums.jsonl.gz');
+          const baseAlbumTracks=await readGz('./runtime/v5-base/rj-album-tracks.jsonl.gz');
+          const outAlbumTracks=await readGz('./out/archive-v5-spotify/rj-album-tracks.jsonl.gz');
+          if(JSON.stringify(baseTracks)!==JSON.stringify(outTracks)) throw new Error('tracks changed unexpectedly');
+          if(JSON.stringify(baseAlbums)!==JSON.stringify(outAlbums)) throw new Error('albums changed unexpectedly');
+          if(JSON.stringify(baseAlbumTracks)!==JSON.stringify(outAlbumTracks)) throw new Error('album tracks changed unexpectedly');
+
+          const qa={
+            base_counts:baseManifest.counts,
+            final_counts:outManifest.counts,
+            spotify_profile_images_applied:spotify,
+            changed_artist_images:changedImages,
+            media_image_delta:delta,
+            preserved_fallbacks:applySummary.fallbacks_preserved,
+            final_song_archive_fallbacks:finalFallbackCount,
+            untouched_artist_image_mismatches:untouchedMismatch
+          };
+          fs.writeFileSync('./out/archive-v5-spotify/spotify-artist-image-final-qa.json',JSON.stringify(qa,null,2));
+          console.log(JSON.stringify(qa,null,2));
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-v5-spotify-artist-image-qa
+          path: |
+            archive-builder/out/spotify-patched-artists/spotify-artist-image-apply-summary.json
+            archive-builder/out/spotify-patched-artists/spotify-artist-image-apply-audit.json
+            archive-builder/out/archive-v5-spotify/spotify-artist-image-final-qa.json
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: rj-archive-v5-spotify-candidate
+          path: archive-builder/out/archive-v5-spotify
+          retention-days: 90
