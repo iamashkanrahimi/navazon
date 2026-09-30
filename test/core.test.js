@@ -97,6 +97,7 @@ const {
   keepFullCoverageTracksWhenAvailable,
   primarySearchQueries,
   acceptsShortenedPrimarySearch,
+  artistCreditMatchesContext,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -4304,4 +4305,36 @@ test('direct Artist search reuses a plain Track result instead of mistaking it f
   assert.equal(opened.artist, 'Farhad');
   assert.equal(opened.recentTracks.length, 2);
   assert.deepEqual(client.sent, [ 'Farhad', row, artistButton ]);
+});
+
+
+test('Artist-credit cache guard keeps real collaborations but rejects partial-name pollution', () => {
+  assert.equal(artistCreditMatchesContext('Farhad', 'Farhad'), true);
+  assert.equal(artistCreditMatchesContext('Farhad Ravanbakhsh', 'Farhad'), false);
+  assert.equal(artistCreditMatchesContext('Shayea & Sadegh', 'Shayea'), true);
+  assert.equal(artistCreditMatchesContext('Shayea', 'Shayea & Sadegh'), false);
+  assert.equal(artistCreditMatchesContext('Sadegh & Shayea', 'Shayea & Sadegh'), true);
+});
+
+test('Catalog Artist context filters previously persisted wrong-artist rows', async () => {
+  const store = new CatalogStore();
+  store.readArtist = async () => ({
+    key: 'farhad',
+    node: {
+      name: 'Farhad',
+      artistUpdatedAt: new Date().toISOString(),
+      topTracksVersion: 1,
+      recentTracksVersion: 1,
+      topTracks: [
+        { artist: 'Farhad Ravanbakhsh', title: 'Ayeneh', rawText: 'Farhad Ravanbakhsh, Ayeneh' },
+        { artist: 'Farhad', title: 'Gole Yakh', rawText: 'Farhad, Gole Yakh' },
+      ],
+      recentTracks: [],
+    },
+  });
+
+  const context = await store.getArtistContext('Farhad', 60_000);
+  assert.ok(context);
+  assert.deepEqual(context.topTracks.map(track => track.artist), ['Farhad']);
+  assert.deepEqual(context.topTracks.map(track => track.title), ['Gole Yakh']);
 });
