@@ -153,7 +153,7 @@ server.listen(config.port,'0.0.0.0',async () => {
     console.log(`Telegram webhook ready: ${webhookUrl}`);
 
     const mediaCacheChatId = process.env.MEDIA_CACHE_CHAT_ID?.trim();
-    const mediaCacheTestUrl = process.env.MEDIA_CACHE_TEST_URL?.trim();
+    const mediaCacheTestUrl = process.env.MEDIA_CACHE_TEST_URL?.trim() || 'https://play.radiojavan.com/api/image-proxy/image/static/artists/photos/koorosh-2bf58413d064b20-photo.jpg';
     if (mediaCacheChatId && mediaCacheTestUrl) {
       try {
         const key = 'media_cache_sendphoto_test_v1';
