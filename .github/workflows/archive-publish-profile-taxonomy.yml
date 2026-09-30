@@ -1,0 +1,91 @@
+name: Publish Artist Profile Taxonomy V5
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: contains(github.event.head_commit.message, '[publish-profile-taxonomy]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-v5-profile-taxonomy-candidate
+          path: /tmp/profile-v5
+          run-id: 36790105206
+          github-token: ${{ github.token }}
+
+      - name: Verify candidate
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import zlib from 'node:zlib';
+          import readline from 'node:readline';
+
+          async function readGz(file){
+            const rows=[];
+            const rl=readline.createInterface({input:fs.createReadStream(file).pipe(zlib.createGunzip()),crlfDelay:Infinity});
+            for await(const line of rl) if(line.trim()) rows.push(JSON.parse(line));
+            return rows;
+          }
+
+          const manifest=JSON.parse(fs.readFileSync('/tmp/profile-v5/manifest.json','utf8'));
+          const summary=JSON.parse(fs.readFileSync('/tmp/profile-v5/artist-profile-taxonomy-summary.json','utf8'));
+          const artists=await readGz('/tmp/profile-v5/rj-artists.jsonl.gz');
+          const media=await readGz('/tmp/profile-v5/media-images.jsonl.gz');
+
+          const expected={tracks:32737,artists:9263,albums:1923,album_tracks:16710,media_images:37186,artist_profiles:1060,artist_artwork_only:8203};
+          for(const [k,v] of Object.entries(expected)){
+            if(manifest.counts?.[k]!==v) throw new Error(k+': expected '+v+', got '+manifest.counts?.[k]);
+          }
+          if(summary.newly_normalized_radiojavan_profiles!==920) throw new Error('expected 920 normalized Radio Javan profiles');
+
+          const profileCount=artists.filter(a=>a.image_kind==='artist_profile').length;
+          if(profileCount!==1060) throw new Error('artist_profile rows='+profileCount);
+
+          const mediaByUrl=new Map(media.map(m=>[m.source_url,m]));
+          for(const a of artists){
+            const types=mediaByUrl.get(a.image_url)?.usage_types||[];
+            if(a.image_kind==='artist_profile'){
+              if(!types.includes('artist_image')) throw new Error('profile missing artist_image '+a.canonical_url);
+            }else if(!types.includes('artist_artwork')){
+              throw new Error('artwork missing artist_artwork '+a.canonical_url);
+            }
+          }
+
+          const fixedHashes={
+            'rj-tracks.jsonl.gz':'cbed98320fcb300fc77fe7725aa8e65ebc96300903fb7c96804ad4b55734eec5',
+            'rj-albums.jsonl.gz':'377fd734659002062f19bacb6748a6cd9eb7bf17588173aef8d7c3ed7f8e5296',
+            'rj-album-tracks.jsonl.gz':'0f92307d9cbcee820048e29ae89948d1dccf0db73738c19ba04a97e22d3aba3b'
+          };
+          for(const [name,hash] of Object.entries(fixedHashes)){
+            if(manifest.hashes?.[name]!==hash) throw new Error('unexpected immutable hash '+name);
+          }
+          console.log(JSON.stringify({counts:manifest.counts,summary},null,2));
+          NODE
+
+      - name: Publish taxonomy update
+        run: |
+          mkdir -p archive-builder/data/v5
+          cp -a /tmp/profile-v5/. archive-builder/data/v5/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f archive-builder/data/v5
+          if git diff --cached --quiet; then
+            echo "No V5 taxonomy changes to publish"
+            exit 0
+          fi
+          git commit -m "[archive-v5-data] Normalize 1060 verified artist profiles"
+          git push origin HEAD:archive-builder-cloud
