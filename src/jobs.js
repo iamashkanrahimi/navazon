@@ -1661,6 +1661,10 @@ export const sourceQueue = new SerialQueue(async job => {
                     resolved.context?.recentBulkNormalButton
                     || session.artistContext.recentBulkNormalButton
                     || null,
+                  sourceStateVersion:
+                    resolved.context?.sourceStateVersion
+                    ?? session.artistContext.sourceStateVersion
+                    ?? null,
                 };
               } else {
                 session.artistContext = {
