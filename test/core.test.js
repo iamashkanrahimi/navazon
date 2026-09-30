@@ -3029,7 +3029,11 @@ test('refreshing only recent Artist tracks never blesses a legacy top list', asy
 test('two-token partial search coverage triggers relevance fallback', () => {
   assert.equal(shouldUseSearchRelevanceFallback('Sadegh Khalesaneh', 1), true);
   assert.equal(shouldUseSearchRelevanceFallback('Reza Bahram', 2), false);
-  assert.equal(shouldUseSearchRelevanceFallback('Hichkas', 0), false);
+  assert.equal(
+    shouldUseSearchRelevanceFallback('Hichkas', 0),
+    true,
+    'single-token zero coverage must not accept unrelated source suggestions'
+  );
 });
 
 test('lyrics action can find the lyrics button behind a More submenu', async () => {
