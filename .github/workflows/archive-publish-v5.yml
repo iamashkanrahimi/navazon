@@ -1,0 +1,40 @@
+name: Publish Radio Javan Archive V5
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: contains(github.event.head_commit.message, '[publish-v5]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-final
+          path: /tmp/rj-v5
+          run-id: 36762405500
+          github-token: ${{ github.token }}
+      - name: Publish frozen V5 files to archive branch
+        run: |
+          rm -rf archive-builder/data/v5
+          mkdir -p archive-builder/data/v5
+          cp -a /tmp/rj-v5/. archive-builder/data/v5/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add archive-builder/data/v5
+          if git diff --cached --quiet; then
+            echo "No V5 changes to publish"
+            exit 0
+          fi
+          git commit -m "[archive-v5-data] Publish frozen Radio Javan V5 dataset"
+          git push origin HEAD:archive-builder-cloud
