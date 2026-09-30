@@ -2881,59 +2881,59 @@ async function openMeloBotArtistBase(
 }
 
 async function finalizeMeloBotArtistFast(client, base, remaining) {
-let tracks = (base.recentTracks || []).slice(0, 10);
-    let route = tracks.length ? 'artist_base' : 'artist_search_recovery';
-    let liveStateValid = true;
-  
-    if (!tracks.length && !remaining.expired()) {
-      try {
-        const searched = await searchMeloBot(client, base.artist, {
-          maxRefinements: 2,
-          timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
-        });
-        const target = normalize(base.artist);
-        const exact = searched
-          .filter(track => normalize(track.artist) === target)
-          .slice(0, 10);
-        if (exact.length >= 2) {
-          tracks = exact;
-          liveStateValid = false;
-        }
-      } catch (err) {
-        console.warn('[melobot fast artist recovery]', base.artist, err.message);
+  let tracks = (base.recentTracks || []).slice(0, 10);
+  let route = tracks.length ? 'artist_base' : 'artist_search_recovery';
+  let liveStateValid = true;
+
+  if (!tracks.length && !remaining.expired()) {
+    try {
+      const searched = await searchMeloBot(client, base.artist, {
+        maxRefinements: 2,
+        timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+      });
+      const target = normalize(base.artist);
+      const exact = searched
+        .filter(track => normalize(track.artist) === target)
+        .slice(0, 10);
+      if (exact.length >= 2) {
+        tracks = exact;
+        liveStateValid = false;
       }
+    } catch (err) {
+      console.warn('[melobot fast artist recovery]', base.artist, err.message);
     }
-  
-    if (!tracks.length) {
-      throw new Error(`MeloBot artist page returned no usable tracks for: ${base.artist}`);
-    }
-  
-    return {
-      ...base,
-      tracks,
-      topTracks: [],
-      recentTracks: (base.recentTracks || []).slice(0, 10),
-      bulkHighButton: null,
-      bulkNormalButton: null,
-      liveAlbumButton: liveStateValid ? (base.albumButton || null) : null,
-      liveAlbumList: liveStateValid ? (base.albumList || []) : [],
-      liveAlbumListingConfirmed: liveStateValid
-        ? Boolean(base.albumListingConfirmed)
-        : false,
-      liveAlbumListingConfirmedEmpty: liveStateValid
-        ? Boolean(base.albumListingConfirmedEmpty)
-        : false,
-      liveAlbumDeclaredCount: liveStateValid
-        ? (base.albumDeclaredCount ?? null)
-        : null,
-      liveAlbumNextButton: liveStateValid
-        ? (base.albumNextButton || null)
-        : null,
-      liveAlbumSourceStateVersion: liveStateValid
-        ? base.sourceStateVersion
-        : null,
-      fastArtistRoute: route,
-    };
+  }
+
+  if (!tracks.length) {
+    throw new Error(`MeloBot artist page returned no usable tracks for: ${base.artist}`);
+  }
+
+  return {
+    ...base,
+    tracks,
+    topTracks: [],
+    recentTracks: (base.recentTracks || []).slice(0, 10),
+    bulkHighButton: null,
+    bulkNormalButton: null,
+    liveAlbumButton: liveStateValid ? (base.albumButton || null) : null,
+    liveAlbumList: liveStateValid ? (base.albumList || []) : [],
+    liveAlbumListingConfirmed: liveStateValid
+      ? Boolean(base.albumListingConfirmed)
+      : false,
+    liveAlbumListingConfirmedEmpty: liveStateValid
+      ? Boolean(base.albumListingConfirmedEmpty)
+      : false,
+    liveAlbumDeclaredCount: liveStateValid
+      ? (base.albumDeclaredCount ?? null)
+      : null,
+    liveAlbumNextButton: liveStateValid
+      ? (base.albumNextButton || null)
+      : null,
+    liveAlbumSourceStateVersion: liveStateValid
+      ? base.sourceStateVersion
+      : null,
+    fastArtistRoute: route,
+  };
 }
 
 export async function openMeloBotArtistFast(
