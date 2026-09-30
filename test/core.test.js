@@ -173,6 +173,39 @@ test('MeloBot parser extracts artist, title and popularity', () => {
   assert.equal(track.sourcePopularityCount, 1_600_000);
 });
 
+test('MeloBot parser strips upper-bound and truncated popularity suffixes from titles', () => {
+  const upper = parseTrackButton('🎵 Siamak Abbasi, Jameeyate Tanha x <250');
+  assert.equal(upper.artist, 'Siamak Abbasi');
+  assert.equal(upper.title, 'Jameeyate Tanha');
+  assert.equal(upper.sourcePopularityText, '<250');
+  assert.equal(upper.sourcePopularityCount, undefined);
+
+  const truncated = parseTrackButton(
+    '🎵 Xaniar, Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam) x 654.…'
+  );
+  assert.equal(truncated.artist, 'Xaniar');
+  assert.equal(
+    truncated.title,
+    'Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam)'
+  );
+  assert.equal(truncated.sourcePopularityText, '654…');
+  assert.equal(truncated.sourcePopularityCount, undefined);
+});
+
+test('file cache variants strip non-exact MeloBot popularity suffixes', () => {
+  const upper = trackCacheKey({
+    artist: 'Siamak Abbasi',
+    title: 'Jameeyate Tanha',
+    rawText: '🎵 Siamak Abbasi, Jameeyate Tanha x <250',
+  });
+  const clean = trackCacheKey({
+    artist: 'Siamak Abbasi',
+    title: 'Jameeyate Tanha',
+    rawText: '🎵 Siamak Abbasi, Jameeyate Tanha',
+  });
+  assert.equal(upper, clean);
+});
+
 test('MeloBot parser rejects navigation and artist-sort controls', () => {
   assert.equal(parseTrackButton('بعدی'), null);
   assert.equal(parseTrackButton('صفحه بعد'), null);
@@ -3188,4 +3221,31 @@ test('MTProto inbox accepts edited menu events with an existing message id', asy
   assert.equal(result.messages.length, 1);
   assert.equal(result.messages[0].message, 'edited');
   assert.equal(result.messages[0].__navazonEdited, true);
+});
+
+
+test('search ranking penalizes an unrequested remix and requests relevance fallback', () => {
+  const query = 'Xaniar Shabe Mahtab feat Ehaam';
+  const tracks = [
+    {
+      artist: 'Xaniar',
+      title: 'Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam)',
+    },
+    {
+      artist: 'Xaniar',
+      title: 'Shabe Mahtab (feat. Ehaam)',
+    },
+  ];
+  const ranked = rankTracksForQuery(query, tracks);
+  assert.equal(ranked[0].track.title, 'Shabe Mahtab (feat. Ehaam)');
+
+  const remixOnly = rankTracksForQuery(query, [tracks[0]])[0];
+  assert.equal(
+    shouldUseSearchRelevanceFallback(
+      query,
+      remixOnly.coverage,
+      remixOnly.track
+    ),
+    true
+  );
 });
