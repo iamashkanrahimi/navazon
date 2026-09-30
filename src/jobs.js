@@ -1440,10 +1440,13 @@ export const sourceQueue = new SerialQueue(async job => {
                 seed,
                 { timeoutMs: 3500 }
               );
+              if (hasPendingForegroundSourceWork()) {
+                throw new Error('bulk deferred because foreground work is waiting');
+              }
               bulk = await downloadMeloBotRecentTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 6500 }
+                { timeoutMs: 4500 }
               );
               lastError = null;
               break;
@@ -1583,10 +1586,13 @@ export const sourceQueue = new SerialQueue(async job => {
                 seed,
                 { timeoutMs: 3500 }
               );
+              if (hasPendingForegroundSourceWork()) {
+                throw new Error('bulk deferred because foreground work is waiting');
+              }
               bulk = await downloadMeloBotTopTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 6500 }
+                { timeoutMs: 4500 }
               );
               lastError = null;
               break;
@@ -1735,10 +1741,13 @@ export const sourceQueue = new SerialQueue(async job => {
                 throw new Error('MeloBot bulk HQ button was not found on the album page.');
               }
 
+              if (hasPendingForegroundSourceWork()) {
+                throw new Error('bulk deferred because foreground work is waiting');
+              }
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: 6500 }
+                { timeoutMs: 4500 }
               );
               lastError = null;
               break;
