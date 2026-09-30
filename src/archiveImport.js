@@ -1,6 +1,7 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
 import readline from 'node:readline';
+import { createHash } from 'node:crypto';
 import { config } from './config.js';
 import { getArchiveDb } from './archiveDb.js';
 
@@ -9,19 +10,60 @@ function assertImportConfig() {
   if (!config.archiveImportBaseUrl) throw new Error('ARCHIVE_IMPORT_BASE_URL missing');
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-  if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`);
-  return res.json();
+async function fetchJson(url, attempts = 4) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
+  throw lastError;
 }
 
-async function* readGzipJsonl(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-  if (!res.ok || !res.body) throw new Error(`GET ${url}: HTTP ${res.status}`);
-  const input = Readable.fromWeb(res.body).pipe(createGunzip());
+async function fetchVerifiedGzip(url, expectedHash, attempts = 4) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+      if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length < 2 || buffer[0] !== 0x1f || buffer[1] !== 0x8b) {
+        throw new Error(`GET ${url}: response is not gzip data`);
+      }
+      const actualHash = createHash('sha256').update(buffer).digest('hex');
+      if (expectedHash && actualHash !== expectedHash) {
+        throw new Error(
+          `GET ${url}: SHA256 mismatch expected=${expectedHash} actual=${actualHash} bytes=${buffer.length}`
+        );
+      }
+      console.log(`[archive import] verified download ${url.split('/').pop()} bytes=${buffer.length}`);
+      return buffer;
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1_500 * attempt));
+    }
+  }
+  throw lastError;
+}
+
+async function* readGzipJsonl(url, expectedHash) {
+  const buffer = await fetchVerifiedGzip(url, expectedHash);
+  const input = Readable.from([buffer]).pipe(createGunzip());
   const rl = readline.createInterface({ input, crlfDelay: Infinity });
+  let lineNumber = 0;
   for await (const line of rl) {
-    if (line.trim()) yield JSON.parse(line);
+    if (!line.trim()) continue;
+    lineNumber += 1;
+    try {
+      yield JSON.parse(line);
+    } catch (err) {
+      throw new Error(`Invalid JSONL ${url} line=${lineNumber}: ${err?.message || err}`);
+    }
   }
 }
 
@@ -48,9 +90,9 @@ function parseDate(value) {
   return d.toISOString().slice(0, 10);
 }
 
-async function importTracks(db, base) {
+async function importTracks(db, base, expectedHash) {
   let count = 0;
-  await forBatches(readGzipJsonl(`${base}/rj-tracks.jsonl.gz`), 120, async rows => {
+  await forBatches(readGzipJsonl(`${base}/rj-tracks.jsonl.gz`, expectedHash), 120, async rows => {
     await db.query(`
       INSERT INTO rj_tracks (
         source_url, source_id, source_slug, source_share_url, source_permalink,
@@ -107,9 +149,9 @@ async function importTracks(db, base) {
   return count;
 }
 
-async function importArtists(db, base) {
+async function importArtists(db, base, expectedHash) {
   let count = 0;
-  await forBatches(readGzipJsonl(`${base}/rj-artists.jsonl.gz`), 250, async sourceRows => {
+  await forBatches(readGzipJsonl(`${base}/rj-artists.jsonl.gz`, expectedHash), 250, async sourceRows => {
     const rows = sourceRows.map(a => ({
       artist_key: a.canonical_url,
       display_name: a.display_name || a.candidate_name || a.key,
@@ -145,9 +187,9 @@ async function importArtists(db, base) {
   return count;
 }
 
-async function importAlbums(db, base) {
+async function importAlbums(db, base, expectedHash) {
   let count = 0;
-  await forBatches(readGzipJsonl(`${base}/rj-albums.jsonl.gz`), 200, async sourceRows => {
+  await forBatches(readGzipJsonl(`${base}/rj-albums.jsonl.gz`, expectedHash), 200, async sourceRows => {
     const rows = sourceRows.map(a => ({
       album_key: a.canonical_url,
       source_id: a.api_source_id || null,
@@ -184,9 +226,9 @@ async function importAlbums(db, base) {
   return count;
 }
 
-async function importAlbumTracks(db, base) {
+async function importAlbumTracks(db, base, expectedHash) {
   let count = 0;
-  await forBatches(readGzipJsonl(`${base}/rj-album-tracks.jsonl.gz`), 500, async sourceRows => {
+  await forBatches(readGzipJsonl(`${base}/rj-album-tracks.jsonl.gz`, expectedHash), 500, async sourceRows => {
     const rows = sourceRows.map(t => ({
       album_key: t.album_key,
       source_url: t.permlink ? `https://www.radiojavan.com/mp3s/mp3/${t.permlink}` : null,
@@ -210,9 +252,9 @@ async function importAlbumTracks(db, base) {
   return count;
 }
 
-async function importMedia(db, base) {
+async function importMedia(db, base, expectedHash) {
   let count = 0;
-  await forBatches(readGzipJsonl(`${base}/media-images.jsonl.gz`), 500, async rows => {
+  await forBatches(readGzipJsonl(`${base}/media-images.jsonl.gz`, expectedHash), 500, async rows => {
     await db.query(`
       INSERT INTO media_images (source_url, usage_types, sample_refs, status, updated_at)
       SELECT x.source_url, x.usage_types, x.sample_refs, 'pending', now()
@@ -236,7 +278,10 @@ async function importArchiveOnce() {
   const manifest = await fetchJson(`${base}/manifest.json`);
 
   const prior = await db.query(`SELECT value FROM archive_meta WHERE key='v5_import_complete'`);
-  if (prior.rows[0]?.value?.hashes?.['rj-tracks.jsonl.gz'] === manifest.hashes?.['rj-tracks.jsonl.gz']) {
+  const priorHashes = prior.rows[0]?.value?.manifest?.hashes || prior.rows[0]?.value?.hashes || {};
+  const manifestHashes = manifest.hashes || {};
+  const hashEntries = Object.entries(manifestHashes);
+  if (hashEntries.length && hashEntries.every(([name, hash]) => priorHashes[name] === hash)) {
     console.log('[archive import] V5 already imported; skipping');
     return { skipped: true, reason: 'already_imported' };
   }
@@ -249,11 +294,11 @@ async function importArchiveOnce() {
 
   console.log('[archive import] starting V5');
   const counts = {};
-  counts.tracks = await importTracks(db, base);
-  counts.artists = await importArtists(db, base);
-  counts.albums = await importAlbums(db, base);
-  counts.album_tracks = await importAlbumTracks(db, base);
-  counts.media_images = await importMedia(db, base);
+  counts.tracks = await importTracks(db, base, manifestHashes['rj-tracks.jsonl.gz']);
+  counts.artists = await importArtists(db, base, manifestHashes['rj-artists.jsonl.gz']);
+  counts.albums = await importAlbums(db, base, manifestHashes['rj-albums.jsonl.gz']);
+  counts.album_tracks = await importAlbumTracks(db, base, manifestHashes['rj-album-tracks.jsonl.gz']);
+  counts.media_images = await importMedia(db, base, manifestHashes['media-images.jsonl.gz']);
 
   const qa = await db.query(`
     SELECT
