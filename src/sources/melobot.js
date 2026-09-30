@@ -1121,6 +1121,7 @@ async function openTrackMenuWithCandidate(
     directTimeoutMs = 3000,
     resolveTimeoutMs = 3500,
     menuTimeoutMs = 4000,
+    allowNonTrackSurface = false,
   } = {}
 ) {
   const requested = candidate || {};
@@ -1144,6 +1145,10 @@ async function openTrackMenuWithCandidate(
     if (hasTrackActionMenu(direct.messages)) {
       console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
       return { messages: direct.messages, candidate: requested, route: 'direct_raw_text' };
+    }
+    if (allowNonTrackSurface && direct.messages?.length) {
+      console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
+      return { messages: direct.messages, candidate: requested, route: 'direct_non_track' };
     }
     console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
   }
@@ -1174,6 +1179,9 @@ async function openTrackMenuWithCandidate(
     reconcileOnTimeout: true,
   });
   if (!hasTrackActionMenu(selected.messages)) {
+    if (allowNonTrackSurface && selected.messages?.length) {
+      return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_non_track' };
+    }
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
       `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)}`
@@ -1362,6 +1370,13 @@ export async function getMeloBotLyrics(
         timeoutMs: Math.max(1800, Number(submenuTimeoutMs || 3000)),
         quietMs: 900,
       });
+      if (!more.messages?.length) {
+        throw meloError(
+          'MELOBOT_SUBMENU_TIMEOUT',
+          'MeloBot lyrics submenu returned no response.',
+          { capability: 'hasLyrics' }
+        );
+      }
       lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
     }
   }
@@ -1388,7 +1403,7 @@ export async function getMeloBotLyrics(
   if (!raw) {
     throw meloError(
       'MELOBOT_DELIVERY_TIMEOUT',
-      `MeloBot lyrics button was confirmed but no text arrived for: ${trackLabel(liveCandidate)}`,
+      `MeloBot lyrics response was empty after the button was confirmed for: ${trackLabel(liveCandidate)}`,
       { capability: 'hasLyrics' }
     );
   }
@@ -1547,6 +1562,13 @@ export async function getMeloBotCover(
         timeoutMs: Math.max(1800, Number(submenuTimeoutMs || 3000)),
         quietMs: 900,
       });
+      if (!more.messages?.length) {
+        throw meloError(
+          'MELOBOT_SUBMENU_TIMEOUT',
+          'MeloBot cover submenu returned no response.',
+          { capability: 'hasCover' }
+        );
+      }
       coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
     }
   }
@@ -1842,7 +1864,10 @@ async function openMeloBotArtistBase(
   let openedMenu = await openTrackMenuWithCandidate(
     client,
     seedTrack,
-    { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
+    {
+      timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+      allowNonTrackSurface: true,
+    }
   );
   let menuMessages = openedMenu.messages;
   let effectiveSeed = openedMenu.candidate || seedTrack;
@@ -1866,7 +1891,10 @@ async function openMeloBotArtistBase(
       openedMenu = await openTrackMenuWithCandidate(
         client,
         recoverySeed,
-        { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
+        {
+          timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+          allowNonTrackSurface: true,
+        }
       );
       menuMessages = openedMenu.messages;
       effectiveSeed = openedMenu.candidate || recoverySeed;
