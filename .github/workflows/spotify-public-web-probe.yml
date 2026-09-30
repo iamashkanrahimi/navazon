@@ -14,18 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Probe MyStreamCount sitemap
+      - name: Inspect MyStreamCount artist sitemap
         run: |
           python - <<'PY'
           import urllib.request,re
-          u='https://www.mystreamcount.com/sitemap.xml'
-          req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
-          with urllib.request.urlopen(req,timeout=30) as r:
-            data=r.read().decode('utf-8','replace')
-            print('status',r.status,'bytes',len(data))
-            print(data[:5000])
-            urls=re.findall(r'<loc>([^<]+)</loc>',data)
-            print('URLCOUNT',len(urls))
-            print('ARTISTS',sum('/artist/' in x for x in urls),'TRACKS',sum('/track/' in x for x in urls))
-            print('FIRST',urls[:30])
+          for n in [0,50,100,150,200]:
+            u=f'https://www.mystreamcount.com/sitemap/sitemap-artists-{n}.xml'
+            try:
+              req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(req,timeout=30) as r:
+                data=r.read().decode('utf-8','replace')
+              urls=re.findall(r'<loc>([^<]+)</loc>',data)
+              print('N',n,'bytes',len(data),'urls',len(urls),'first',urls[:5])
+              print(data[:1200])
+            except Exception as e: print('ERR',n,repr(e))
           PY
