@@ -653,6 +653,7 @@ async function sendAndCollect(client, text, {
 } = {}) {
   const peer = config.melobotUsername;
   const afterId = await latestMessageId(client, peer);
+  const afterSequence = getTelegramInboxSequence(client);
   const stateVersion = ++sourceStateVersion;
   await client.sendMessage(peer, { message: text });
   const result = await collectNewMessages(client, peer, afterId, {
@@ -662,6 +663,7 @@ async function sendAndCollect(client, text, {
     stopWhenBatch,
     waitForTarget,
     reconcileOnTimeout,
+    afterSequence,
     onMessage,
   });
   return { ...result, stateVersion };
