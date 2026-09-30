@@ -10,11 +10,12 @@
     "login": "node src/login.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": "24.x",
+    "npm": "11.x"
   },
   "dependencies": {
-    "dotenv": "^16.4.7",
-    "pg": "^8.13.1",
-    "telegram": "^2.26.22"
+    "dotenv": "16.4.7",
+    "pg": "8.13.1",
+    "telegram": "2.26.22"
   }
 }
