@@ -9,22 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect MyStreamCount browse implementation
+      - name: Inspect MyStreamCount letter endpoint
         run: |
           python - <<'PY'
-          import urllib.request,re,html
-          u='https://www.mystreamcount.com/artists'
-          req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
-          with urllib.request.urlopen(req,timeout=30) as r:d=r.read().decode('utf-8','replace')
-          for pat in [r'<script[^>]+src="([^"]+)"',r'<link[^>]+href="([^"]+)"']:
-            vals=re.findall(pat,d,re.I)
-            print('ASSETS',vals[-30:])
-          for needle in ['wire:', 'livewire', 'axios', 'fetch(', 'letter', 'artists', 'x-data', 'Alpine']:
-            print('\nNEEDLE',needle,'count',d.lower().count(needle.lower()))
-            start=0
-            for _ in range(5):
-              i=d.lower().find(needle.lower(),start)
-              if i<0: break
-              print(d[max(0,i-500):i+1000])
-              start=i+len(needle)
+          import urllib.request,json,re,html
+          for letter in ['H','S','O']:
+            u='https://www.mystreamcount.com/artists/letter/'+letter
+            req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
+            with urllib.request.urlopen(req,timeout=30) as r:
+              d=json.load(r)
+            print('LETTER',letter,'keys',d.keys(),'count',d.get('count'),'htmlbytes',len(d.get('html','')))
+            h=d.get('html','')
+            links=re.findall(r'href=["\']([^"\']*/artist/[^"\']+)["\']',h,re.I)
+            texts=re.findall(r'href=["\']([^"\']*/artist/([^"\']+))["\'][^>]*>[\s\S]{0,700}?<h[1-6][^>]*>([\s\S]*?)</h',h,re.I)
+            print('links',links[:20])
+            print('sample',h[:5000])
           PY
