@@ -2594,6 +2594,27 @@ async function openMeloBotArtistDirectBase(
   const pickers = artistPickerItems(first.messages);
   const chosen = pickers.find(item => normalize(item.name) === normalize(artist)) || null;
   if (!chosen) {
+    // Some MeloBot layouts return Track rows but no Artist picker. Reuse that
+    // already-live row immediately instead of issuing the same Artist search a
+    // second time and losing the only scripted/source surface.
+    const freshSeed = parseTracksFromMessages(first.messages, artist)
+      .find(track => artistIdentityCompatible(artist, track.artist || ''))
+      || null;
+    if (freshSeed && !remaining.expired()) {
+      return openMeloBotArtistBase(
+        client,
+        {
+          ...freshSeed,
+          source: 'melobot',
+          sourceStateVersion: first.stateVersion,
+        },
+        {
+          timeoutMs: remaining(),
+          allowArtistSearchFallback: false,
+        }
+      );
+    }
+
     throw meloError(
       'MELOBOT_ARTIST_RESOLVE_FAILED',
       `MeloBot direct Artist search did not expose an exact picker: ${artist}`
@@ -3458,7 +3479,7 @@ export async function downloadMeloBotBulkTracks(client, {
     const response = first.messages.map(messageText).filter(Boolean).join('\n');
     throw meloError(
       'MELOBOT_BULK_DELIVERY_TIMEOUT',
-      `MeloBot ${label} bulk HQ did not deliver initial audio. ${response.slice(0, 350)}`
+      `MeloBot ${label} bulk HQ did not deliver audio (no initial audio). ${response.slice(0, 350)}`
     );
   }
 
