@@ -1,0 +1,50 @@
+name: Radio Javan Artist Album Phase 2
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  pilot:
+    if: contains(github.event.head_commit.message, '[phase2-pilot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: archive-builder
+    env:
+      RJ_PHASE2_DELAY_MS: '1200'
+      RJ_PHASE2_TIMEOUT_MS: '20000'
+      RJ_PHASE2_MAX_ATTEMPTS: '3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download completed Song Crawl artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rj-full-final
+          path: archive-builder/runtime/final
+          run-id: 36646058761
+          github-token: ${{ github.token }}
+      - name: Extract Artist and Album candidates
+        run: node src/phase2-extract.js --in ./runtime/final/rj-tracks.jsonl.gz --out ./runtime/phase2
+      - name: Syntax check Phase 2
+        run: node --check src/phase2-pages.js && node --check src/phase2-extract.js && node --check src/phase2-pilot.js
+      - name: Resolve and crawl Phase 2 pilot
+        run: node src/phase2-pilot.js --in ./runtime/phase2 --out ./out/phase2-pilot
+      - name: Upload Phase 2 pilot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-pilot
+          path: |
+            archive-builder/runtime/phase2/extract-summary.json
+            archive-builder/out/phase2-pilot
+          retention-days: 30
