@@ -291,13 +291,11 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
       callback_data: `tqh:${sessionId}`,
     });
   }
-  if (
-    media.normal
-    || capabilities.hasNormal === true
-    || (isMeloBot && capabilities.hasNormal !== false)
-  ) {
-    qualityRow.push({ text: '📥 کیفیت معمولی', callback_data: `tqn:${sessionId}` });
-  }
+  // Normal-quality files/capabilities remain stored for backward
+  // compatibility, but the action is intentionally hidden from all newly
+  // rendered Track pages. Old Telegram messages may still carry a legacy
+  // tqn:* callback and are handled by the callback router without exposing a
+  // new button.
   if (qualityRow.length) rows.push(qualityRow);
 
   const extras = [];
