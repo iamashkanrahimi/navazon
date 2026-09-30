@@ -2024,14 +2024,6 @@ async function openMeloBotArtistBase(
       ),
     });
     artistButton = findArtistButtonFor(artistSearch.messages, effectiveSeed.artist);
-
-    if (!artistButton) {
-      const directTracks = parseTracksFromMessages(
-        artistSearch.messages,
-        effectiveSeed.artist
-      );
-      if (directTracks.length) preOpenedArtistPage = artistSearch;
-    }
   }
 
   if (!artistButton && !preOpenedArtistPage) {
