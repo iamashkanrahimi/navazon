@@ -1258,7 +1258,7 @@ export async function downloadMeloBotTrackQuality(
     `[melobot.quality] stage=button_found quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
   const result = await sendAndCollect(client, button, {
-    timeoutMs: Math.max(3500, Number(deliveryTimeoutMs || 7000)),
+    timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 7000)),
     quietMs: 650,
     stopWhen: isAudioMessage,
     waitForTarget: true,
@@ -1367,7 +1367,7 @@ export async function getMeloBotLyrics(
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: Math.max(1800, Number(submenuTimeoutMs || 3000)),
+        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
         quietMs: 900,
       });
       if (!more.messages?.length) {
@@ -1392,7 +1392,7 @@ export async function getMeloBotLyrics(
     `[melobot.lyrics] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
   const result = await sendAndCollect(client, lyricsButton, {
-    timeoutMs: Math.max(3500, Number(deliveryTimeoutMs || 6500)),
+    timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 6500)),
     quietMs: 900,
     stopWhen: m => Boolean(messageText(m)),
     waitForTarget: true,
@@ -1559,7 +1559,7 @@ export async function getMeloBotCover(
         `[melobot.cover] stage=more_found track=${JSON.stringify(trackLabel(liveCandidate))}`
       );
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: Math.max(1800, Number(submenuTimeoutMs || 3000)),
+        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
         quietMs: 900,
       });
       if (!more.messages?.length) {
@@ -1591,7 +1591,7 @@ export async function getMeloBotCover(
     `[melobot.cover] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
   const result = await sendAndCollect(client, coverButton, {
-    timeoutMs: Math.max(3500, Number(deliveryTimeoutMs || 6500)),
+    timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 6500)),
     quietMs: 650,
     stopWhen: photoMessage,
     waitForTarget: true,
