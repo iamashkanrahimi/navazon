@@ -491,9 +491,7 @@ export async function handleUpdate(update) {
         session.busy = true;
         const quality = action === 'tqh' ? 'hq' : 'normal';
         const statusText = quality === 'hq'
-          ? (session.currentTrack?.source === 'ahangify'
-              ? 'در حال دریافت بهترین کیفیت موجود…'
-              : 'در حال دریافت کیفیت عالی…')
+          ? 'در حال دریافت آهنگ…'
           : 'در حال دریافت کیفیت معمولی…';
         await bot.editMessageText(session.chatId,messageId,statusText);
         let servedFromCache = false;
