@@ -1234,7 +1234,7 @@ async function openTrackMenuWithCandidate(
     });
     if (hasTrackActionMenu(direct.messages)) {
       console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
-      return { messages: direct.messages, candidate: requested, route: 'direct_raw_text' };
+      return { messages: direct.messages, candidate: { ...requested, sourceStateVersion: direct.stateVersion }, route: 'direct_raw_text' };
     }
     if (allowNonTrackSurface && direct.messages?.length) {
       console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
