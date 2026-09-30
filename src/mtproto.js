@@ -1,6 +1,6 @@
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { NewMessage } from 'telegram/events/index.js';
+import { NewMessage, EditedMessage } from 'telegram/events/index.js';
 import { config } from './config.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -10,8 +10,11 @@ function peerKey(value = '') {
   return String(value || '').replace(/^@/, '').trim().toLowerCase();
 }
 
-function messageSenderId(message, event = null) {
-  return String(message?.senderId || event?.chatId || '');
+function messageChatId(message, event = null) {
+  // Route by conversation peer, not sender. MeloBot may forward media whose
+  // senderId belongs to the original channel/user while chatId is still the
+  // MeloBot private chat we are waiting on.
+  return String(event?.chatId || message?.peerId || message?.senderId || '');
 }
 
 function trimBuffer(items = [], max = 300) {
@@ -26,26 +29,33 @@ export function installTelegramInbox(client) {
     buffers: new Map(),
     peerIds: new Map(),
     waiters: new Set(),
+    sequence: 0,
   };
 
-  const dispatch = event => {
+  const dispatch = (event, edited = false) => {
     const message = event?.message;
     if (!message || message.out) return;
 
-    const senderId = messageSenderId(message, event);
-    if (!senderId) return;
+    const peerId = messageChatId(message, event);
+    if (!peerId) return;
 
-    const current = state.buffers.get(senderId) || [];
+    // Sequence lets a collector accept an edited pre-existing message even
+    // when its Telegram message id is <= the id captured before the action.
+    message.__navazonInboxSeq = ++state.sequence;
+    message.__navazonEdited = Boolean(edited);
+
+    const current = state.buffers.get(peerId) || [];
     current.push(message);
-    state.buffers.set(senderId, trimBuffer(current));
+    state.buffers.set(peerId, trimBuffer(current));
 
     for (const waiter of [...state.waiters]) {
-      if (waiter.peerId !== senderId) continue;
+      if (waiter.peerId !== peerId) continue;
       waiter.push(message);
     }
   };
 
-  client.addEventHandler(dispatch, new NewMessage({}));
+  client.addEventHandler(event => dispatch(event, false), new NewMessage({}));
+  client.addEventHandler(event => dispatch(event, true), new EditedMessage({}));
   state.dispatch = dispatch;
   inboxes.set(client, state);
   return state;
@@ -87,6 +97,7 @@ async function collectFromInbox(client, peer, afterId, {
   quietMs = 900,
   waitForTarget = false,
   reconcileOnTimeout = false,
+  afterSequence = 0,
   onMessage,
 } = {}) {
   const state = inboxes.get(client);
@@ -97,7 +108,9 @@ async function collectFromInbox(client, peer, afterId, {
 
   const seen = new Map();
   for (const message of state.buffers.get(peerId) || []) {
-    if (!message?.out && Number(message.id || 0) > Number(afterId || 0)) {
+    const idIsNew = Number(message?.id || 0) > Number(afterId || 0);
+    const eventIsNew = Number(message?.__navazonInboxSeq || 0) > Number(afterSequence || 0);
+    if (!message?.out && (idIsNew || eventIsNew)) {
       seen.set(message.id, message);
     }
   }
@@ -137,8 +150,15 @@ async function collectFromInbox(client, peer, afterId, {
       peerId,
       push(message) {
         if (settled || message?.out) return;
-        if (Number(message.id || 0) <= Number(afterId || 0)) return;
-        if (seen.has(message.id)) return;
+        const idIsNew = Number(message.id || 0) > Number(afterId || 0);
+        const eventIsNew = Number(message?.__navazonInboxSeq || 0) > Number(afterSequence || 0);
+        if (!idIsNew && !eventIsNew) return;
+
+        const previous = seen.get(message.id);
+        if (
+          previous
+          && Number(previous?.__navazonInboxSeq || 0) >= Number(message?.__navazonInboxSeq || 0)
+        ) return;
 
         seen.set(message.id, message);
         if (typeof onMessage === 'function') {
@@ -230,6 +250,10 @@ export function createTelegramClient() {
     config.apiHash,
     { connectionRetries: 5 }
   );
+}
+
+export function getTelegramInboxSequence(client) {
+  return Number(inboxes.get(client)?.sequence || 0);
 }
 
 export async function latestMessageId(client, peer) {
