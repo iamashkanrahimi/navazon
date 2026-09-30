@@ -2394,7 +2394,6 @@ function isArtistNavigationSurface(message = {}, artist = '') {
   if (!buttons.length) return false;
 
   if (artistPickerItems(messages).length) return true;
-  if (inspectMeloBotAlbumListing(messages).confirmed) return true;
 
   const hasArtistControls = buttons.some(text => {
     const value = clean(text);
