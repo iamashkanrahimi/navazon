@@ -1376,6 +1376,11 @@ test('artist sorting records only the final reply keyboard as a live album surfa
     opened.liveAlbumSourceStateVersion,
     getMeloBotStateVersion()
   );
+  assert.equal(
+    opened.sourceStateVersion,
+    getMeloBotStateVersion(),
+    'top bulk button must carry the final sorted-page state token'
+  );
   assert.notEqual(opened.liveAlbumButton, '💿 stale albums');
 });
 
@@ -2050,6 +2055,11 @@ test('recent artist list can be recovered from the release-date sort surface', a
   assert.equal(resolved.route, 'artist_sort_direct_recent');
   assert.deepEqual(resolved.tracks.map(track => track.title), ['New One', 'New Two']);
   assert.equal(resolved.context.recentBulkHighButton, 'دانلود همه (عالی)');
+  assert.equal(
+    resolved.context.sourceStateVersion,
+    getMeloBotStateVersion(),
+    'recent bulk button must carry the final recent-page state token'
+  );
 });
 
 test('robust album opener falls back to a collaborator component when combined artist lookup misses', async () => {
