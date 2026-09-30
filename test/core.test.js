@@ -48,6 +48,7 @@ const {
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const {
   installTelegramInbox,
+  getTelegramInboxSequence,
   latestMessageId,
   collectNewMessages,
 } = await import('../src/mtproto.js');
