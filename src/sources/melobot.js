@@ -1922,8 +1922,8 @@ export async function inspectMeloBotTrack(client, candidate) {
     clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
   );
   const hasLyrics = menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
-  const hasArtistPage = menuButtons.some(text =>
-    /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+  const hasArtistPage = Boolean(
+    findArtistButtonFor(menuMessages, candidate?.artist || '')
   );
   const moreButton = menuButtons.find(text => /بیشتر/u.test(clean(text))) || null;
 
@@ -2012,7 +2012,29 @@ async function openMeloBotArtistBase(
     }
   }
 
-  if (!artistButton) {
+  let preOpenedArtistPage = null;
+  if (!artistButton && !remaining.expired()) {
+    // MeloBot search surfaces often expose the Artist as an icon-labeled
+    // button (for example "🗣 Ali Yasini") even when the Track menu does not.
+    const artistSearch = await sendAndCollect(client, effectiveSeed.artist, {
+      timeoutMs: Math.min(2500, remaining()),
+      quietMs: 650,
+      stopWhen: message => Boolean(
+        findArtistButtonFor([message], effectiveSeed.artist)
+      ),
+    });
+    artistButton = findArtistButtonFor(artistSearch.messages, effectiveSeed.artist);
+
+    if (!artistButton) {
+      const directTracks = parseTracksFromMessages(
+        artistSearch.messages,
+        effectiveSeed.artist
+      );
+      if (directTracks.length) preOpenedArtistPage = artistSearch;
+    }
+  }
+
+  if (!artistButton && !preOpenedArtistPage) {
     console.warn(
       '[melobot artist menu surface]',
       effectiveSeed?.artist || seedTrack?.artist || 'unknown',
@@ -2026,10 +2048,13 @@ async function openMeloBotArtistBase(
     throw new Error('MeloBot artist button not found.');
   }
   if (remaining.expired()) throw new Error('MeloBot artist navigation budget exhausted.');
-  let artistPage = await sendAndCollect(client, artistButton, {
-    timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
-    quietMs: 650,
-  });
+  let artistPage = preOpenedArtistPage || await (async () => {
+    await sleep(180);
+    return sendAndCollect(client, artistButton, {
+      timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+      quietMs: 650,
+    });
+  })();
 
   // Collaborative tracks can open an intermediate artist picker.
   const pickerButtons = artistPickerItems(artistPage.messages);
