@@ -459,6 +459,24 @@ export class CatalogStore {
     await this.writeArtist(key, node);
   }
 
+  async removeAlbum(name, albumTitle) {
+    const { key, node } = await this.readArtist(name);
+    if (!node) return false;
+
+    const albumKey = normalize(albumTitle);
+    if (!albumKey) return false;
+
+    node.albumList = (Array.isArray(node.albumList) ? node.albumList : [])
+      .filter(album => normalize(album?.title || '') !== albumKey);
+    if (node.albums && typeof node.albums === 'object') {
+      delete node.albums[albumKey];
+    }
+    node.albumsUpdatedAt = new Date().toISOString();
+    node.albumsEmptyConfirmedAt = null;
+    await this.writeArtist(key, node);
+    return true;
+  }
+
   async recordAlbumTracks(name, album, tracks = []) {
     const { key, node } = await this.readArtist(name);
     if (!node) return;
