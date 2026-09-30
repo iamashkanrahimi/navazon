@@ -1956,7 +1956,10 @@ export async function inspectMeloBotTrack(client, candidate) {
 async function openMeloBotArtistBase(
   client,
   seedTrack,
-  { timeoutMs = 9000 } = {}
+  {
+    timeoutMs = 9000,
+    allowArtistSearchFallback = true,
+  } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 9000);
   let openedMenu = await openTrackMenuWithCandidate(
@@ -2013,7 +2016,7 @@ async function openMeloBotArtistBase(
   }
 
   let preOpenedArtistPage = null;
-  if (!artistButton && !remaining.expired()) {
+  if (!artistButton && allowArtistSearchFallback && !remaining.expired()) {
     // MeloBot search surfaces often expose the Artist as an icon-labeled
     // button (for example "🗣 Ali Yasini") even when the Track menu does not.
     const artistSearch = await sendAndCollect(client, effectiveSeed.artist, {
