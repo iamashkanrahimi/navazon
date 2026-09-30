@@ -4316,7 +4316,7 @@ test('Artist-credit cache guard keeps real collaborations but rejects partial-na
   assert.equal(artistCreditMatchesContext('Sadegh & Shayea', 'Shayea & Sadegh'), true);
 });
 
-test('Catalog Artist context filters previously persisted wrong-artist rows', async () => {
+test('Catalog Artist context rejects a polluted snapshot instead of returning a partial page', async () => {
   const store = new CatalogStore();
   store.readArtist = async () => ({
     key: 'farhad',
@@ -4334,7 +4334,5 @@ test('Catalog Artist context filters previously persisted wrong-artist rows', as
   });
 
   const context = await store.getArtistContext('Farhad', 60_000);
-  assert.ok(context);
-  assert.deepEqual(context.topTracks.map(track => track.artist), ['Farhad']);
-  assert.deepEqual(context.topTracks.map(track => track.title), ['Gole Yakh']);
+  assert.equal(context, null);
 });
