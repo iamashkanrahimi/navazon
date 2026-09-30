@@ -8,6 +8,7 @@ import { createNonOverlappingScheduler } from './crawlerScheduler.js';
 import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { closeArchiveDb } from './archiveDb.js';
+import { seedAhangifyBestPilot } from './ahangifyPilot.js';
 
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
@@ -215,6 +216,12 @@ server.listen(config.port,'0.0.0.0',async () => {
       console.error('[archive import]', err?.stack || err?.message || err);
     }
     startMediaCacheWorker();
+    try {
+      const pilot = await seedAhangifyBestPilot(sourceQueue);
+      if (pilot?.enabled) console.log('[ahangify pilot] startup', JSON.stringify(pilot));
+    } catch (err) {
+      console.error('[ahangify pilot startup]', err?.stack || err?.message || err);
+    }
   })();
 
   try {
