@@ -31,6 +31,28 @@ import {
 const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
 const MAX_SOURCE_QUEUE = 30;
+const BULK_SOURCE_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
+
+function queueSessionSource(sessionId, session, job) {
+  return sourceQueue.push({
+    ...job,
+    sessionId,
+    userId: session?.userId,
+  });
+}
+
+function cancelQueuedBulkForUser(userId) {
+  const removed = sourceQueue.removeWhere(item =>
+    String(item?.userId || '') === String(userId || '')
+    && BULK_SOURCE_TYPES.has(item?.type)
+  );
+  if (removed.length) {
+    console.log(
+      `[queue supersede] user=${userId} removed_bulk=${removed.length}`
+    );
+  }
+  return removed.length;
+}
 
 function searchAllowed(userId) {
   const now = Date.now();
@@ -158,7 +180,7 @@ export async function handleUpdate(update) {
         session.busy = true;
         const feedKey = parts[2];
         await bot.editMessageText(session.chatId, messageId, 'در حال دریافت آهنگ‌ها…');
-        sourceQueue.push({ type: 'home_feed', sessionId, messageId, feedKey });
+        queueSessionSource(sessionId, session, { type: 'home_feed', messageId, feedKey });
       } else if (action === 'hpl') {
         session.busy = false;
         await bot.editMessageText(
@@ -176,9 +198,8 @@ export async function handleUpdate(update) {
           return;
         }
         await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن پلی‌لیست…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'home_playlist',
-          sessionId,
           messageId,
           playlistKey: playlist.key,
         });
@@ -204,7 +225,7 @@ export async function handleUpdate(update) {
         if (!session.followedArtists?.[index]) return;
         session.busy = true;
         await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({ type: 'home_artist', sessionId, messageId, index });
+        queueSessionSource(sessionId, session, { type: 'home_artist', messageId, index });
       } else if (action === 't') {
         const track = session.options[Number(parts[2])]; if (!track) return;
         session.currentTrack = track;
@@ -216,18 +237,16 @@ export async function handleUpdate(update) {
         const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'search_album',
-          sessionId,
           messageId,
           index: Number(parts[2]),
         });
       } else if (action === 'ar') {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'artist',
-          sessionId,
           messageId,
           seedIndex: Number(parts[2]),
         });
@@ -237,9 +256,8 @@ export async function handleUpdate(update) {
         if (!album?.artist) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'artist_from_album',
-          sessionId,
           messageId,
           albumIndex,
         });
@@ -324,7 +342,7 @@ export async function handleUpdate(update) {
             'top'
           ).catch(() => false);
           if (!openedLocal) {
-            sourceQueue.push({ type: 'artist_list', mode: 'top', sessionId, messageId });
+            queueSessionSource(sessionId, session, { type: 'artist_list', mode: 'top', messageId });
           }
         }
       } else if (action === 'arn' && session.artistContext) {
@@ -343,7 +361,7 @@ export async function handleUpdate(update) {
             'recent'
           ).catch(() => false);
           if (!openedLocal) {
-            sourceQueue.push({ type: 'artist_list', mode: 'recent', sessionId, messageId });
+            queueSessionSource(sessionId, session, { type: 'artist_list', mode: 'recent', messageId });
           }
         }
       } else if (action === 'ata' && session.artistContext?.topTracks?.length) {
@@ -358,7 +376,7 @@ export async function handleUpdate(update) {
           'top'
         ).catch(() => false);
         if (!servedLocal) {
-          sourceQueue.push({ type: 'download_top', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'download_top', messageId });
         }
       } else if (action === 'rta' && session.artistContext?.recentTracks?.length) {
         session.busy = true;
@@ -371,7 +389,7 @@ export async function handleUpdate(update) {
           'recent'
         ).catch(() => false);
         if (!servedLocal) {
-          sourceQueue.push({ type: 'download_recent', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'download_recent', messageId });
         }
       } else if (action === 'at') {
         const tracks = session.artistContext?.topTracks || [];
@@ -419,7 +437,7 @@ export async function handleUpdate(update) {
         if (servedFromCache) {
           if (session.busy) await openTrackPageLocal(sessionId, session, messageId);
         } else {
-          sourceQueue.push({ type: 'track_quality', sessionId, quality, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_quality', quality, messageId });
         }
       } else if (action === 'tly') {
         if (!session.currentTrack) return;
@@ -432,7 +450,7 @@ export async function handleUpdate(update) {
         if (servedLyrics) {
           await openTrackPageLocal(sessionId, session, messageId);
         } else {
-          sourceQueue.push({ type: 'track_lyrics', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_lyrics', messageId });
         }
       } else if (action === 'tcv') {
         if (!session.currentTrack) return;
@@ -445,7 +463,7 @@ export async function handleUpdate(update) {
         if (servedCover) {
           await openTrackPageLocal(sessionId, session, messageId);
         } else {
-          sourceQueue.push({ type: 'track_cover', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_cover', messageId });
         }
       } else if (action === 'tif') {
         if (!session.currentTrack) return;
@@ -469,7 +487,7 @@ export async function handleUpdate(update) {
           messageId
         ).catch(() => false);
         if (!openedLocal) {
-          sourceQueue.push({ type: 'track_artist', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_artist', messageId });
         }
       } else if (action === 'tal') {
         if (!session.currentTrack) return;
@@ -497,7 +515,7 @@ export async function handleUpdate(update) {
             }
           );
         } else {
-          sourceQueue.push({ type: 'track_album', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_album', messageId });
         }
       } else if (action === 'alb') {
         const page = Number(parts[2] || 0);
@@ -516,7 +534,7 @@ export async function handleUpdate(update) {
             page
           ).catch(() => false);
           if (!openedLocal) {
-            sourceQueue.push({ type: 'albums', sessionId, page, messageId });
+            queueSessionSource(sessionId, session, { type: 'albums', page, messageId });
           }
         }
       } else if (action === 'ao') {
@@ -529,7 +547,7 @@ export async function handleUpdate(update) {
           Number(parts[2])
         ).catch(() => false);
         if (!openedLocal) {
-          sourceQueue.push({ type: 'album', sessionId, index: Number(parts[2]), messageId });
+          queueSessionSource(sessionId, session, { type: 'album', index: Number(parts[2]), messageId });
         }
       } else if (action === 'apg') {
         if (!session.currentAlbum?.tracks?.length) return;
@@ -569,7 +587,7 @@ export async function handleUpdate(update) {
           'album'
         ).catch(() => false);
         if (!servedLocal) {
-          sourceQueue.push({ type: 'download_album', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'download_album', messageId });
         }
       }
     } finally {
@@ -608,6 +626,11 @@ export async function handleUpdate(update) {
     await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
     return;
   }
+  // A new explicit query supersedes queued bulk work from the same user.
+  // Removing only pending bulk jobs keeps the shared MeloBot lane responsive
+  // without cancelling another user's active request or ordinary navigation.
+  cancelQueuedBulkForUser(userId);
+
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
   const servedFromCache = await tryHandleCachedSearch(
     chatId,
