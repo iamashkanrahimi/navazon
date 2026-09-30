@@ -2227,7 +2227,7 @@ test('capability persistence stores positive evidence only and treats false as u
 });
 
 
-test('failed canonical lookup keeps an inferred artist unconfirmed', async () => {
+test('failed canonical lookup never promotes an inferred artist', async () => {
   const inferred = {
     ...parseTrackButton('🎵 Khalesaneh (feat. T-Dey)', 'T-Dey'),
     source: 'melobot',
@@ -2237,14 +2237,14 @@ test('failed canonical lookup keeps an inferred artist unconfirmed', async () =>
     'T-Dey Khalesaneh (feat. T-Dey)': [[fakeBotMessage('no result', [])]],
   });
 
-  const resolved = await resolveMeloBotTrackCandidate(
-    client,
-    inferred,
-    { timeoutMs: 30, forceIdentity: true }
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      inferred,
+      { timeoutMs: 30, forceIdentity: true }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
   );
-
-  assert.equal(resolved.artist, 'T-Dey');
-  assert.equal(resolved.artistInferred, true);
 });
 
 
