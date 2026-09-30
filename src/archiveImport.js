@@ -229,8 +229,7 @@ async function importMedia(db, base) {
   return count;
 }
 
-export async function runArchiveImportIfEnabled() {
-  if (!config.archiveImportOnce) return { skipped: true, reason: 'disabled' };
+async function importArchiveOnce() {
   assertImportConfig();
   const db = getArchiveDb();
   const base = config.archiveImportBaseUrl;
@@ -278,4 +277,24 @@ export async function runArchiveImportIfEnabled() {
   `, [JSON.stringify(value)]);
   console.log('[archive import] complete', JSON.stringify(value.database_counts));
   return value;
+}
+
+export async function runArchiveImportIfEnabled() {
+  if (!config.archiveImportOnce) return { skipped: true, reason: 'disabled' };
+
+  let attempt = 0;
+  while (config.archiveImportOnce) {
+    attempt += 1;
+    try {
+      return await importArchiveOnce();
+    } catch (err) {
+      const delayMs = 5 * 60 * 1000;
+      console.warn(
+        `[archive import] attempt=${attempt} failed: ${err?.message || err}; retrying in 5m`
+      );
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+
+  return { skipped: true, reason: 'disabled' };
 }
