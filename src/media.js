@@ -351,7 +351,10 @@ export async function searchPrimaryTyped(
             candidateTyped.tracks || []
           )
         ) {
-          typed ||= candidateTyped;
+          // Never retain an under-specified shortened result as the final
+          // answer. It is useful only as a cheap probe; if the full query and
+          // fallback source both fail, returning the base song would violate
+          // the user's explicit featured/collaboration intent.
           continue;
         }
 
