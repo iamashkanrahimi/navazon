@@ -2214,6 +2214,104 @@ test('query relevance matrix covers artist title collaboration and Persian album
 });
 
 
+test('query stress matrix prefers exact originals and respects requested variants', () => {
+  const cases = [
+    ['Ali Yasini Nade Ghol', [
+      { artist: 'Ali Yasini', title: 'Nade Ghol Remix' },
+      { artist: 'Ali Sorena', title: 'Nade Ghol' },
+      { artist: 'Ali Yasini', title: 'Nade Ghol' },
+    ], 'Nade Ghol'],
+    ['Ali Yasini Nade Ghol remix', [
+      { artist: 'Ali Yasini', title: 'Nade Ghol' },
+      { artist: 'Ali Yasini', title: 'Nade Ghol Remix' },
+    ], 'Nade Ghol Remix'],
+    ['Xaniar Shabe Mahtab feat Ehaam', [
+      { artist: 'Ehaam', title: 'Boghze Modaam' },
+      { artist: 'Xaniar', title: 'Shabe Mahtab (feat. Ehaam)' },
+      { artist: 'Xaniar', title: 'Shabe Mahtab (Sevenstoul Remix) (feat. Ehaam)' },
+    ], 'Shabe Mahtab (feat. Ehaam)'],
+    ['Xaniar Shabe Mahtab', [
+      { artist: 'Xaniar', title: 'Shabe Mahtab Remix' },
+      { artist: 'Xaniar', title: 'Shabe Mahtab Acoustic' },
+      { artist: 'Xaniar', title: 'Shabe Mahtab' },
+    ], 'Shabe Mahtab'],
+    ['Xaniar Shabe Mahtab live', [
+      { artist: 'Xaniar', title: 'Shabe Mahtab' },
+      { artist: 'Xaniar', title: 'Shabe Mahtab Live' },
+    ], 'Shabe Mahtab Live'],
+    ['Ehaam Boghze Modaam', [
+      { artist: 'Xaniar', title: 'Shabe Mahtab (feat. Ehaam)' },
+      { artist: 'Ehaam', title: 'Boghze Modaam' },
+    ], 'Boghze Modaam'],
+    ['Bahram 24 Saat', [
+      { artist: 'Reza Bahram', title: 'Gole Eshgh' },
+      { artist: 'Bahram', title: '24 Saat' },
+    ], '24 Saat'],
+    ['Zedbazi Tabestoon Kootahe', [
+      { artist: 'Zedbazi', title: 'Tabestoon Kootahe' },
+      { artist: 'Zedbazi', title: 'Tabestoon Kootahe Remix' },
+    ], 'Tabestoon Kootahe'],
+    ['Sirvan Khosravi Doost Daram Zendegiro', [
+      { artist: 'Sirvan Khosravi', title: 'Doost Daram Zendegiro' },
+      { artist: 'Sirvan Khosravi', title: 'Doost Daram Zendegiro Live' },
+    ], 'Doost Daram Zendegiro'],
+    ['Masih & Arash AP - Goli', [
+      { artist: 'Masih & Arash AP', title: 'Goli' },
+      { artist: 'Masih', title: 'Goli Remix' },
+    ], 'Goli'],
+    ['Mohsen Chavoshi Kojaei', [
+      { artist: 'Mohsen Chavoshi', title: 'Kojaei' },
+      { artist: 'Mohsen Yeganeh', title: 'Kojaei' },
+    ], 'Kojaei'],
+    ['رضا بهرام یار', [
+      { artist: 'رضا بهرام', title: 'یار ریمیکس' },
+      { artist: 'رضا بهرام', title: 'یار' },
+    ], 'یار'],
+    ['بهرام ۲۴ ساعت', [
+      { artist: 'رضا بهرام', title: 'گل عشق' },
+      { artist: 'بهرام', title: '24 ساعت' },
+    ], '24 ساعت'],
+    ['هیچکس یه روز خوب میاد', [
+      { artist: 'هیچکس', title: 'یه روز خوب میاد' },
+      { artist: 'هیچکس', title: 'یه روز خوب میاد ریمیکس' },
+    ], 'یه روز خوب میاد'],
+  ];
+
+  for (const [query, tracks, expectedTitle] of cases) {
+    const ranked = rankTracksForQuery(query, tracks);
+    assert.equal(ranked[0]?.track?.title, expectedTitle, query);
+  }
+});
+
+test('query normalization stress handles Persian Arabic keyboard digits and punctuation', () => {
+  const equivalents = [
+    ['بهرام ۲۴ ساعت', 'بهرام 24 ساعت'],
+    ['علي ياسيني', 'علی یاسینی'],
+    ['آلبوم‌های هیچکس', 'آلبوم های هیچکس'],
+    ['Masih & Arash AP - Goli', 'masih arash ap goli'],
+    ['Reza   Bahram — Yar', 'reza bahram yar'],
+  ];
+
+  for (const [left, right] of equivalents) {
+    assert.equal(normalizeText(left), normalizeText(right), `${left} <> ${right}`);
+  }
+});
+
+test('full-coverage stress filters false positives without dropping requested variants', () => {
+  const exact = keepFullCoverageTracksWhenAvailable('Ali Yasini Nade Ghol', [
+    { artist: 'Ali Yasini', title: 'Nade Ghol' },
+    { artist: 'Ali Yasini', title: 'Nade' },
+    { artist: 'Ali Sorena', title: 'Nade Ghol' },
+  ]);
+  assert.deepEqual(exact.map(track => track.title), ['Nade Ghol']);
+
+  const remix = keepFullCoverageTracksWhenAvailable('Ali Yasini Nade Ghol Remix', [
+    { artist: 'Ali Yasini', title: 'Nade Ghol' },
+    { artist: 'Ali Yasini', title: 'Nade Ghol Remix' },
+  ]);
+  assert.equal(remix[0].title, 'Nade Ghol Remix');
+});
+
 test('track-specific collaboration queries do not offer a misleading dominant Artist shortcut', () => {
   const keyboard = resultsKeyboard('rel1', {
     query: 'Shayea Ma Ft T-Dey',
