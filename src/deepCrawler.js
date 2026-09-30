@@ -100,12 +100,6 @@ async function seedTracks(tracks, priority, context = {}) {
         feed: context.feed,
         album: context.album,
       });
-      await deepCatalog.seedTrackTasks(track, {
-        priority,
-        preferBulk: Boolean(context.preferBulk),
-        includeMedia: false,
-        includeEnrichment: false,
-      });
     }));
   }
 }
@@ -652,15 +646,8 @@ async function runArtistProfile(task) {
   await deepCatalog.setArtistList(live.artist, 'recent', recent);
   await deepCatalog.setArtistList(live.artist, 'top', top);
 
-  // Prefer one native MeloBot bulk click over ten individual media tasks.
-  await seedTracks(recent, 104, {
-    discoveredFrom: `artist_recent:${live.artist}`,
-    preferBulk: true,
-  });
-  await seedTracks(top, 100, {
-    discoveredFrom: `artist_top:${live.artist}`,
-    preferBulk: true,
-  });
+  // setArtistList already persists these tracks. Avoid a second write pass while
+  // the serialized source queue is occupied.
 
   // Background Artist discovery is metadata-only. Media warming is suspended
   // because MeloBot is a single stateful lane and bulk/media tasks cannot be
@@ -781,11 +768,8 @@ async function runAlbumDetail(task) {
   }
   await catalog.recordAlbumTracks(resolved.artist, target, tracks);
   await deepCatalog.setAlbumTracks(resolved.artist, target, tracks);
-  await seedTracks(tracks, 84, {
-    discoveredFrom: `album:${target.title}`,
-    album: target.title,
-    preferBulk: true,
-  });
+  // setAlbumTracks already persists the album tracks; do not write them twice
+  // while this background task owns the serialized source queue.
 
   // Keep background Album discovery metadata-only. User-triggered downloads
   // populate HQ/Normal caches lazily without blocking the source lane.
