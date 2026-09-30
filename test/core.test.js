@@ -78,6 +78,7 @@ const {
   BUSY_SESSION_TTL_MS,
 } = await import('../src/ui.js');
 const { CURATED_PLAYLISTS, HOME_FEEDS } = await import('../src/homeCatalog.js');
+const { createNonOverlappingScheduler } = await import('../src/crawlerScheduler.js');
 const {
   normalizeText,
   hasAlbumIntent,
@@ -170,6 +171,57 @@ class FakeEventTelegramClient {
     return msg;
   }
 }
+
+test('internal crawler scheduler never overlaps ticks', async () => {
+  let release;
+  let calls = 0;
+  const first = new Promise(resolve => { release = resolve; });
+  const logs = [];
+
+  const scheduler = createNonOverlappingScheduler(
+    async () => {
+      calls += 1;
+      await first;
+      return { queued: false, reason: 'no_candidate' };
+    },
+    {
+      intervalMs: 30_000,
+      logger: {
+        log: message => logs.push(message),
+        warn: message => logs.push(message),
+      },
+    }
+  );
+
+  const active = scheduler.tick('test-a');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const skipped = await scheduler.tick('test-b');
+
+  assert.equal(calls, 1);
+  assert.deepEqual(skipped, { skipped: true, reason: 'tick_in_progress' });
+  assert.equal(scheduler.isRunning(), true);
+
+  release();
+  await active;
+  assert.equal(scheduler.isRunning(), false);
+  assert.ok(logs.some(line => line.includes('tick_in_progress')));
+});
+
+test('internal crawler scheduler start and stop are idempotent', () => {
+  const scheduler = createNonOverlappingScheduler(
+    async () => ({ queued: false, reason: 'disabled' }),
+    { intervalMs: 30_000 }
+  );
+
+  const firstTimer = scheduler.start();
+  const secondTimer = scheduler.start();
+  assert.equal(firstTimer, secondTimer);
+  assert.equal(scheduler.isStarted(), true);
+
+  scheduler.stop();
+  scheduler.stop();
+  assert.equal(scheduler.isStarted(), false);
+});
 
 test('MeloBot parser extracts artist, title and popularity', () => {
   const track = parseTrackButton('🎵 Shadmehr, Taghdir x 1.6M');
