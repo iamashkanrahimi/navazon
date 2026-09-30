@@ -288,9 +288,14 @@ export async function runArchiveImportIfEnabled() {
     try {
       return await importArchiveOnce();
     } catch (err) {
-      const delayMs = 5 * 60 * 1000;
+      const message = String(err?.message || err);
+      const manifestMissing = /manifest\.json: HTTP 404/i.test(message);
+      const delayMs = manifestMissing
+        ? 30 * 60 * 1000
+        : 5 * 60 * 1000;
+      const label = manifestMissing ? '30m' : '5m';
       console.warn(
-        `[archive import] attempt=${attempt} failed: ${err?.message || err}; retrying in 5m`
+        `[archive import] attempt=${attempt} failed: ${message}; retrying in ${label}`
       );
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
