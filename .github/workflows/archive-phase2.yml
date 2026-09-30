@@ -35,8 +35,6 @@ jobs:
           github-token: ${{ github.token }}
       - name: Extract Artist and Album candidates
         run: node src/phase2-extract.js --in ./runtime/final/rj-tracks.jsonl.gz --out ./runtime/phase2
-      - name: Syntax check Phase 2
-        run: node --check src/phase2-pages.js && node --check src/phase2-extract.js && node --check src/phase2-pilot.js
       - name: Resolve and crawl Phase 2 pilot
         run: node src/phase2-pilot.js --in ./runtime/phase2 --out ./out/phase2-pilot
       - name: Upload Phase 2 pilot
@@ -47,4 +45,182 @@ jobs:
           path: |
             archive-builder/runtime/phase2/extract-summary.json
             archive-builder/out/phase2-pilot
+          retention-days: 30
+
+  gate:
+    if: contains(github.event.head_commit.message, '[phase2-run]')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download completed Song Crawl artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rj-full-final
+          path: archive-builder/runtime/final
+          run-id: 36646058761
+          github-token: ${{ github.token }}
+      - name: Extract fixed Phase 2 candidates
+        run: node src/phase2-extract.js --in ./runtime/final/rj-tracks.jsonl.gz --out ./runtime/phase2
+      - name: Check Phase 2 scripts
+        run: node --check src/phase2-pages.js && node --check src/phase2-extract.js && node --check src/phase2-artist-shard.js && node --check src/phase2-merge-artists.js && node --check src/phase2-build-albums.js && node --check src/phase2-album-shard.js && node --check src/phase2-merge-albums.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-candidates
+          path: archive-builder/runtime/phase2
+          retention-days: 30
+
+  artists:
+    needs: gate
+    if: needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63]
+    defaults:
+      run:
+        working-directory: archive-builder
+    env:
+      RJ_PHASE2_DELAY_MS: '1400'
+      RJ_PHASE2_TIMEOUT_MS: '20000'
+      RJ_PHASE2_MAX_ATTEMPTS: '3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-candidates
+          path: archive-builder/runtime/phase2
+      - name: Crawl Artist shard
+        run: node src/phase2-artist-shard.js --in ./runtime/phase2/artist-candidates.jsonl --out ./out/artists --shard ${{ matrix.shard }} --shards 64
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-phase2-artist-${{ matrix.shard }}
+          path: archive-builder/out/artists
+          retention-days: 30
+
+  merge-artists:
+    needs: [gate, artists]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rj-phase2-artist-*
+          path: archive-builder/artifacts/artists
+      - name: Merge Artist crawl and build sitemap
+        run: node src/phase2-merge-artists.js --in ./artifacts/artists --out ./out/artists-final
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-artists-final
+          path: archive-builder/out/artists-final
+          retention-days: 30
+
+  album-prep:
+    needs: [gate, merge-artists]
+    if: needs.merge-artists.result == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-candidates
+          path: archive-builder/runtime/phase2
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-artists-final
+          path: archive-builder/runtime/artists-final
+      - name: Combine Track albums with Artist-discovered albums
+        run: node src/phase2-build-albums.js --tracks ./runtime/phase2/album-candidates.jsonl --discovered ./runtime/artists-final/discovered-album-urls.txt --out ./runtime/phase2/all-album-candidates.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-album-plan
+          path: archive-builder/runtime/phase2/all-album-candidates.jsonl
+          retention-days: 30
+
+  albums:
+    needs: album-prep
+    if: needs.album-prep.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+    defaults:
+      run:
+        working-directory: archive-builder
+    env:
+      RJ_PHASE2_DELAY_MS: '1400'
+      RJ_PHASE2_TIMEOUT_MS: '20000'
+      RJ_PHASE2_MAX_ATTEMPTS: '3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-album-plan
+          path: archive-builder/runtime/phase2
+      - name: Crawl Album shard
+        run: node src/phase2-album-shard.js --in ./runtime/phase2/all-album-candidates.jsonl --out ./out/albums --shard ${{ matrix.shard }} --shards 32
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-phase2-album-${{ matrix.shard }}
+          path: archive-builder/out/albums
+          retention-days: 30
+
+  merge-final:
+    needs: [merge-artists, albums]
+    if: always() && needs.merge-artists.result == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-artists-final
+          path: archive-builder/out/final/artists
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rj-phase2-album-*
+          path: archive-builder/artifacts/albums
+      - name: Merge Album crawl and build sitemap
+        run: node src/phase2-merge-albums.js --in ./artifacts/albums --out ./out/final/albums
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-phase2-final
+          path: archive-builder/out/final
           retention-days: 30
