@@ -4221,10 +4221,12 @@ test('stale Artist seed recovers through one direct search row without repeating
 test('Track recovery follows one exact nested source row before declaring menu timeout', async () => {
   const staleRow = '🎵 Farhad, Ayneha x 1M';
   const freshRow = '🎵 Farhad, Ayneha x 1.1M';
+  const nestedRow = '🎵 Farhad, Ayneha x 1.2M';
   const hq = '📥 کیفیت عالی';
   const client = new FakeTelegramClient({
     'Farhad Ayneha': [[fakeBotMessage('results', [freshRow])]],
-    [freshRow]: [[fakeBotMessage('track menu', [hq, '📥 کیفیت معمولی', 'بیشتر...'])]],
+    [freshRow]: [[fakeBotMessage('refined results', [nestedRow])]],
+    [nestedRow]: [[fakeBotMessage('track menu', [hq, '📥 کیفیت معمولی', 'بیشتر...'])]],
     [hq]: [[{
       message: '',
       media: {
@@ -4244,9 +4246,9 @@ test('Track recovery follows one exact nested source row before declaring menu t
       sourceStateVersion: 1,
     },
     'hq',
-    { timeoutMs: 1500, menuTimeoutMs: 500, deliveryTimeoutMs: 500 }
+    { timeoutMs: 1800, menuTimeoutMs: 600, deliveryTimeoutMs: 500 }
   );
 
   assert.ok(result.audioMessage);
-  assert.deepEqual(client.sent, ['Farhad Ayneha', freshRow, hq]);
+  assert.deepEqual(client.sent, ['Farhad Ayneha', freshRow, nestedRow, hq]);
 });
