@@ -1,6 +1,6 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
-import { cleanText, normalizeText } from './text.js';
+import { cleanText, normalizeText, stableSourceTrackVariant } from './text.js';
 
 function clean(value = '') {
   return cleanText(value);
@@ -28,7 +28,14 @@ function markLegacyInferredArtist(track = {}) {
 }
 
 function trackIdentity(track = {}) {
-  return [normalize(track.artist), normalize(track.title), normalize(track.rawText || track.cmd || '')].join('|');
+  const sourceVariant = track.rawText
+    ? stableSourceTrackVariant(track.rawText)
+    : normalize(track.cmd || '');
+  return [
+    normalize(track.artist),
+    normalize(track.title),
+    sourceVariant,
+  ].join('|');
 }
 
 function looksLikeAlbumRowButton(value = '') {

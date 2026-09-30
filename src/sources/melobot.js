@@ -210,14 +210,32 @@ function stripFeedRankPrefix(value = '') {
     .trim();
 }
 
+function metricSuffixMatch(value = '') {
+  return clean(value).match(
+    /\s+x\s+(<\s*)?(\d+(?:\.\d+)?)\s*([kKmMgG])?(\s*[.…]+)?\s*$/u
+  );
+}
+
 function parsePopularity(value = '') {
-  const text = clean(value);
-  const match = text.match(/\s+x\s+(\d+(?:\.\d+)?)\s*([kKmMgG])?\s*$/u);
+  const match = metricSuffixMatch(value);
   if (!match) return { text: undefined, count: undefined };
-  const raw = `${match[1]}${match[2] || ''}`;
-  const amount = Number(match[1]);
-  const unit = (match[2] || '').toLowerCase();
-  const multiplier = unit === 'k' ? 1_000 : unit === 'm' ? 1_000_000 : unit === 'g' ? 1_000_000_000 : 1;
+
+  const isUpperBound = Boolean(match[1]);
+  const isTruncated = Boolean(match[4]);
+  const raw = `${isUpperBound ? '<' : ''}${match[2]}${match[3] || ''}${isTruncated ? '…' : ''}`;
+  if (isUpperBound || isTruncated) {
+    return { text: raw, count: undefined };
+  }
+
+  const amount = Number(match[2]);
+  const unit = (match[3] || '').toLowerCase();
+  const multiplier = unit === 'k'
+    ? 1_000
+    : unit === 'm'
+      ? 1_000_000
+      : unit === 'g'
+        ? 1_000_000_000
+        : 1;
   return {
     text: raw,
     count: Number.isFinite(amount) ? Math.round(amount * multiplier) : undefined,
@@ -225,9 +243,10 @@ function parsePopularity(value = '') {
 }
 
 function stripMetricSuffix(value = '') {
-  return clean(value)
-    .replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '')
-    .trim();
+  const text = clean(value);
+  const match = metricSuffixMatch(text);
+  if (!match) return text;
+  return clean(text.slice(0, match.index));
 }
 
 export function replyButtons(message) {
@@ -825,7 +844,14 @@ export async function searchMeloBotTyped(client, query, {
 
     const result = await sendAndCollect(client, command, {
       timeoutMs: remaining(),
-      quietMs: 650,
+      quietMs: 350,
+      stopWhen: message => {
+        const surface = parseMeloBotSearchSurface([message], fallbackArtist);
+        if (surface.tracks.length || surface.albums.length) return true;
+        return Boolean(chooseMeloBotSearchRefinement([message], requested));
+      },
+      waitForTarget: true,
+      reconcileOnTimeout: true,
     });
     allMessages.push(...(result.messages || []));
 
@@ -1378,6 +1404,66 @@ function photoMessage(message) {
   return Boolean(message?.media?.photo);
 }
 
+function isMoreMenuSurface(message = {}) {
+  // Do not stop on the explanatory text alone. MeloBot can send the text
+  // first and attach/edit the reply keyboard a moment later. A keyboard plus
+  // the More-menu prompt is enough to confirm the submenu even when a
+  // particular capability (for example Cover) is genuinely absent.
+  const buttons = replyButtons(message);
+  if (!buttons.length) return false;
+  if (buttons.some(text =>
+    /کاور|بقیه\s*مشخصات|مشخصات|متن\s*آهنگ/u.test(clean(text))
+  )) return true;
+
+  return /اینجا\s+امکانات\s+بیشتری|امکانات\s+بیشتری/u.test(
+    messageText(message)
+  );
+}
+
+async function openMoreMenuFromSurface(
+  client,
+  menuMessages = [],
+  {
+    timeoutMs = 3000,
+    capability = 'more',
+  } = {}
+) {
+  const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
+  if (!moreButton) {
+    throw meloError(
+      'MELOBOT_MORE_BUTTON_ABSENT',
+      'MeloBot more button not found.',
+      { capability }
+    );
+  }
+
+  await sleep(180);
+  const more = await sendAndCollect(client, moreButton, {
+    timeoutMs: Math.max(500, Number(timeoutMs || 3000)),
+    quietMs: 650,
+    stopWhen: isMoreMenuSurface,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    onMessage: message => {
+      console.log('[melobot.more.incoming]', JSON.stringify({
+        ...describeTargetMessage(message),
+        text: messageText(message).slice(0, 80),
+        buttons: replyButtons(message).slice(0, 8),
+      }));
+    },
+  });
+
+  if (!more.messages?.length || !more.messages.some(isMoreMenuSurface)) {
+    throw meloError(
+      'MELOBOT_SUBMENU_TIMEOUT',
+      'MeloBot more submenu did not reach a confirmed surface.',
+      { capability }
+    );
+  }
+
+  return more.messages;
+}
+
 async function openMoreMenu(
   client,
   candidate,
@@ -1389,14 +1475,12 @@ async function openMoreMenu(
     candidate,
     { timeoutMs: remaining() }
   )).messages;
-  const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
-  if (!moreButton) throw new Error('MeloBot more button not found.');
 
-  const more = await sendAndCollect(client, moreButton, {
-    timeoutMs: remaining(),
-    quietMs: 600,
-  });
-  return more.messages;
+  return openMoreMenuFromSurface(
+    client,
+    menuMessages,
+    { timeoutMs: remaining() }
+  );
 }
 
 export function sanitizeMeloBotLyricsText(raw = '', candidate = {}) {
@@ -1454,20 +1538,18 @@ export async function getMeloBotLyrics(
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
-      await sleep(180);
-      await sleep(180);
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
-        quietMs: 900,
-      });
-      if (!more.messages?.length) {
-        throw meloError(
-          'MELOBOT_SUBMENU_TIMEOUT',
-          'MeloBot lyrics submenu returned no response.',
-          { capability: 'hasLyrics' }
-        );
-      }
-      lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        menuMessages,
+        {
+          timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
+          capability: 'hasLyrics',
+        }
+      );
+      lyricsButton = findButton(
+        moreMessages,
+        text => /متن\s*آهنگ/u.test(clean(text))
+      );
     }
   }
 
@@ -1583,11 +1665,14 @@ export async function getMeloBotTrackMetadata(
   if (!detailsButton) {
     const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 600,
-      });
-      surface = more.messages;
+      surface = await openMoreMenuFromSurface(
+        client,
+        trackMenu,
+        {
+          timeoutMs: remaining(),
+          capability: 'hasMetadata',
+        }
+      );
       detailsButton = findButton(
         surface,
         text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
@@ -1652,18 +1737,15 @@ export async function getMeloBotCover(
       console.log(
         `[melobot.cover] stage=more_found track=${JSON.stringify(trackLabel(liveCandidate))}`
       );
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
-        quietMs: 900,
-      });
-      if (!more.messages?.length) {
-        throw meloError(
-          'MELOBOT_SUBMENU_TIMEOUT',
-          'MeloBot cover submenu returned no response.',
-          { capability: 'hasCover' }
-        );
-      }
-      coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        trackMenu,
+        {
+          timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
+          capability: 'hasCover',
+        }
+      );
+      coverButton = findButton(moreMessages, text => /کاور/u.test(clean(text)));
     }
   }
 
@@ -1766,8 +1848,8 @@ export async function enrichMeloBotTrack(
       hasLyrics: menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text))),
       hasCover: menuButtons.some(text => /کاور/u.test(clean(text))),
       hasMetadata: menuButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))),
-      hasArtistPage: menuButtons.some(text =>
-        /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+      hasArtistPage: Boolean(
+        findArtistButtonFor(menuMessages, liveCandidate.artist || candidate?.artist || '')
       ),
     },
     errors: [],
@@ -1780,16 +1862,20 @@ export async function enrichMeloBotTrack(
 
   if (moreButton && !remaining.expired()) {
     try {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 550,
-      });
-      if (!more.messages?.length) {
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        menuMessages,
+        {
+          timeoutMs: remaining(),
+          capability: 'track_enrich',
+        }
+      );
+      if (!moreMessages?.length) {
         result.errors.push('more: empty response');
       } else {
         secondaryMenuConfirmed = true;
-        extraMessages = more.messages;
-        const moreButtons = buttonsFromMessages(more.messages);
+        extraMessages = moreMessages;
+        const moreButtons = buttonsFromMessages(moreMessages);
         result.capabilities.hasCover ||= moreButtons.some(text => /کاور/u.test(clean(text)));
         result.capabilities.hasMetadata ||= moreButtons.some(text =>
           /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
@@ -1921,7 +2007,7 @@ export async function inspectMeloBotTrack(client, candidate) {
   const hasNormal = menuButtons.some(text =>
     clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
   );
-  const hasLyrics = menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
+  let hasLyrics = menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
   const hasArtistPage = Boolean(
     findArtistButtonFor(menuMessages, candidate?.artist || '')
   );
@@ -1931,13 +2017,18 @@ export async function inspectMeloBotTrack(client, candidate) {
   let hasMetadata = false;
   if (moreButton) {
     try {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: config.searchTimeoutMs,
-        quietMs: 550,
-      });
-      const moreButtons = buttonsFromMessages(more.messages);
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        menuMessages,
+        {
+          timeoutMs: Math.min(config.searchTimeoutMs, 3000),
+          capability: 'inspect_track',
+        }
+      );
+      const moreButtons = buttonsFromMessages(moreMessages);
       hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
       hasMetadata = moreButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text)));
+      hasLyrics ||= moreButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
     } catch (err) {
       console.warn('[melobot inspect more]', err.message);
     }
@@ -2627,10 +2718,12 @@ export async function downloadMeloBotBulkTracks(client, {
           Math.max(Number(config.downloadTimeoutMs || 30000), 1000),
           30000
         ),
-    quietMs: expectedCount > 20 ? 12000 : 8000,
+    quietMs: expectedCount > 0 ? 650 : 900,
     stopWhenBatch: expectedCount > 0
       ? messages => messages.filter(isAudioMessage).length >= expectedCount
       : undefined,
+    waitForTarget: expectedCount > 0,
+    reconcileOnTimeout: true,
   });
 
   const audios = download.messages.filter(isAudioMessage).map(audioMeta);
@@ -3506,7 +3599,7 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
           allowEmpty,
           maxAlbums,
           skipDirectFallback: true,
-          timeoutMs: Math.min(4500, Math.max(3000, Number(directTimeoutMs || 4500))),
+          timeoutMs: Math.min(4500, Math.max(1800, Number(directTimeoutMs || 4500))),
         }
       );
       return {

@@ -1,6 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { bot, bridge, follows, sessions } from './runtime.js';
-import { sourceQueue, showResults } from './jobs.js';
+import {
+  sourceQueue,
+  showResults,
+  tryHandleCachedSearch,
+  tryOpenTrackArtistLocal,
+  tryOpenArtistListLocal,
+  tryOpenAlbumsLocal,
+  tryOpenAlbumLocal,
+  tryDeliverBulkFromCacheLocal,
+} from './jobs.js';
 import {
   SESSION_TTL_MS, BUSY_SESSION_TTL_MS, TOP_TRACKS_LIMIT,
   homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
@@ -14,6 +23,9 @@ import {
   getTrackInfoText,
   renderTrackPage,
   trySendCachedTrackQuality,
+  trySendCachedTrackLyrics,
+  trySendCachedTrackCover,
+  getTrackAlbum,
 } from './trackActions.js';
 
 const lastSearchAt = new Map();
@@ -305,7 +317,15 @@ export async function handleUpdate(update) {
         } else {
           session.busy = true;
           await bot.editMessageText(session.chatId,messageId,'در حال دریافت پربازدیدترین آثار…');
-          sourceQueue.push({ type: 'artist_list', mode: 'top', sessionId, messageId });
+          const openedLocal = await tryOpenArtistListLocal(
+            sessionId,
+            session,
+            messageId,
+            'top'
+          ).catch(() => false);
+          if (!openedLocal) {
+            sourceQueue.push({ type: 'artist_list', mode: 'top', sessionId, messageId });
+          }
         }
       } else if (action === 'arn' && session.artistContext) {
         const tracks = session.artistContext.recentTracks || [];
@@ -316,19 +336,43 @@ export async function handleUpdate(update) {
         } else {
           session.busy = true;
           await bot.editMessageText(session.chatId,messageId,'در حال دریافت جدیدترین آثار…');
-          sourceQueue.push({ type: 'artist_list', mode: 'recent', sessionId, messageId });
+          const openedLocal = await tryOpenArtistListLocal(
+            sessionId,
+            session,
+            messageId,
+            'recent'
+          ).catch(() => false);
+          if (!openedLocal) {
+            sourceQueue.push({ type: 'artist_list', mode: 'recent', sessionId, messageId });
+          }
         }
       } else if (action === 'ata' && session.artistContext?.topTracks?.length) {
         session.busy = true;
         const tracks = session.artistContext.topTracks || [];
         const count = Math.min(TOP_TRACKS_LIMIT,tracks.length);
         await bot.editMessageText(session.chatId,messageId,`در حال دریافت ${count} آهنگ برتر…`);
-        sourceQueue.push({ type: 'download_top', sessionId, messageId });
+        const servedLocal = await tryDeliverBulkFromCacheLocal(
+          sessionId,
+          session,
+          messageId,
+          'top'
+        ).catch(() => false);
+        if (!servedLocal) {
+          sourceQueue.push({ type: 'download_top', sessionId, messageId });
+        }
       } else if (action === 'rta' && session.artistContext?.recentTracks?.length) {
         session.busy = true;
         const count = Math.min(TOP_TRACKS_LIMIT,session.artistContext.recentTracks.length);
         await bot.editMessageText(session.chatId,messageId,`در حال دریافت ${count} آهنگ جدید…`);
-        sourceQueue.push({ type: 'download_recent', sessionId, messageId });
+        const servedLocal = await tryDeliverBulkFromCacheLocal(
+          sessionId,
+          session,
+          messageId,
+          'recent'
+        ).catch(() => false);
+        if (!servedLocal) {
+          sourceQueue.push({ type: 'download_recent', sessionId, messageId });
+        }
       } else if (action === 'at') {
         const tracks = session.artistContext?.topTracks || [];
         const track = tracks[Number(parts[2])]; if (!track) return;
@@ -381,12 +425,28 @@ export async function handleUpdate(update) {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال دریافت متن…');
-        sourceQueue.push({ type: 'track_lyrics', sessionId, messageId });
+        const servedLyrics = await trySendCachedTrackLyrics(
+          session.chatId,
+          session.currentTrack
+        ).catch(() => false);
+        if (servedLyrics) {
+          await openTrackPageLocal(sessionId, session, messageId);
+        } else {
+          sourceQueue.push({ type: 'track_lyrics', sessionId, messageId });
+        }
       } else if (action === 'tcv') {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال دریافت کاور…');
-        sourceQueue.push({ type: 'track_cover', sessionId, messageId });
+        const servedCover = await trySendCachedTrackCover(
+          session.chatId,
+          session.currentTrack
+        ).catch(() => false);
+        if (servedCover) {
+          await openTrackPageLocal(sessionId, session, messageId);
+        } else {
+          sourceQueue.push({ type: 'track_cover', sessionId, messageId });
+        }
       } else if (action === 'tif') {
         if (!session.currentTrack) return;
         session.busy = true;
@@ -403,12 +463,42 @@ export async function handleUpdate(update) {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({ type: 'track_artist', sessionId, messageId });
+        const openedLocal = await tryOpenTrackArtistLocal(
+          sessionId,
+          session,
+          messageId
+        ).catch(() => false);
+        if (!openedLocal) {
+          sourceQueue.push({ type: 'track_artist', sessionId, messageId });
+        }
       } else if (action === 'tal') {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
-        sourceQueue.push({ type: 'track_album', sessionId, messageId });
+        const albumData = await getTrackAlbum(session.currentTrack).catch(() => null);
+        if (albumData?.album && albumData.tracks?.length) {
+          session.albumOriginTrack = session.currentTrack;
+          session.albumOriginBack = session.trackBack;
+          session.currentAlbum = { ...albumData.album, tracks: albumData.tracks };
+          session.currentAlbumView = 'track';
+          session.albumTrackPage = 0;
+          session.busy = false;
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            `💿 ${albumData.album.title}\n${albumData.album.artist || session.currentTrack.artist}`,
+            {
+              reply_markup: trackAlbumKeyboard(
+                sessionId,
+                albumData.album,
+                albumData.tracks,
+                0
+              ),
+            }
+          );
+        } else {
+          sourceQueue.push({ type: 'track_album', sessionId, messageId });
+        }
       } else if (action === 'alb') {
         const page = Number(parts[2] || 0);
         if (session.albums) {
@@ -419,12 +509,28 @@ export async function handleUpdate(update) {
         } else {
           session.busy = true;
           await bot.editMessageText(session.chatId,messageId,'در حال دریافت آلبوم‌ها…');
-          sourceQueue.push({ type: 'albums', sessionId, page, messageId });
+          const openedLocal = await tryOpenAlbumsLocal(
+            sessionId,
+            session,
+            messageId,
+            page
+          ).catch(() => false);
+          if (!openedLocal) {
+            sourceQueue.push({ type: 'albums', sessionId, page, messageId });
+          }
         }
       } else if (action === 'ao') {
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
-        sourceQueue.push({ type: 'album', sessionId, index: Number(parts[2]), messageId });
+        const openedLocal = await tryOpenAlbumLocal(
+          sessionId,
+          session,
+          messageId,
+          Number(parts[2])
+        ).catch(() => false);
+        if (!openedLocal) {
+          sourceQueue.push({ type: 'album', sessionId, index: Number(parts[2]), messageId });
+        }
       } else if (action === 'apg') {
         if (!session.currentAlbum?.tracks?.length) return;
         session.albumTrackPage = Math.max(0, Number(parts[2] || 0));
@@ -456,7 +562,15 @@ export async function handleUpdate(update) {
         session.busy = true;
         const count = session.currentAlbum.tracks.length;
         await bot.editMessageText(session.chatId,messageId,`در حال دریافت یکجای آلبوم (${count} آهنگ)…`);
-        sourceQueue.push({ type: 'download_album', sessionId, messageId });
+        const servedLocal = await tryDeliverBulkFromCacheLocal(
+          sessionId,
+          session,
+          messageId,
+          'album'
+        ).catch(() => false);
+        if (!servedLocal) {
+          sourceQueue.push({ type: 'download_album', sessionId, messageId });
+        }
       }
     } finally {
       session.expiresAt = Date.now() + (session.busy ? BUSY_SESSION_TTL_MS : SESSION_TTL_MS);
@@ -494,10 +608,28 @@ export async function handleUpdate(update) {
     await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
     return;
   }
-  if (sourceQueue.size() >= MAX_SOURCE_QUEUE) {
-    await bot.sendMessage(chatId,'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.');
-    return;
-  }
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
-  sourceQueue.push({ type: 'search', chatId, userId, query, statusMessageId: status.message_id });
+  const servedFromCache = await tryHandleCachedSearch(
+    chatId,
+    userId,
+    query,
+    status.message_id
+  ).catch(() => false);
+  if (!servedFromCache) {
+    if (sourceQueue.size() >= MAX_SOURCE_QUEUE) {
+      await bot.editMessageText(
+        chatId,
+        status.message_id,
+        'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.'
+      );
+      return;
+    }
+    sourceQueue.push({
+      type: 'search',
+      chatId,
+      userId,
+      query,
+      statusMessageId: status.message_id,
+    });
+  }
 }

@@ -32,6 +32,7 @@ const {
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
   enrichMeloBotTrack,
+  inspectMeloBotTrack,
   downloadMeloBotTrackQuality,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
@@ -55,7 +56,11 @@ const {
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
 const { trackCacheKey } = await import('../src/cache.js');
-const { DeepCatalog, deepTrackKey } = await import('../src/deepCatalog.js');
+const {
+  DeepCatalog,
+  deepTrackKey,
+  isSuspendedBackgroundMediaTaskKind,
+} = await import('../src/deepCatalog.js');
 const { CatalogStore } = await import('../src/catalog.js');
 const { db } = await import('../src/db.js');
 const {
@@ -171,6 +176,39 @@ test('MeloBot parser extracts artist, title and popularity', () => {
   assert.equal(track.artist, 'Shadmehr');
   assert.equal(track.title, 'Taghdir');
   assert.equal(track.sourcePopularityCount, 1_600_000);
+});
+
+test('MeloBot parser strips upper-bound and truncated popularity suffixes from titles', () => {
+  const upper = parseTrackButton('🎵 Siamak Abbasi, Jameeyate Tanha x <250');
+  assert.equal(upper.artist, 'Siamak Abbasi');
+  assert.equal(upper.title, 'Jameeyate Tanha');
+  assert.equal(upper.sourcePopularityText, '<250');
+  assert.equal(upper.sourcePopularityCount, undefined);
+
+  const truncated = parseTrackButton(
+    '🎵 Xaniar, Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam) x 654.…'
+  );
+  assert.equal(truncated.artist, 'Xaniar');
+  assert.equal(
+    truncated.title,
+    'Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam)'
+  );
+  assert.equal(truncated.sourcePopularityText, '654…');
+  assert.equal(truncated.sourcePopularityCount, undefined);
+});
+
+test('file cache variants strip non-exact MeloBot popularity suffixes', () => {
+  const upper = trackCacheKey({
+    artist: 'Siamak Abbasi',
+    title: 'Jameeyate Tanha',
+    rawText: '🎵 Siamak Abbasi, Jameeyate Tanha x <250',
+  });
+  const clean = trackCacheKey({
+    artist: 'Siamak Abbasi',
+    title: 'Jameeyate Tanha',
+    rawText: '🎵 Siamak Abbasi, Jameeyate Tanha',
+  });
+  assert.equal(upper, clean);
 });
 
 test('MeloBot parser rejects navigation and artist-sort controls', () => {
@@ -939,6 +977,57 @@ test('cover delivery follows More and waits for the actual photo target', async 
   assert.equal(result.available, true);
   assert.deepEqual(client.sent, [query, raw, more, cover]);
   assert.ok(result.photoMessage?.media?.photo);
+});
+
+test('track inspection follows the target-aware More surface for hidden capabilities', async () => {
+  const raw = '🎵 Artist, Hidden';
+  const more = 'بیشتر...';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('track menu', [
+      '📥 کیفیت عالی',
+      '📥 کیفیت معمولی',
+      more,
+    ])]],
+    [more]: [[fakeBotMessage('more menu', [
+      'کاور',
+      'متن آهنگ',
+      'بقیه مشخصات',
+    ])]],
+  });
+
+  const result = await inspectMeloBotTrack(client, {
+    source: 'melobot',
+    artist: 'Artist',
+    title: 'Hidden',
+    rawText: raw,
+    sourceStateVersion: getMeloBotStateVersion(),
+  });
+
+  assert.equal(result.hasHq, true);
+  assert.equal(result.hasNormal, true);
+  assert.equal(result.hasCover, true);
+  assert.equal(result.hasLyrics, true);
+  assert.equal(result.hasMetadata, true);
+  assert.deepEqual(client.sent, [raw, more]);
+});
+
+test('heavy background media tasks stay off the interactive MeloBot lane', () => {
+  for (const kind of [
+    'artist_bulk_media',
+    'album_bulk_media',
+    'track_enrich',
+    'track_hq',
+    'track_normal',
+    'track_metadata',
+    'track_cover',
+    'track_lyrics',
+  ]) {
+    assert.equal(isSuspendedBackgroundMediaTaskKind(kind), true, kind);
+  }
+
+  for (const kind of ['feed', 'home_discovery', 'artist_profile', 'album_index', 'album_detail']) {
+    assert.equal(isSuspendedBackgroundMediaTaskKind(kind), false, kind);
+  }
 });
 
 test('priority serial queue lets interactive work jump ahead of queued background work', async () => {
@@ -2312,6 +2401,35 @@ test('direct track-menu cover button works without requiring a More submenu', as
   assert.deepEqual(client.sent, [raw, 'کاور']);
 });
 
+test('confirmed More menu can report Cover absent without timing out', async () => {
+  const raw = '🎵 Artist, No Cover';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('track menu', ['کیفیت عالی', 'بیشتر...'])]],
+    'بیشتر...': [[
+      fakeBotMessage(
+        'اینجا امکانات بیشتری میتونی انتخاب کنی',
+        ['لینک اشتراک']
+      ),
+    ]],
+  });
+
+  const result = await getMeloBotCover(
+    client,
+    { ...parseTrackButton(raw), source: 'melobot' },
+    {
+      timeoutMs: 1200,
+      menuTimeoutMs: 500,
+      submenuTimeoutMs: 500,
+      deliveryTimeoutMs: 500,
+    }
+  );
+
+  assert.equal(result.available, false);
+  assert.equal(result.checked, true);
+  assert.equal(result.reason, 'button_absent');
+});
+
+
 test('direct track-menu metadata button works without requiring a More submenu', async () => {
   const raw = '🎵 Artist, Direct Info';
   const client = new FakeTelegramClient({
@@ -2916,9 +3034,9 @@ test('empty More response keeps lyrics availability unknown instead of caching a
     () => getMeloBotLyrics(
       client,
       { ...parseTrackButton(raw), source: 'melobot' },
-      { timeoutMs: 120 }
+      { timeoutMs: 120, submenuTimeoutMs: 500 }
     ),
-    /submenu returned no response|budget exhausted/
+    /submenu returned no response|submenu did not reach a confirmed surface|budget exhausted/
   );
 });
 
@@ -3188,4 +3306,84 @@ test('MTProto inbox accepts edited menu events with an existing message id', asy
   assert.equal(result.messages.length, 1);
   assert.equal(result.messages[0].message, 'edited');
   assert.equal(result.messages[0].__navazonEdited, true);
+});
+
+
+test('MTProto timeout reconciliation recovers a missed in-place keyboard edit', async () => {
+  class ReconcileClient {
+    constructor() {
+      this.handlers = [];
+      this.history = [];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() { return this.history; }
+  }
+
+  const client = new ReconcileClient();
+  installTelegramInbox(client);
+
+  const original = {
+    id: 10,
+    senderId: 42n,
+    out: false,
+    message: 'track menu',
+    replyMarkup: { rows: [{ buttons: [{ text: 'بیشتر...' }] }] },
+  };
+  // Seed the NewMessage inbox only. We intentionally do not emit the later
+  // edit, simulating a missed EditedMessage update.
+  client.handlers[0].handler({ message: original, chatId: 42n });
+
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  client.history = [{
+    ...original,
+    message: 'اینجا امکانات بیشتری میتونی انتخاب کنی',
+    replyMarkup: { rows: [{ buttons: [{ text: 'کاور' }] }] },
+  }];
+
+  const result = await collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 60,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    afterSequence,
+    stopWhen: message =>
+      (message?.replyMarkup?.rows || [])
+        .flatMap(row => row.buttons || [])
+        .some(button => button.text === 'کاور'),
+  });
+
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].id, 10);
+  assert.equal(result.messages[0].replyMarkup.rows[0].buttons[0].text, 'کاور');
+});
+
+
+test('search ranking penalizes an unrequested remix and requests relevance fallback', () => {
+  const query = 'Xaniar Shabe Mahtab feat Ehaam';
+  const tracks = [
+    {
+      artist: 'Xaniar',
+      title: 'Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam)',
+    },
+    {
+      artist: 'Xaniar',
+      title: 'Shabe Mahtab (feat. Ehaam)',
+    },
+  ];
+  const ranked = rankTracksForQuery(query, tracks);
+  assert.equal(ranked[0].track.title, 'Shabe Mahtab (feat. Ehaam)');
+
+  const remixOnly = rankTracksForQuery(query, [tracks[0]])[0];
+  assert.equal(
+    shouldUseSearchRelevanceFallback(
+      query,
+      remixOnly.coverage,
+      remixOnly.track
+    ),
+    true
+  );
 });

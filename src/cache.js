@@ -1,20 +1,18 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
-import { normalizeText } from './text.js';
+import { normalizeText, stableSourceTrackVariant } from './text.js';
 
 function normalize(value = '') {
   return normalizeText(value);
 }
 
 function stableVariant(track = {}) {
-  let value = String(track.rawText || track.cmd || track.duration || track.bitrate || '');
-  if (track.rawText) {
-    value = value
-      .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
-      .replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '')
-      .trim();
-  }
-  return normalize(value);
+  const value = String(
+    track.rawText || track.cmd || track.duration || track.bitrate || ''
+  );
+  return track.rawText
+    ? stableSourceTrackVariant(value)
+    : normalize(value);
 }
 
 export function trackCacheKey(track = {}) {

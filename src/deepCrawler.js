@@ -27,6 +27,8 @@ import {
   prepareMeloBotBulkTopTracks,
 } from './sources/melobot.js';
 import { deepNormalize, deepTrackKey } from './deepCatalog.js';
+
+const BACKGROUND_SOURCE_BUDGET_MS = 2400;
 import { recordCrawlerFinish, recordCrawlerStart } from './state.js';
 import { hasCompositeArtistSeparators } from './text.js';
 
@@ -97,10 +99,6 @@ async function seedTracks(tracks, priority, context = {}) {
         discoveredFrom: context.discoveredFrom,
         feed: context.feed,
         album: context.album,
-      });
-      await deepCatalog.seedTrackTasks(track, {
-        priority,
-        preferBulk: Boolean(context.preferBulk),
       });
     }));
   }
@@ -516,7 +514,10 @@ async function runTrackEnrich(task) {
 
 async function runHomeDiscovery(task) {
   const maxSections = Math.max(1, Number(task.payload?.maxSections || 8));
-  const discovered = await discoverMeloBotHome(tg, { maxSections });
+  const discovered = await discoverMeloBotHome(tg, {
+    maxSections: Math.min(maxSections, 2),
+    timeoutMs: BACKGROUND_SOURCE_BUDGET_MS,
+  });
   await seedTracks(discovered.tracks, 78, {
     discoveredFrom: 'home_discovery',
     preferBulk: true,
@@ -542,7 +543,10 @@ async function runHomeDiscovery(task) {
 
 async function runPlaylistDiscovery(task) {
   const maxPlaylists = Math.max(1, Number(task.payload?.maxPlaylists || 6));
-  const discovered = await discoverMeloBotPlaylists(tg, { maxPlaylists });
+  const discovered = await discoverMeloBotPlaylists(tg, {
+    maxPlaylists: Math.min(maxPlaylists, 2),
+    timeoutMs: BACKGROUND_SOURCE_BUDGET_MS,
+  });
 
   await seedTracks(discovered.tracks, 86, {
     discoveredFrom: 'playlist_discovery',
@@ -577,7 +581,10 @@ async function runFeed(task) {
   const { feed, origin = 'unknown' } = task.payload || {};
   if (!feed) throw new Error('Feed task is missing feed name.');
 
-  const result = await discoverMeloBotFeed(tg, feed, { contentOrigin: origin });
+  const result = await discoverMeloBotFeed(tg, feed, {
+    contentOrigin: origin,
+    timeoutMs: BACKGROUND_SOURCE_BUDGET_MS,
+  });
   try { await catalog.recordSearch(`browse:${feed}`, result.tracks); } catch (err) {
     console.warn('[feed browse cache]', feed, err.message);
   }
@@ -625,7 +632,7 @@ async function runArtistProfile(task) {
     tg,
     artist,
     seedTrack,
-    { timeoutMs: 3000 }
+    { timeoutMs: BACKGROUND_SOURCE_BUDGET_MS }
   );
   const recent = live.recentTracks || [];
   const top = live.topTracks || live.tracks || [];
@@ -639,26 +646,12 @@ async function runArtistProfile(task) {
   await deepCatalog.setArtistList(live.artist, 'recent', recent);
   await deepCatalog.setArtistList(live.artist, 'top', top);
 
-  // Prefer one native MeloBot bulk click over ten individual media tasks.
-  await seedTracks(recent, 104, {
-    discoveredFrom: `artist_recent:${live.artist}`,
-    preferBulk: true,
-  });
-  await seedTracks(top, 100, {
-    discoveredFrom: `artist_top:${live.artist}`,
-    preferBulk: true,
-  });
+  // setArtistList already persists these tracks. Avoid a second write pass while
+  // the serialized source queue is occupied.
 
-  const bulkSeed = seedTrack || recent[0] || top[0] || null;
-
-  // Keep profile discovery short. Media warming is intentionally split into
-  // separate heavy tasks so an artist-profile crawl cannot hold the user queue
-  // for tens of seconds.
-  await enqueueArtistBulkTasks(live.artist, bulkSeed, {
-    topTracks: top,
-    recentTracks: recent,
-    skipTopHq: false,
-  });
+  // Background Artist discovery is metadata-only. Media warming is suspended
+  // because MeloBot is a single stateful lane and bulk/media tasks cannot be
+  // preempted safely after a user request arrives.
 
   for (const related of live.relatedArtists || []) {
     if (deepNormalize(related) !== deepNormalize(live.artist)) {
@@ -696,7 +689,7 @@ async function runAlbumIndex(task) {
     tg,
     artist,
     seedTrack,
-    { allowEmpty: true, timeoutMs: 3500 }
+    { allowEmpty: true, timeoutMs: BACKGROUND_SOURCE_BUDGET_MS }
   );
   const albums = resolved.albums;
 
@@ -745,8 +738,8 @@ async function runAlbumDetail(task) {
     seedTrack,
     {
       allowEmpty: true,
-      maxAlbums: 40,
-      directTimeoutMs: 3500,
+      maxAlbums: 30,
+      directTimeoutMs: BACKGROUND_SOURCE_BUDGET_MS,
     }
   );
   const albums = resolved.albums;
@@ -759,8 +752,9 @@ async function runAlbumDetail(task) {
     target.title,
     {
       album: target,
-      timeoutMs: 3500,
-      maxPages: 8,
+      timeoutMs: 1200,
+      totalTimeoutMs: BACKGROUND_SOURCE_BUDGET_MS,
+      maxPages: 4,
     }
   );
   const tracks = albumContext.tracks;
@@ -774,42 +768,13 @@ async function runAlbumDetail(task) {
   }
   await catalog.recordAlbumTracks(resolved.artist, target, tracks);
   await deepCatalog.setAlbumTracks(resolved.artist, target, tracks);
-  await seedTracks(tracks, 84, {
-    discoveredFrom: `album:${target.title}`,
-    album: target.title,
-    preferBulk: true,
-  });
+  // setAlbumTracks already persists the album tracks; do not write them twice
+  // while this background task owns the serialized source queue.
 
-  const albumSeed = albumContext.seed || resolved.seed || seedTrack || tracks[0] || null;
-  const albumKey = `${deepNormalize(resolved.artist)}:${deepNormalize(target.title)}`;
-
-  // Album detail stays metadata-only on the interactive source lane. Heavy
-  // media warming is queued separately and only runs after a longer idle window.
+  // Keep background Album discovery metadata-only. User-triggered downloads
+  // populate HQ/Normal caches lazily without blocking the source lane.
   const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
   const albumHqComplete = missingHq.length === 0;
-
-  if (!albumHqComplete) {
-    if (shouldUseBulk(tracks.length, missingHq.length)) {
-      await deepCatalog.enqueueTask(
-        'album_bulk_media',
-        { artist: resolved.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'hq' },
-        { priority: 92, taskKey: `album_bulk:hq:${albumKey}`, reviveDone: true }
-      );
-    } else if (missingHq.length) {
-      await enqueueSparseMediaFallback(missingHq, 'hq', 110);
-    }
-  }
-
-  const missingNormal = await deepCatalog.missingMediaTracks(tracks, 'normal');
-  if (shouldUseBulk(tracks.length, missingNormal.length)) {
-    await deepCatalog.enqueueTask(
-      'album_bulk_media',
-      { artist: resolved.artist, albumTitle: target.title, seedTrack: albumSeed, quality: 'normal' },
-      { priority: 68, taskKey: `album_bulk:normal:${albumKey}`, reviveDone: true }
-    );
-  } else if (missingNormal.length) {
-    await enqueueSparseMediaFallback(missingNormal, 'normal', 70);
-  }
 
   return {
     artist: resolved.artist,

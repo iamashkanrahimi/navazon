@@ -32,7 +32,11 @@ import {
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { executeDeepTask } from './deepCrawler.js';
-import { deepTrackKey } from './deepCatalog.js';
+import {
+  deepAlbumKey,
+  deepTrackKey,
+  isSuspendedBackgroundMediaTaskKind,
+} from './deepCatalog.js';
 import { HOME_FEEDS, curatedPlaylistByKey } from './homeCatalog.js';
 import {
   renderTrackPage,
@@ -55,7 +59,7 @@ import {
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
 const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
-const SEARCH_CACHE_NAMESPACE = 'v163';
+const SEARCH_CACHE_NAMESPACE = 'v164';
 
 function userSearchCacheKey(query = '') {
   return `${SEARCH_CACHE_NAMESPACE}:${query}`;
@@ -536,6 +540,404 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
   return { complete: true, sent, quality: 'hq', canonicalTracks };
 }
 
+export async function tryHandleCachedSearch(
+  chatId,
+  userId,
+  query,
+  statusMessageId
+) {
+  if (hasAlbumIntent(query)) return false;
+
+  const cacheKey = userSearchCacheKey(query);
+  let options = await catalog.getSearch(
+    cacheKey,
+    config.catalogSearchTtlMs
+  ).catch(() => null);
+  if (!Array.isArray(options) || !options.length) return false;
+
+  const startedAt = Date.now();
+  options = keepFullCoverageTracksWhenAvailable(query, options);
+  options = await deepCatalog.canonicalizeKnownTracks(options);
+  const albumOptions = await searchAlbumOptions(query, options);
+  if (!options.length && !albumOptions.length) return false;
+
+  const sessionId = newSessionId();
+  const fresh = {
+    chatId,
+    userId,
+    query,
+    messageId: statusMessageId,
+    options,
+    albumOptions,
+    albumFirst: albumOptions.length > 0 && !options.length,
+    artistContext: null,
+    artistSeed: null,
+    isFollowing: false,
+    albums: null,
+    albumsEmptyConfirmed: false,
+    currentAlbum: null,
+    currentAlbumView: null,
+    albumsPage: 0,
+    albumTrackPage: 0,
+    currentTrack: null,
+    trackBack: null,
+    artistBack: 'rs',
+    busy: false,
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  };
+  await sessions.set(sessionId, fresh);
+  await showResults(sessionId, fresh);
+
+  console.log(
+    `[fastpath.local] search cache_hit=true query=${JSON.stringify(query)} total_ms=${Date.now() - startedAt}`
+  );
+  return true;
+}
+
+export async function tryOpenTrackArtistLocal(
+  sessionId,
+  session,
+  messageId
+) {
+  const seed = session?.currentTrack;
+  if (!seed?.artist || seed.artistInferred) return false;
+
+  const startedAt = Date.now();
+  let route = 'none';
+  let context = await catalog.getArtistContext(
+    seed.artist,
+    config.catalogArtistTtlMs
+  ).catch(() => null);
+
+  if (context && isUsableArtistContext(context)) {
+    route = context.healedLegacyLists ? 'catalog_healed' : 'catalog';
+  } else {
+    const [storedTop, storedRecent] = await Promise.all([
+      deepCatalog.getArtistList(seed.artist, 'top', TOP_TRACKS_LIMIT).catch(() => []),
+      deepCatalog.getArtistList(seed.artist, 'recent', TOP_TRACKS_LIMIT).catch(() => []),
+    ]);
+    const derivedTop = storedTop.length
+      ? storedTop
+      : await deepCatalog.deriveArtistList(
+          seed.artist,
+          'top',
+          TOP_TRACKS_LIMIT
+        ).catch(() => []);
+
+    context = {
+      artist: seed.artist,
+      tracks: derivedTop.length ? derivedTop : storedRecent,
+      topTracks: derivedTop,
+      recentTracks: storedRecent,
+      fromDeepCatalog: true,
+    };
+    if (!isUsableArtistContext(context)) return false;
+    route = storedTop.length || storedRecent.length
+      ? 'deep_catalog'
+      : 'deep_derived';
+  }
+
+  session.artistContext = context;
+  session.artistSeed = context.seedTrack || seed;
+  await syncArtistContext(context);
+  session.isFollowing = await follows.isFollowing(session.userId, context.artist);
+  session.artistBack = 'trt';
+  session.albums = null;
+  session.albumsEmptyConfirmed = false;
+  session.busy = false;
+
+  await bot.editMessageText(
+    session.chatId,
+    messageId,
+    context.artist,
+    {
+      reply_markup: artistHomeKeyboard(
+        sessionId,
+        context,
+        session.isFollowing,
+        { backAction: 'trt' }
+      ),
+    }
+  );
+  console.log(
+    `[fastpath.local] track_artist route=${route} total_ms=${Date.now() - startedAt}`
+  );
+  return true;
+}
+
+export async function tryOpenArtistListLocal(
+  sessionId,
+  session,
+  messageId,
+  mode = 'top'
+) {
+  const artist = session?.artistContext?.artist;
+  if (!artist) return false;
+  const normalizedMode = mode === 'recent' ? 'recent' : 'top';
+
+  let tracks = normalizedMode === 'recent'
+    ? (session.artistContext.recentTracks || [])
+    : (session.artistContext.topTracks || []);
+
+  let route = 'session';
+  if (!tracks.length) {
+    tracks = await deepCatalog.getArtistList(
+      artist,
+      normalizedMode,
+      TOP_TRACKS_LIMIT
+    ).catch(() => []);
+    route = tracks.length ? 'deep_catalog' : 'none';
+  }
+  if (!tracks.length) {
+    tracks = await deepCatalog.deriveArtistList(
+      artist,
+      normalizedMode,
+      TOP_TRACKS_LIMIT
+    ).catch(() => []);
+    route = tracks.length ? `derived_${normalizedMode}` : 'none';
+  }
+  if (!tracks.length) return false;
+
+  if (normalizedMode === 'recent') {
+    session.artistContext.recentTracks = tracks;
+  } else {
+    session.artistContext.topTracks = tracks;
+    session.artistContext.tracks = tracks;
+  }
+  await syncArtistContext(session.artistContext);
+  session.busy = false;
+
+  await bot.editMessageText(
+    session.chatId,
+    messageId,
+    `${artist}\n${normalizedMode === 'recent' ? '🆕' : '🎵'} ${normalizedMode === 'recent' ? 'جدیدترین آثار' : 'پربازدیدترین آثار'}`,
+    {
+      reply_markup: artistSongsKeyboard(
+        sessionId,
+        tracks,
+        { mode: normalizedMode }
+      ),
+    }
+  );
+  console.log(
+    `[fastpath.local] artist_list mode=${normalizedMode} route=${route} count=${tracks.length}`
+  );
+  return true;
+}
+
+export async function tryOpenAlbumsLocal(
+  sessionId,
+  session,
+  messageId,
+  page = 0
+) {
+  const artist = session?.artistContext?.artist;
+  if (!artist) return false;
+
+  const trustedSessionAlbums = Array.isArray(session.albums) && (
+    session.albums.length > 0 || session.albumsEmptyConfirmed === true
+  );
+  if (!trustedSessionAlbums) {
+    const cached = await catalog.getAlbums(
+      artist,
+      config.catalogAlbumsTtlMs,
+      config.catalogEmptyAlbumsTtlMs
+    ).catch(() => null);
+    if (!Array.isArray(cached)) return false;
+    session.albums = cached;
+    session.albumsEmptyConfirmed = cached.length === 0;
+  }
+
+  session.busy = false;
+  session.albumsPage = Math.max(0, Number(page || 0));
+  if (!session.albums.length) {
+    await bot.editMessageText(
+      session.chatId,
+      messageId,
+      `${artist}\n💿 آلبوم‌ها\n\nبرای این خواننده آلبومی در منبع پیدا نشد.`,
+      { reply_markup: noAlbumsKeyboard(sessionId) }
+    );
+  } else {
+    await bot.editMessageText(
+      session.chatId,
+      messageId,
+      `${artist}\n💿 آلبوم‌ها`,
+      {
+        reply_markup: albumsKeyboard(
+          sessionId,
+          session.albums,
+          session.albumsPage
+        ),
+      }
+    );
+  }
+  console.log(
+    `[fastpath.local] albums artist=${JSON.stringify(artist)} count=${session.albums.length}`
+  );
+  return true;
+}
+
+export async function tryOpenAlbumLocal(
+  sessionId,
+  session,
+  messageId,
+  index
+) {
+  const album = session?.albums?.[Number(index)];
+  const artist = session?.artistContext?.artist;
+  if (!album || !artist) return false;
+
+  let tracks = await catalog.getAlbumTracks(
+    artist,
+    album.title,
+    config.catalogAlbumTracksTtlMs
+  ).catch(() => null);
+  let route = 'catalog';
+
+  if (!Array.isArray(tracks) || !tracks.length) {
+    tracks = await deepCatalog.getAlbumTracksByKey(
+      album.albumKey || deepAlbumKey(artist, album.title)
+    ).catch(() => []);
+    route = tracks.length ? 'deep_catalog' : 'none';
+  }
+  if (!Array.isArray(tracks) || !tracks.length) return false;
+
+  session.currentAlbum = {
+    ...album,
+    artist,
+    tracks,
+  };
+  session.currentAlbumView = 'artist';
+  session.albumTrackPage = 0;
+  session.albumsPage = Math.floor(Number(index) / ALBUMS_PER_PAGE);
+  session.busy = false;
+
+  await bot.editMessageText(
+    session.chatId,
+    messageId,
+    `💿 ${album.title}\n${artist}`,
+    {
+      reply_markup: albumTracksKeyboard(
+        sessionId,
+        tracks,
+        session.albumsPage,
+        0
+      ),
+    }
+  );
+  console.log(
+    `[fastpath.local] album route=${route} artist=${JSON.stringify(artist)} title=${JSON.stringify(album.title)} count=${tracks.length}`
+  );
+  return true;
+}
+
+export async function tryDeliverBulkFromCacheLocal(
+  sessionId,
+  session,
+  messageId,
+  kind
+) {
+  let tracks = [];
+  if (kind === 'top') {
+    tracks = (session.artistContext?.topTracks || []).slice(0, TOP_TRACKS_LIMIT);
+  } else if (kind === 'recent') {
+    tracks = (session.artistContext?.recentTracks || []).slice(0, TOP_TRACKS_LIMIT);
+  } else if (kind === 'album') {
+    tracks = session.currentAlbum?.tracks || [];
+  } else {
+    return false;
+  }
+  if (!tracks.length) return false;
+
+  const cached = await deliverBulkFromCacheIfComplete(session, tracks);
+  if (!cached.complete) return false;
+
+  // From this point all requested media has already been delivered. Never
+  // return false because a follow-up catalog write or UI edit failed; doing so
+  // would enqueue a live MeloBot bulk and duplicate files the user just got.
+  session.busy = false;
+  try {
+    if (kind === 'top') {
+      session.artistContext.topTracks = cached.canonicalTracks;
+      session.artistContext.tracks = cached.canonicalTracks;
+      await syncArtistContext(session.artistContext);
+      await bot.editMessageText(
+        session.chatId,
+        messageId,
+        `${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,
+        {
+          reply_markup: artistSongsKeyboard(
+            sessionId,
+            cached.canonicalTracks,
+            { mode: 'top' }
+          ),
+        }
+      );
+    } else if (kind === 'recent') {
+      session.artistContext.recentTracks = cached.canonicalTracks;
+      await syncArtistContext(session.artistContext);
+      await bot.editMessageText(
+        session.chatId,
+        messageId,
+        `${session.artistContext.artist}\n🆕 جدیدترین آثار`,
+        {
+          reply_markup: artistSongsKeyboard(
+            sessionId,
+            cached.canonicalTracks,
+            { mode: 'recent' }
+          ),
+        }
+      );
+    } else {
+      session.currentAlbum.tracks = cached.canonicalTracks;
+      const repairedOwner = await syncAlbumTracks(
+        session.currentAlbum?.artist
+          || session.artistContext?.artist
+          || session.albumOriginTrack?.artist
+          || session.currentTrack?.artist,
+        session.currentAlbum,
+        cached.canonicalTracks
+      );
+      if (repairedOwner) session.currentAlbum.artist = repairedOwner;
+
+      const album = session.currentAlbum;
+      const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
+      const keyboard = session.currentAlbumView === 'track'
+        ? trackAlbumKeyboard(
+            sessionId,
+            album,
+            album?.tracks || [],
+            session.albumTrackPage || 0
+          )
+        : albumTracksKeyboard(
+            sessionId,
+            album?.tracks || [],
+            session.albumsPage || 0,
+            session.albumTrackPage || 0,
+            {
+              backAction: session.currentAlbumView === 'search'
+                ? 'results'
+                : 'albums',
+            }
+          );
+
+      await bot.editMessageText(
+        session.chatId,
+        messageId,
+        title,
+        { reply_markup: keyboard }
+      );
+    }
+  } catch (err) {
+    console.warn('[fastpath.local bulk postprocess]', kind, err.message);
+  }
+
+  console.log(
+    `[fastpath.local] bulk kind=${kind} count=${cached.sent}`
+  );
+  return true;
+}
+
 function structuralNativeBulkFailure(err) {
   return /bulk HQ button was not found|artist button not found|no usable .* tracks/i.test(
     err?.message || ''
@@ -943,6 +1345,16 @@ export const sourceQueue = new SerialQueue(async job => {
 
     if (job.type === 'deep_crawl') {
       try {
+        const kind = job.task?.kind || 'unknown';
+
+        if (isSuspendedBackgroundMediaTaskKind(kind)) {
+          await deepCatalog.finishTask(job.task?.id, {
+            skipped: 'background_media_warming_suspended',
+          });
+          console.log('[deep crawler] suspended_media_task', kind);
+          return;
+        }
+
         // Background navigation gets a short grace window. If a user request
         // arrived just after the crawler was claimed, give the stateful
         // MeloBot lane back before starting the crawl instead of making that
@@ -954,10 +1366,16 @@ export const sourceQueue = new SerialQueue(async job => {
             60_000,
             'foreground request arrived during crawler grace window'
           );
-          console.log('[deep crawler] deferred_for_foreground', job.task?.kind || 'unknown');
+          console.log('[deep crawler] deferred_for_foreground', kind);
           return;
         }
+
+        const crawlStartedAt = Date.now();
         await executeDeepTask(job.task);
+        const crawlMs = Date.now() - crawlStartedAt;
+        if (crawlMs > 3200) {
+          console.warn('[deep crawler] source_budget_overrun', kind, `run_ms=${crawlMs}`);
+        }
       } catch (err) {
         console.warn('[deep crawl job]', err.message);
       }
@@ -1438,7 +1856,7 @@ export const sourceQueue = new SerialQueue(async job => {
                 tg,
                 session.artistContext.artist,
                 seed,
-                { timeoutMs: 3500 }
+                { timeoutMs: 2500 }
               );
               if (hasPendingForegroundSourceWork()) {
                 throw new Error('bulk deferred because foreground work is waiting');
@@ -1446,7 +1864,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotRecentTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 4500 }
+                { timeoutMs: 3000 }
               );
               lastError = null;
               break;
@@ -1584,7 +2002,7 @@ export const sourceQueue = new SerialQueue(async job => {
                 tg,
                 session.artistContext.artist,
                 seed,
-                { timeoutMs: 3500 }
+                { timeoutMs: 2500 }
               );
               if (hasPendingForegroundSourceWork()) {
                 throw new Error('bulk deferred because foreground work is waiting');
@@ -1592,7 +2010,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotTopTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 4500 }
+                { timeoutMs: 3000 }
               );
               lastError = null;
               break;
@@ -1730,8 +2148,8 @@ export const sourceQueue = new SerialQueue(async job => {
                   albumTitle,
                   {
                     album: session.currentAlbum,
-                    timeoutMs: 4500,
-                    maxPages: 8,
+                    timeoutMs: 2800,
+                    maxPages: 6,
                   }
                 );
                 session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
@@ -1747,7 +2165,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: 4500 }
+                { timeoutMs: 3000 }
               );
               lastError = null;
               break;

@@ -180,7 +180,13 @@ async function collectFromInbox(client, peer, afterId, {
             const batch = await client.getMessages(peer, { limit: 100 });
             for (const message of batch || []) {
               if (message?.out) continue;
-              if (Number(message?.id || 0) <= Number(afterId || 0)) continue;
+              // Reconciliation is also allowed to re-read the boundary
+              // message itself. MeloBot frequently edits an existing reply
+              // keyboard in place, so the current server-side form of
+              // messageId === afterId may contain the target submenu even if
+              // the EditedMessage event was missed locally. The caller's
+              // target predicate still decides whether this is usable.
+              if (Number(message?.id || 0) < Number(afterId || 0)) continue;
               seen.set(message.id, message);
             }
           } catch (err) {
