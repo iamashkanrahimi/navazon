@@ -2413,16 +2413,38 @@ async function openMeloBotArtistBase(
 
   let preOpenedArtistPage = null;
   if (!artistButton && allowArtistSearchFallback && !remaining.expired()) {
-    // MeloBot search surfaces often expose the Artist as an icon-labeled
-    // button (for example "🗣 Ali Yasini") even when the Track menu does not.
-    const artistSearch = await sendAndCollect(client, effectiveSeed.artist, {
-      timeoutMs: Math.min(2500, remaining()),
-      quietMs: 650,
-      stopWhen: message => Boolean(
-        findArtistButtonFor([message], effectiveSeed.artist)
-      ),
-    });
-    artistButton = findArtistButtonFor(artistSearch.messages, effectiveSeed.artist);
+    // If the current Track surface has no Artist control, obtain a fresh seed
+    // row for the requested artist and open that Track explicitly. Treating a
+    // generic search-results surface as an Artist page caused the Farhad/Javad
+    // bulk failures seen in production.
+    try {
+      const freshTracks = await searchMeloBot(client, effectiveSeed.artist, {
+        timeoutMs: Math.min(2500, remaining()),
+        maxRefinements: 2,
+      });
+      const freshSeed = freshTracks.find(track =>
+        artistIdentityCompatible(effectiveSeed.artist, track.artist || '')
+      ) || null;
+
+      if (freshSeed && !remaining.expired()) {
+        openedMenu = await openTrackMenuWithCandidate(
+          client,
+          freshSeed,
+          {
+            timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+            allowAlbumSurface: true,
+          }
+        );
+        menuMessages = openedMenu.messages;
+        effectiveSeed = openedMenu.candidate || freshSeed;
+        artistButton = findArtistButtonFor(
+          menuMessages,
+          effectiveSeed.artist || seedTrack?.artist || ''
+        );
+      }
+    } catch (err) {
+      console.warn('[melobot artist fresh seed fallback]', effectiveSeed.artist, err.message);
+    }
   }
 
   if (!artistButton && !preOpenedArtistPage) {
@@ -2629,6 +2651,7 @@ export async function openMeloBotArtist(
   let topTracks = [];
   let bulkHighButton = null;
   let bulkNormalButton = null;
+  let artistSourceStateVersion = base.sourceStateVersion;
 
   // The base artist page is the current source surface until we press a sort
   // control. Keep a separate live-surface snapshot so a later Albums click can
@@ -2681,6 +2704,7 @@ export async function openMeloBotArtist(
       }
 
       topTracks = parseTracksFromMessages(ordered.messages, base.artist);
+      artistSourceStateVersion = ordered.stateVersion;
       bulkHighButton = findButton(ordered.messages, text =>
         /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
       );
@@ -2750,6 +2774,7 @@ export async function openMeloBotArtist(
     topTracks,
     bulkHighButton,
     bulkNormalButton,
+    sourceStateVersion: artistSourceStateVersion,
     liveAlbumButton,
     liveAlbumList,
     liveAlbumListingConfirmed,
@@ -2832,6 +2857,7 @@ export async function resolveMeloBotArtistTrackList(
   let tracks = (base.recentTracks || []).slice(0, 10);
   let recentBulkHighButton = base.recentBulkHighButton || null;
   let recentBulkNormalButton = base.recentBulkNormalButton || null;
+  let recentSourceStateVersion = base.sourceStateVersion;
   let route = tracks.length ? 'artist_base_recent' : 'artist_sort_recent';
 
   if (!tracks.length && base.orderButton && !remaining.expired()) {
@@ -2847,6 +2873,7 @@ export async function resolveMeloBotArtistTrackList(
 
       if (directTracks.length && orderLooksRecent) {
         tracks = directTracks.slice(0, 10);
+        recentSourceStateVersion = sorted.stateVersion;
         recentBulkHighButton = findButton(sorted.messages, text =>
           /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
         );
@@ -2869,6 +2896,7 @@ export async function resolveMeloBotArtistTrackList(
               .some(text => Boolean(parseTrackButton(text, base.artist))),
           });
           tracks = parseTracksFromMessages(recentPage.messages, base.artist).slice(0, 10);
+          recentSourceStateVersion = recentPage.stateVersion;
           recentBulkHighButton = findButton(recentPage.messages, text =>
             /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
           );
@@ -2897,6 +2925,7 @@ export async function resolveMeloBotArtistTrackList(
       recentTracks: tracks,
       recentBulkHighButton,
       recentBulkNormalButton,
+      sourceStateVersion: recentSourceStateVersion,
     },
     route,
   };
