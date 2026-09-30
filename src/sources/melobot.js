@@ -2780,8 +2780,6 @@ let tracks = (base.recentTracks || []).slice(0, 10);
         : null,
       fastArtistRoute: route,
     };
-  }
-  
 }
 
 export async function openMeloBotArtistFast(
