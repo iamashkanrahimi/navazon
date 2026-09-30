@@ -1,4 +1,4 @@
-# Navazon Cloud v1.6.3 — MeloBot State Machine Repair
+# Navazon Cloud v1.6.4 — Performance & Integrity Repair
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -304,3 +304,16 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Track menu, quality, cover and lyrics actions use a short settle delay between state transitions and log non-content media metadata for failed target deliveries.
 - Track-row state tokens remain bound to the search surface where that row is actually clickable; successful actions never relabel a Track-menu state as a Search-results state.
 - All crawler tasks that touch MeloBot are held behind the long user-idle window, and background source probes use short budgets so cache warming cannot dominate foreground latency.
+
+
+## Performance & Integrity Repair v1.6.4
+
+- Parses MeloBot popularity suffixes such as `x <250` and truncated `x 654.…` without contaminating Track titles.
+- File-cache variants use the same metric normalization so malformed popularity tails cannot create duplicate cache identities.
+- Search ranking heavily penalizes unrequested variants such as Remix/Live/Acoustic and triggers fallback discovery when a full-token match is only a variant.
+- MeloBot `More` is now a target-aware state transition with EditedMessage support and timeout history reconciliation; Cover, Lyrics, Metadata and enrichment share the same confirmed submenu path.
+- Cached Lyrics and Cover are served before entering the serialized source queue.
+- Cached Artist pages, Artist lists, Album indexes, Album pages and fully cached bulk downloads are handled outside the MeloBot queue.
+- Repeated cached searches are returned outside the source queue.
+- Live bulk preparation/download budgets are shorter and batch collection is target-aware with reconciliation, limiting how long a running bulk can block foreground work.
+- Search cache namespace bumped to `v164` for clean retesting after parser/ranking fixes.
