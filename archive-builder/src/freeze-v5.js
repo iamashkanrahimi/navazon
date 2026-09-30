@@ -16,6 +16,7 @@ for(const a of artists){
   if((a.canonical_url||'').includes('/artist/%2B98')&&a.display_name==='98')flags.push('display_name_lost_plus_prefix');
   if(flags.length)a.quality_flags=[...new Set([...(a.quality_flags||[]),...flags])];
 }
+artistFallbacks=artists.filter(a=>a.image_source==='song_archive_track_cover_final_fallback').length;
 const media=new Map();const add=(url,type,ref)=>{if(!url)return;let m=media.get(url);if(!m){m={source_url:url,usage_types:new Set(),refs:[]};media.set(url,m);}m.usage_types.add(type);if(m.refs.length<5)m.refs.push(ref);};
 for(const t of tracks)add(t.cover_url,'track_cover',t.source_url);
 for(const a of artists)add(a.image_url,'artist_image',a.canonical_url);
