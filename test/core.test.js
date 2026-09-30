@@ -44,10 +44,12 @@ const {
   albumNavigationButton,
   describeMeloBotSurface,
   getMeloBotStateVersion,
+  findArtistButtonFor,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const {
   installTelegramInbox,
+  getTelegramInboxSequence,
   latestMessageId,
   collectNewMessages,
 } = await import('../src/mtproto.js');
@@ -854,10 +856,12 @@ test('target-aware MTProto collection does not stop on a short quiet gap before 
   assert.equal(client.historyCalls, 0);
 });
 
-test('stale Track state uses reusable rawText directly before any search for normal quality', async () => {
+test('stale Track state refreshes search surface before clicking the Track row', async () => {
   const raw = '🎵 Reza Bahram, Yar';
   const normal = '📥 کیفیت معمولی';
+  const query = 'Reza Bahram Yar';
   const client = new FakeTelegramClient({
+    [query]: [[fakeBotMessage('search results', [raw])]],
     [raw]: [[fakeBotMessage('خب حالا میخوای با این آهنگ چه کنی ؟', [
       '📥 کیفیت عالی',
       normal,
@@ -885,14 +889,14 @@ test('stale Track state uses reusable rawText directly before any search for nor
     },
     'normal',
     {
-      timeoutMs: 900,
+      timeoutMs: 1800,
       menuTimeoutMs: 400,
       deliveryTimeoutMs: 400,
     }
   );
 
   assert.equal(result.quality, 'normal');
-  assert.deepEqual(client.sent, [raw, normal]);
+  assert.deepEqual(client.sent, [query, raw, normal]);
   assert.ok(result.audioMessage?.media?.document);
 });
 
@@ -900,7 +904,9 @@ test('cover delivery follows More and waits for the actual photo target', async 
   const raw = '🎵 Navid, Rah Mire';
   const more = 'بیشتر...';
   const cover = 'کاور';
+  const query = 'Navid Rah Mire';
   const client = new FakeTelegramClient({
+    [query]: [[fakeBotMessage('search results', [raw])]],
     [raw]: [[fakeBotMessage('track menu', [
       '📥 کیفیت عالی',
       '📥 کیفیت معمولی',
@@ -931,7 +937,7 @@ test('cover delivery follows More and waits for the actual photo target', async 
   );
 
   assert.equal(result.available, true);
-  assert.deepEqual(client.sent, [raw, more, cover]);
+  assert.deepEqual(client.sent, [query, raw, more, cover]);
   assert.ok(result.photoMessage?.media?.photo);
 });
 
@@ -2221,7 +2227,7 @@ test('capability persistence stores positive evidence only and treats false as u
 });
 
 
-test('failed canonical lookup keeps an inferred artist unconfirmed', async () => {
+test('failed canonical lookup never promotes an inferred artist', async () => {
   const inferred = {
     ...parseTrackButton('🎵 Khalesaneh (feat. T-Dey)', 'T-Dey'),
     source: 'melobot',
@@ -2231,14 +2237,14 @@ test('failed canonical lookup keeps an inferred artist unconfirmed', async () =>
     'T-Dey Khalesaneh (feat. T-Dey)': [[fakeBotMessage('no result', [])]],
   });
 
-  const resolved = await resolveMeloBotTrackCandidate(
-    client,
-    inferred,
-    { timeoutMs: 30, forceIdentity: true }
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      inferred,
+      { timeoutMs: 30, forceIdentity: true }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
   );
-
-  assert.equal(resolved.artist, 'T-Dey');
-  assert.equal(resolved.artistInferred, true);
 });
 
 
@@ -3117,4 +3123,69 @@ test('legacy trustworthy Artist lists self-heal their semantic version locally',
   } finally {
     db.query = originalQuery;
   }
+});
+
+
+test('Artist picker matches the requested icon-labeled artist and rejects a wrong lone picker', () => {
+  const messages = [fakeBotMessage('results', ['🗣 Ali Yasini'])];
+  assert.equal(findArtistButtonFor(messages, 'Ali Yasini'), '🗣 Ali Yasini');
+
+  const wrong = [fakeBotMessage('results', ['🗣 Ehaam'])];
+  assert.equal(findArtistButtonFor(wrong, 'Xaniar'), null);
+});
+
+
+test('explicit Track resolver rejects unrelated search results', async () => {
+  const row = '🎵 Ehaam, Boghze Modaam x 335.9k';
+  const client = new FakeTelegramClient({
+    'Xaniar Shabe Mahtab (feat. Ehaam)': [[fakeBotMessage('results', [row])]],
+    'Shabe Mahtab (feat. Ehaam)': [[fakeBotMessage('results', [row])]],
+  });
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(client, {
+      source: 'melobot', artist: 'Xaniar', title: 'Shabe Mahtab (feat. Ehaam)',
+      rawText: '🎬🎵 Xaniar, Shabe Mahtab (feat. Ehaam)', sourceStateVersion: 1,
+    }, { timeoutMs: 1200 }),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+});
+
+
+test('MTProto inbox routes forwarded media by chat id', async () => {
+  const client = new FakeEventTelegramClient();
+  installTelegramInbox(client);
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  const pending = collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 300, waitForTarget: true, afterSequence,
+    stopWhen: message => Boolean(message?.media?.document),
+  });
+  client.handlers[0]({ message: {
+    id: 99, senderId: 777n, out: false, message: '',
+    media: { document: { mimeType: 'audio/mpeg', attributes: [] } },
+  }, chatId: 42n });
+  const result = await pending;
+  assert.equal(result.messages.length, 1);
+  assert.ok(result.messages[0]?.media?.document);
+});
+
+
+test('MTProto inbox accepts edited menu events with an existing message id', async () => {
+  const client = new FakeEventTelegramClient();
+  installTelegramInbox(client);
+  client.handlers[0]({ message: { id: 10, senderId: 42n, out: false, message: 'old' }, chatId: 42n });
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  const pending = collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 300, waitForTarget: true, afterSequence,
+    stopWhen: message => Boolean(message?.replyMarkup),
+  });
+  client.handlers[1]({ message: {
+    id: 10, senderId: 42n, out: false, message: 'edited',
+    replyMarkup: { rows: [{ buttons: [{ text: 'کاور' }] }] },
+  }, chatId: 42n });
+  const result = await pending;
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].message, 'edited');
+  assert.equal(result.messages[0].__navazonEdited, true);
 });

@@ -9,10 +9,22 @@ const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
 
 const HEAVY_CRAWL_KINDS = new Set([
-  'track_hq',
-  'track_normal',
+  // Any task that touches MeloBot's stateful source lane is background-only
+  // after a long idle window. Foreground latency wins over cache warming.
+  'feed',
+  'home_discovery',
+  'playlist_discovery',
+  'artist_profile',
   'artist_bulk_media',
   'album_bulk_media',
+  'album_index',
+  'album_detail',
+  'track_enrich',
+  'track_hq',
+  'track_normal',
+  'track_metadata',
+  'track_cover',
+  'track_lyrics',
 ]);
 
 function authorized(req, token) {
