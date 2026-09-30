@@ -1,6 +1,4 @@
-import { createGunzip } from 'node:zlib';
-import { Readable } from 'node:stream';
-import readline from 'node:readline';
+import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { config } from './config.js';
 import { getArchiveDb } from './archiveDb.js';
@@ -52,18 +50,26 @@ async function fetchVerifiedGzip(url, expectedHash, attempts = 4) {
 }
 
 async function* readGzipJsonl(url, expectedHash) {
-  const buffer = await fetchVerifiedGzip(url, expectedHash);
-  const input = Readable.from([buffer]).pipe(createGunzip());
-  const rl = readline.createInterface({ input, crlfDelay: Infinity });
+  let compressed = await fetchVerifiedGzip(url, expectedHash);
+  const payload = gunzipSync(compressed);
+  compressed = null;
+
+  let start = 0;
   let lineNumber = 0;
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    lineNumber += 1;
-    try {
-      yield JSON.parse(line);
-    } catch (err) {
-      throw new Error(`Invalid JSONL ${url} line=${lineNumber}: ${err?.message || err}`);
+  for (let i = 0; i <= payload.length; i += 1) {
+    if (i !== payload.length && payload[i] !== 0x0a) continue;
+    let end = i;
+    if (end > start && payload[end - 1] === 0x0d) end -= 1;
+    if (end > start) {
+      lineNumber += 1;
+      const line = payload.subarray(start, end).toString('utf8');
+      try {
+        yield JSON.parse(line);
+      } catch (err) {
+        throw new Error(`Invalid JSONL ${url} line=${lineNumber}: ${err?.message || err}`);
+      }
     }
+    start = i + 1;
   }
 }
 
