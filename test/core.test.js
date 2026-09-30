@@ -2411,7 +2411,7 @@ test('derived Artist lists exclude rows without the ranking evidence they claim'
   assert.match(calls[1].sql, /popularity_count IS NOT NULL/i);
 });
 
-test('quality download shares one bounded source budget across menu and media', async () => {
+test('quality download gives confirmed media delivery its own bounded stage', async () => {
   const raw = '🎵 Artist, Slow Quality';
   const client = new FakeTelegramClient({
     [raw]: [[fakeBotMessage('track', ['کیفیت عالی'])]],
@@ -2424,9 +2424,13 @@ test('quality download shares one bounded source budget across menu and media', 
       client,
       { ...parseTrackButton(raw), source: 'melobot' },
       'hq',
-      { timeoutMs: 60, menuTimeoutMs: 60 }
+      {
+        timeoutMs: 600,
+        menuTimeoutMs: 300,
+        deliveryTimeoutMs: 120,
+      }
     ),
-    /did not deliver|source budget/
+    err => err?.code === 'MELOBOT_DELIVERY_TIMEOUT'
   );
   assert.ok(Date.now() - startedAt < 1500);
 });
