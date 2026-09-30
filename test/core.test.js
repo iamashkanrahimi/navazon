@@ -855,10 +855,12 @@ test('target-aware MTProto collection does not stop on a short quiet gap before 
   assert.equal(client.historyCalls, 0);
 });
 
-test('stale Track state uses reusable rawText directly before any search for normal quality', async () => {
+test('stale Track state refreshes search surface before clicking the Track row', async () => {
   const raw = '🎵 Reza Bahram, Yar';
   const normal = '📥 کیفیت معمولی';
+  const query = 'Reza Bahram Yar';
   const client = new FakeTelegramClient({
+    [query]: [[fakeBotMessage('search results', [raw])]],
     [raw]: [[fakeBotMessage('خب حالا میخوای با این آهنگ چه کنی ؟', [
       '📥 کیفیت عالی',
       normal,
@@ -886,14 +888,14 @@ test('stale Track state uses reusable rawText directly before any search for nor
     },
     'normal',
     {
-      timeoutMs: 900,
+      timeoutMs: 1800,
       menuTimeoutMs: 400,
       deliveryTimeoutMs: 400,
     }
   );
 
   assert.equal(result.quality, 'normal');
-  assert.deepEqual(client.sent, [raw, normal]);
+  assert.deepEqual(client.sent, [query, raw, normal]);
   assert.ok(result.audioMessage?.media?.document);
 });
 
