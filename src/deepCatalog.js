@@ -1051,10 +1051,9 @@ export class DeepCatalog {
         priority: priority + 20,
         taskKey: `track_hq:${trackKey}`,
       });
-      await this.enqueueTask('track_normal', payload, {
-        priority: priority + 10,
-        taskKey: `track_normal:${trackKey}`,
-      });
+      // Normal-quality media is intentionally no longer warmed in the
+      // background. Existing normal file_ids/media rows are preserved and the
+      // legacy task kind remains understood for compatibility with old rows.
     }
   }
 
