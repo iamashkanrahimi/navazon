@@ -2162,7 +2162,7 @@ test('MeloBot track pages keep lazy media actions visible but require source-bac
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
   assert.ok(texts.includes('📥 کیفیت عالی'));
-  assert.ok(texts.includes('📥 کیفیت معمولی'));
+  assert.equal(texts.includes('📥 کیفیت معمولی'), false);
   assert.ok(texts.includes('📝 متن'));
   assert.ok(texts.includes('🖼 کاور'));
   assert.ok(texts.includes('📋 مشخصات'));
@@ -2728,7 +2728,7 @@ test('track pages never expose Artist navigation for an inferred primary artist'
 
   assert.equal(callbacks.includes('tar:infer1'), false);
   assert.equal(callbacks.includes('tqh:infer1'), true);
-  assert.equal(callbacks.includes('tqn:infer1'), true);
+  assert.equal(callbacks.includes('tqn:infer1'), false);
   assert.equal(callbacks.includes('tcv:infer1'), true);
   assert.equal(callbacks.includes('tly:infer1'), true);
 });
@@ -4385,4 +4385,61 @@ test('deep Artist list reads past polluted relation rows before applying the vis
   } finally {
     db.query = originalQuery;
   }
+});
+
+
+test('Normal quality stays hidden even when a cached normal file_id and positive capability exist', () => {
+  const keyboard = trackPageKeyboard(
+    'normal-hidden',
+    { source: 'melobot', artist: 'Artist', title: 'Song' },
+    {
+      media: {
+        hq: { fileId: 'hq-file-id' },
+        normal: { fileId: 'normal-file-id' },
+      },
+    },
+    {
+      hasHq: true,
+      hasNormal: true,
+    }
+  );
+
+  const callbacks = keyboard.inline_keyboard
+    .flat()
+    .map(button => button.callback_data);
+  const labels = keyboard.inline_keyboard
+    .flat()
+    .map(button => button.text);
+
+  assert.equal(callbacks.includes('tqn:normal-hidden'), false);
+  assert.equal(labels.includes('📥 کیفیت معمولی'), false);
+  assert.equal(callbacks.includes('tqh:normal-hidden'), true);
+});
+
+test('new Track background warmups enqueue HQ but never Normal quality', async () => {
+  const catalog = new DeepCatalog();
+  const queued = [];
+
+  catalog.upsertTrack = async () => 'artist|song';
+  catalog.enqueueTask = async (kind, payload, options) => {
+    queued.push({ kind, payload, options });
+    return options?.taskKey || kind;
+  };
+
+  await catalog.seedTrackTasks(
+    {
+      source: 'melobot',
+      artist: 'Artist',
+      title: 'Song',
+      rawText: '🎵 Artist, Song',
+    },
+    {
+      includeMedia: true,
+      includeEnrichment: false,
+      preferBulk: false,
+    }
+  );
+
+  assert.equal(queued.some(item => item.kind === 'track_hq'), true);
+  assert.equal(queued.some(item => item.kind === 'track_normal'), false);
 });
