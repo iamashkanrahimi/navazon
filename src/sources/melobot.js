@@ -8,6 +8,7 @@ import {
 } from '../text.js';
 import {
   collectNewMessages,
+  getTelegramInboxSequence,
   isAudioMessage,
   latestMessageId,
   messageText,
@@ -17,6 +18,7 @@ import {
 // counter from wall-clock time so a process restart cannot accidentally reuse
 // an old token and treat a stale MeloBot reply-keyboard row as still clickable.
 let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const ALBUM_PRIMARY_CIRCUIT_MS = 10 * 60 * 1000;
 const ARTIST_NAV_TIMEOUT_MS = Math.min(config.searchTimeoutMs, 6000);
