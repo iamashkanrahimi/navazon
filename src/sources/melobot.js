@@ -2569,6 +2569,14 @@ function buildArtistContextFromPage(
   };
 }
 
+function isCurrentMeloBotSeed(seed = {}) {
+  return Boolean(
+    seed?.rawText
+    && seed?.source !== 'ahangify'
+    && Number(seed?.sourceStateVersion || -1) === Number(sourceStateVersion)
+  );
+}
+
 async function openMeloBotArtistDirectBase(
   client,
   artist,
@@ -2943,9 +2951,17 @@ export async function openMeloBotArtistFastFresh(
 ) {
   const remaining = sourceBudget(timeoutMs, 8000);
 
-  // The cheapest reliable path is the Artist picker itself. It does not depend
-  // on reopening an arbitrary Track row and therefore survives stale catalog
-  // Track buttons much better.
+  // A Track row from the currently visible MeloBot surface is already the
+  // cheapest possible route. Only use the direct Artist picker when that row
+  // is absent/stale; otherwise a speculative Artist query would invalidate it.
+  if (isCurrentMeloBotSeed(preferredSeed)) {
+    return openMeloBotArtistFast(
+      client,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+  }
+
   try {
     const directBase = await openMeloBotArtistDirectBase(
       client,
@@ -3141,18 +3157,22 @@ export async function resolveMeloBotArtistTrackList(
   const wantedMode = mode === 'recent' ? 'recent' : 'top';
 
   let directBase = null;
-  try {
-    directBase = await openMeloBotArtistDirectBase(
-      client,
-      artist,
-      { timeoutMs: Math.min(3600, remaining()) }
-    );
-  } catch (err) {
-    console.warn('[melobot artist list direct fallback]', artist, err.message);
+  let seed = isCurrentMeloBotSeed(preferredSeed) ? preferredSeed : null;
+
+  if (!seed) {
+    try {
+      directBase = await openMeloBotArtistDirectBase(
+        client,
+        artist,
+        { timeoutMs: Math.min(3600, remaining()) }
+      );
+    } catch (err) {
+      console.warn('[melobot artist list direct fallback]', artist, err.message);
+    }
+    seed = directBase?.seedTrack || null;
   }
 
-  let seed = directBase?.seedTrack || null;
-  if (!directBase) {
+  if (!directBase && !seed) {
     seed = await findArtistSeed(
       client,
       artist,
@@ -3302,15 +3322,23 @@ export async function prepareMeloBotBulkTopTracks(
   const remaining = sourceBudget(timeoutMs, 7000);
   let context = null;
 
-  try {
-    const directBase = await openMeloBotArtistDirectBase(
+  if (isCurrentMeloBotSeed(preferredSeed)) {
+    context = await openMeloBotArtist(
       client,
-      artist,
-      { timeoutMs: Math.min(3400, remaining()) }
+      preferredSeed,
+      { timeoutMs: remaining() }
     );
-    context = await completeMeloBotArtistTop(client, directBase, remaining);
-  } catch (err) {
-    console.warn('[melobot bulk top direct fallback]', artist, err.message);
+  } else {
+    try {
+      const directBase = await openMeloBotArtistDirectBase(
+        client,
+        artist,
+        { timeoutMs: Math.min(3400, remaining()) }
+      );
+      context = await completeMeloBotArtistTop(client, directBase, remaining);
+    } catch (err) {
+      console.warn('[melobot bulk top direct fallback]', artist, err.message);
+    }
   }
 
   if (!context) {
@@ -3342,14 +3370,22 @@ export async function prepareMeloBotBulkRecentTracks(
   const remaining = sourceBudget(timeoutMs, 6500);
   let context = null;
 
-  try {
-    context = await openMeloBotArtistDirectBase(
+  if (isCurrentMeloBotSeed(preferredSeed)) {
+    context = await openMeloBotArtistBase(
       client,
-      artist,
-      { timeoutMs: Math.min(3400, remaining()) }
+      preferredSeed,
+      { timeoutMs: remaining() }
     );
-  } catch (err) {
-    console.warn('[melobot bulk recent direct fallback]', artist, err.message);
+  } else {
+    try {
+      context = await openMeloBotArtistDirectBase(
+        client,
+        artist,
+        { timeoutMs: Math.min(3400, remaining()) }
+      );
+    } catch (err) {
+      console.warn('[melobot bulk recent direct fallback]', artist, err.message);
+    }
   }
 
   if (!context) {
