@@ -2803,6 +2803,21 @@ export async function openMeloBotArtistFastFresh(
   { timeoutMs = 8000 } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 8000);
+
+  // The cheapest reliable path is the Artist picker itself. It does not depend
+  // on reopening an arbitrary Track row and therefore survives stale catalog
+  // Track buttons much better.
+  try {
+    const directBase = await openMeloBotArtistDirectBase(
+      client,
+      artist,
+      { timeoutMs: Math.min(3600, remaining()) }
+    );
+    return await finalizeMeloBotArtistFast(client, directBase, remaining);
+  } catch (err) {
+    console.warn('[melobot direct artist fallback]', artist, err.message);
+  }
+
   const seed = await findArtistSeed(
     client,
     artist,
