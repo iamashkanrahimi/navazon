@@ -536,6 +536,60 @@ async function deliverBulkFromCacheIfComplete(session, tracks) {
   return { complete: true, sent, quality: 'hq', canonicalTracks };
 }
 
+export async function tryHandleCachedSearch(
+  chatId,
+  userId,
+  query,
+  statusMessageId
+) {
+  if (hasAlbumIntent(query)) return false;
+
+  const cacheKey = userSearchCacheKey(query);
+  let options = await catalog.getSearch(
+    cacheKey,
+    config.catalogSearchTtlMs
+  ).catch(() => null);
+  if (!Array.isArray(options) || !options.length) return false;
+
+  const startedAt = Date.now();
+  options = keepFullCoverageTracksWhenAvailable(query, options);
+  options = await deepCatalog.canonicalizeKnownTracks(options);
+  const albumOptions = await searchAlbumOptions(query, options);
+  if (!options.length && !albumOptions.length) return false;
+
+  const sessionId = newSessionId();
+  const fresh = {
+    chatId,
+    userId,
+    query,
+    messageId: statusMessageId,
+    options,
+    albumOptions,
+    albumFirst: albumOptions.length > 0 && !options.length,
+    artistContext: null,
+    artistSeed: null,
+    isFollowing: false,
+    albums: null,
+    albumsEmptyConfirmed: false,
+    currentAlbum: null,
+    currentAlbumView: null,
+    albumsPage: 0,
+    albumTrackPage: 0,
+    currentTrack: null,
+    trackBack: null,
+    artistBack: 'rs',
+    busy: false,
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  };
+  await sessions.set(sessionId, fresh);
+  await showResults(sessionId, fresh);
+
+  console.log(
+    `[fastpath.local] search cache_hit=true query=${JSON.stringify(query)} total_ms=${Date.now() - startedAt}`
+  );
+  return true;
+}
+
 export async function tryOpenTrackArtistLocal(
   sessionId,
   session,
