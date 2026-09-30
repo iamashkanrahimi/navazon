@@ -1,6 +1,10 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
-import { cleanText, normalizeText } from './text.js';
+import {
+  artistCreditMatchesContext,
+  cleanText,
+  normalizeText,
+} from './text.js';
 
 function clean(value = '') {
   return cleanText(value);
@@ -365,7 +369,10 @@ export class DeepCatalog {
   async setArtistList(artist, listType, tracks = []) {
     const artistKey = deepNormalize(artist);
     if (!artistKey) return;
-    const durableTracks = (tracks || []).filter(track => !track?.artistInferred);
+    const durableTracks = (tracks || []).filter(track =>
+      !track?.artistInferred
+      && artistCreditMatchesContext(track?.artist || '', artist)
+    );
     if (!durableTracks.length) return;
 
     await db.query('DELETE FROM deep_artist_tracks WHERE artist_key = $1 AND list_type = $2', [artistKey, listType]);
@@ -738,7 +745,11 @@ export class DeepCatalog {
         AND at.list_version >= 1
       ORDER BY at.rank ASC NULLS LAST, at.observed_at DESC
       LIMIT $3
-    `, [artistKey, listType, Math.max(1, Number(limit || 10))]);
+    `, [
+      artistKey,
+      listType,
+      Math.min(60, Math.max(1, Number(limit || 10)) * 3),
+    ]);
 
     return result.rows
       .map(row => ({
@@ -756,7 +767,11 @@ export class DeepCatalog {
         artistInferred: Boolean(row.source_data?.artistInferred)
           || inferredArtistFromFeaturedTitle(row.artist, row.title),
       }))
-      .filter(track => !track.artistInferred);
+      .filter(track =>
+        !track.artistInferred
+        && artistCreditMatchesContext(track.artist || '', artist)
+      )
+      .slice(0, Math.max(1, Number(limit || 10)));
   }
 
   async deriveArtistList(artist, listType = 'top', limit = 10) {
@@ -1036,10 +1051,9 @@ export class DeepCatalog {
         priority: priority + 20,
         taskKey: `track_hq:${trackKey}`,
       });
-      await this.enqueueTask('track_normal', payload, {
-        priority: priority + 10,
-        taskKey: `track_normal:${trackKey}`,
-      });
+      // Normal-quality media is intentionally no longer warmed in the
+      // background. Existing normal file_ids/media rows are preserved and the
+      // legacy task kind remains understood for compatibility with old rows.
     }
   }
 

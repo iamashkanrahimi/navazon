@@ -8,6 +8,8 @@ import {
   rankTracksForQuery,
   meaningfulSearchTokens,
   shouldUseSearchRelevanceFallback,
+  primarySearchQueries,
+  acceptsShortenedPrimarySearch,
 } from './text.js';
 import {
   searchMeloBot,
@@ -185,6 +187,7 @@ function interactionBudget(timeoutMs = Math.min(config.searchTimeoutMs, 14000)) 
   return remaining;
 }
 
+
 function chooseAhangifyMatch(results, track) {
   const wantedArtist = normalizeMatch(track?.artist || '');
   const wantedTitle = normalizeMatch(track?.title || '');
@@ -317,16 +320,52 @@ export async function searchPrimaryTyped(
 ) {
   const remaining = interactionBudget(timeoutMs);
   try {
-    const typed = await classifyMeloBotTypedSearchExact(
-      tg,
-      query,
-      await searchMeloBotTyped(tg, query, {
-        timeoutMs: Math.min(7000, remaining()),
-      }),
-      {
-        probeTimeoutMs: Math.min(2500, remaining()),
+    let typed = null;
+    let lastMeloError = null;
+    for (const sourceQuery of primarySearchQueries(query)) {
+      if (remaining.expired()) break;
+      try {
+        const raw = await searchMeloBotTyped(tg, sourceQuery, {
+          timeoutMs: Math.min(
+            sourceQuery === query ? 7000 : 3600,
+            remaining()
+          ),
+        });
+        const candidateTyped = await classifyMeloBotTypedSearchExact(
+          tg,
+          sourceQuery,
+          raw,
+          {
+            probeTimeoutMs: Math.min(2200, remaining()),
+          }
+        );
+
+        // Keep a shortened feat query only when its Track rows still cover the
+        // user's full intent. Otherwise try the original wording before
+        // settling for the shorter fallback.
+        if (
+          sourceQuery !== query
+          && !acceptsShortenedPrimarySearch(
+            query,
+            sourceQuery,
+            candidateTyped.tracks || []
+          )
+        ) {
+          // Never retain an under-specified shortened result as the final
+          // answer. It is useful only as a cheap probe; if the full query and
+          // fallback source both fail, returning the base song would violate
+          // the user's explicit featured/collaboration intent.
+          continue;
+        }
+
+        typed = candidateTyped;
+        if (typed.tracks?.length || typed.albums?.length) break;
+      } catch (err) {
+        lastMeloError = err;
       }
-    );
+    }
+    if (!typed) throw lastMeloError || new Error('MeloBot typed search returned no usable results.');
+
     const rankedMelo = rankTracksForQuery(query, typed.tracks || []);
     const meaningful = meaningfulSearchTokens(query);
     let selectedMelo = rankedMelo;

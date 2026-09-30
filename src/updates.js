@@ -32,6 +32,61 @@ import {
 const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
 const MAX_SOURCE_QUEUE = 30;
+const BULK_SOURCE_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
+
+function queueSessionSource(sessionId, session, job) {
+  return sourceQueue.push({
+    ...job,
+    sessionId,
+    userId: session?.userId,
+  });
+}
+
+async function cancelQueuedBulkForUser(userId, currentSessionId = null) {
+  const removed = sourceQueue.removeWhere(item =>
+    String(item?.userId || '') === String(userId || '')
+    && BULK_SOURCE_TYPES.has(item?.type)
+  );
+  if (removed.length) {
+    console.log(
+      `[queue supersede] user=${userId} removed_bulk=${removed.length}`
+    );
+    await Promise.allSettled(removed.map(async item => {
+      if (!item?.sessionId) return;
+      const staleSession = await sessions.get(item.sessionId);
+      if (!staleSession) return;
+      staleSession.busy = false;
+      staleSession.expiresAt = Date.now() + SESSION_TTL_MS;
+      await sessions.set(item.sessionId, staleSession);
+      if (item.messageId) {
+        try {
+          await bot.editMessageText(
+            staleSession.chatId,
+            item.messageId,
+            'درخواست قبلی متوقف شد چون درخواست جدیدی شروع کردی.'
+          );
+        } catch {}
+      }
+    }));
+  }
+  return {
+    count: removed.length,
+    currentSessionCancelled: Boolean(
+      currentSessionId
+      && removed.some(item => String(item?.sessionId || '') === String(currentSessionId))
+    ),
+  };
+}
+
+
+function artistChoicesFromCredit(value = '') {
+  return [...new Set(
+    String(value || '')
+      .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+      .map(part => part.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+  )];
+}
 
 function searchAllowed(userId) {
   const now = Date.now();
@@ -123,6 +178,13 @@ export async function handleUpdate(update) {
       return;
     }
     try {
+      // Any newer callback from the same user supersedes an older queued
+      // bulk request, including a newer bulk request from another session.
+      // This runs before the new callback can enqueue work, so it cannot cancel
+      // the request currently being created.
+      const cancelled = await cancelQueuedBulkForUser(session.userId, sessionId);
+      if (cancelled.currentSessionCancelled) session.busy = false;
+
       if (session.busy) {
         await bot.answerCallbackQuery(callback.id,{ text: 'یک لحظه…' });
         return;
@@ -166,7 +228,7 @@ export async function handleUpdate(update) {
         session.busy = true;
         const feedKey = parts[2];
         await bot.editMessageText(session.chatId, messageId, 'در حال دریافت آهنگ‌ها…');
-        sourceQueue.push({ type: 'home_feed', sessionId, messageId, feedKey });
+        queueSessionSource(sessionId, session, { type: 'home_feed', messageId, feedKey });
       } else if (action === 'hpl') {
         session.busy = false;
         await bot.editMessageText(
@@ -184,9 +246,8 @@ export async function handleUpdate(update) {
           return;
         }
         await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن پلی‌لیست…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'home_playlist',
-          sessionId,
           messageId,
           playlistKey: playlist.key,
         });
@@ -212,7 +273,7 @@ export async function handleUpdate(update) {
         if (!session.followedArtists?.[index]) return;
         session.busy = true;
         await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({ type: 'home_artist', sessionId, messageId, index });
+        queueSessionSource(sessionId, session, { type: 'home_artist', messageId, index });
       } else if (action === 't') {
         const track = session.options[Number(parts[2])]; if (!track) return;
         session.currentTrack = track;
@@ -224,20 +285,58 @@ export async function handleUpdate(update) {
         const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'search_album',
-          sessionId,
           messageId,
           index: Number(parts[2]),
         });
       } else if (action === 'ar') {
+        const seedIndex = Number(parts[2]);
+        const seed = session.options?.[seedIndex];
+        const artistChoices = artistChoicesFromCredit(seed?.artist || '');
+        if (artistChoices.length > 1) {
+          session.artistChoices = artistChoices;
+          session.artistChoiceSeedIndex = seedIndex;
+          session.busy = false;
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            'صفحه‌ی کدوم خواننده رو باز کنم؟',
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  ...artistChoices.map((artist, index) => ([{
+                    text: `🗣 ${artist}`,
+                    callback_data: `arc:${sessionId}:${index}`,
+                  }])),
+                  [{ text: '🔙 برگشت', callback_data: `rs:${sessionId}` }],
+                ],
+              },
+            }
+          );
+        } else {
+          session.busy = true;
+          await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+          queueSessionSource(sessionId, session, {
+            type: 'artist',
+            messageId,
+            seedIndex,
+          });
+        }
+      } else if (action === 'arc') {
+        const artist = session.artistChoices?.[Number(parts[2])];
+        if (!artist) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({
-          type: 'artist',
-          sessionId,
+        await bot.editMessageText(
+          session.chatId,
           messageId,
-          seedIndex: Number(parts[2]),
+          `در حال باز کردن صفحه‌ی ${artist}…`
+        );
+        queueSessionSource(sessionId, session, {
+          type: 'artist',
+          artistOverride: artist,
+          seedIndex: Number(session.artistChoiceSeedIndex),
+          messageId,
         });
       } else if (action === 'aar') {
         const albumIndex = Number(parts[2]);
@@ -245,9 +344,8 @@ export async function handleUpdate(update) {
         if (!album?.artist) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        sourceQueue.push({
+        queueSessionSource(sessionId, session, {
           type: 'artist_from_album',
-          sessionId,
           messageId,
           albumIndex,
         });
@@ -336,7 +434,7 @@ export async function handleUpdate(update) {
             'top'
           ).catch(() => false);
           if (!openedLocal) {
-            sourceQueue.push({ type: 'artist_list', mode: 'top', sessionId, messageId });
+            queueSessionSource(sessionId, session, { type: 'artist_list', mode: 'top', messageId });
           }
         }
       } else if (action === 'arn' && session.artistContext) {
@@ -355,7 +453,7 @@ export async function handleUpdate(update) {
             'recent'
           ).catch(() => false);
           if (!openedLocal) {
-            sourceQueue.push({ type: 'artist_list', mode: 'recent', sessionId, messageId });
+            queueSessionSource(sessionId, session, { type: 'artist_list', mode: 'recent', messageId });
           }
         }
       } else if (action === 'ata' && session.artistContext?.topTracks?.length) {
@@ -370,7 +468,7 @@ export async function handleUpdate(update) {
           'top'
         ).catch(() => false);
         if (!servedLocal) {
-          sourceQueue.push({ type: 'download_top', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'download_top', messageId });
         }
       } else if (action === 'rta' && session.artistContext?.recentTracks?.length) {
         session.busy = true;
@@ -383,7 +481,7 @@ export async function handleUpdate(update) {
           'recent'
         ).catch(() => false);
         if (!servedLocal) {
-          sourceQueue.push({ type: 'download_recent', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'download_recent', messageId });
         }
       } else if (action === 'at') {
         const tracks = session.artistContext?.topTracks || [];
@@ -405,9 +503,7 @@ export async function handleUpdate(update) {
         session.busy = true;
         const quality = action === 'tqh' ? 'hq' : 'normal';
         const statusText = quality === 'hq'
-          ? (session.currentTrack?.source === 'ahangify'
-              ? 'در حال دریافت بهترین کیفیت موجود…'
-              : 'در حال دریافت کیفیت عالی…')
+          ? 'در حال دریافت آهنگ…'
           : 'در حال دریافت کیفیت معمولی…';
         await bot.editMessageText(session.chatId,messageId,statusText);
         let servedFromCache = false;
@@ -431,7 +527,7 @@ export async function handleUpdate(update) {
         if (servedFromCache) {
           if (session.busy) await openTrackPageLocal(sessionId, session, messageId);
         } else {
-          sourceQueue.push({ type: 'track_quality', sessionId, quality, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_quality', quality, messageId });
         }
       } else if (action === 'tly') {
         if (!session.currentTrack) return;
@@ -444,7 +540,7 @@ export async function handleUpdate(update) {
         if (servedLyrics) {
           await openTrackPageLocal(sessionId, session, messageId);
         } else {
-          sourceQueue.push({ type: 'track_lyrics', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_lyrics', messageId });
         }
       } else if (action === 'tcv') {
         if (!session.currentTrack) return;
@@ -457,7 +553,7 @@ export async function handleUpdate(update) {
         if (servedCover) {
           await openTrackPageLocal(sessionId, session, messageId);
         } else {
-          sourceQueue.push({ type: 'track_cover', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_cover', messageId });
         }
       } else if (action === 'tif') {
         if (!session.currentTrack) return;
@@ -473,16 +569,52 @@ export async function handleUpdate(update) {
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tar') {
         if (!session.currentTrack) return;
-        session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        const openedLocal = await tryOpenTrackArtistLocal(
-          sessionId,
-          session,
-          messageId
-        ).catch(() => false);
-        if (!openedLocal) {
-          sourceQueue.push({ type: 'track_artist', sessionId, messageId });
+        const artistChoices = artistChoicesFromCredit(session.currentTrack.artist);
+        if (artistChoices.length > 1) {
+          session.artistChoices = artistChoices;
+          session.busy = false;
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            'صفحه‌ی کدوم خواننده رو باز کنم؟',
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  ...artistChoices.map((artist, index) => ([{
+                    text: `🗣 ${artist}`,
+                    callback_data: `tac:${sessionId}:${index}`,
+                  }])),
+                  [{ text: '🔙 برگشت', callback_data: `trt:${sessionId}` }],
+                ],
+              },
+            }
+          );
+        } else {
+          session.busy = true;
+          await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+          const openedLocal = await tryOpenTrackArtistLocal(
+            sessionId,
+            session,
+            messageId
+          ).catch(() => false);
+          if (!openedLocal) {
+            queueSessionSource(sessionId, session, { type: 'track_artist', messageId });
+          }
         }
+      } else if (action === 'tac') {
+        const artist = session.artistChoices?.[Number(parts[2])];
+        if (!artist || !session.currentTrack) return;
+        session.busy = true;
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          `در حال باز کردن صفحه‌ی ${artist}…`
+        );
+        queueSessionSource(sessionId, session, {
+          type: 'track_artist',
+          artistOverride: artist,
+          messageId,
+        });
       } else if (action === 'tal') {
         if (!session.currentTrack) return;
         session.busy = true;
@@ -509,7 +641,7 @@ export async function handleUpdate(update) {
             }
           );
         } else {
-          sourceQueue.push({ type: 'track_album', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'track_album', messageId });
         }
       } else if (action === 'alb') {
         const page = Number(parts[2] || 0);
@@ -528,7 +660,7 @@ export async function handleUpdate(update) {
             page
           ).catch(() => false);
           if (!openedLocal) {
-            sourceQueue.push({ type: 'albums', sessionId, page, messageId });
+            queueSessionSource(sessionId, session, { type: 'albums', page, messageId });
           }
         }
       } else if (action === 'ao') {
@@ -541,7 +673,7 @@ export async function handleUpdate(update) {
           Number(parts[2])
         ).catch(() => false);
         if (!openedLocal) {
-          sourceQueue.push({ type: 'album', sessionId, index: Number(parts[2]), messageId });
+          queueSessionSource(sessionId, session, { type: 'album', index: Number(parts[2]), messageId });
         }
       } else if (action === 'apg') {
         if (!session.currentAlbum?.tracks?.length) return;
@@ -581,7 +713,7 @@ export async function handleUpdate(update) {
           'album'
         ).catch(() => false);
         if (!servedLocal) {
-          sourceQueue.push({ type: 'download_album', sessionId, messageId });
+          queueSessionSource(sessionId, session, { type: 'download_album', messageId });
         }
       }
     } finally {
@@ -620,6 +752,11 @@ export async function handleUpdate(update) {
     await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
     return;
   }
+  // A new explicit query supersedes queued bulk work from the same user.
+  // Removing only pending bulk jobs keeps the shared MeloBot lane responsive
+  // without cancelling another user's active request or ordinary navigation.
+  await cancelQueuedBulkForUser(userId);
+
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
   const servedFromCache = await tryHandleCachedSearch(
     chatId,

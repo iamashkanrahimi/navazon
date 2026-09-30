@@ -149,8 +149,10 @@ async function enqueueArtistBulkTasks(artist, seedTrack, {
   return {
     recentHq: await plan(recentTracks, 'recent', 'hq', 122, 114),
     topHq: await plan(topTracks, 'top', 'hq', 120, 114, skipTopHq),
-    recentNormal: await plan(recentTracks, 'recent', 'normal', 76, 72),
-    topNormal: await plan(topTracks, 'top', 'normal', 74, 72),
+    // Keep the response shape stable for any diagnostics that still read these
+    // fields, but never enqueue new Normal-quality warming work.
+    recentNormal: { skipped: 'normal_quality_hidden', missing: 0 },
+    topNormal: { skipped: 'normal_quality_hidden', missing: 0 },
   };
 }
 
@@ -772,7 +774,8 @@ async function runAlbumDetail(task) {
   // while this background task owns the serialized source queue.
 
   // Keep background Album discovery metadata-only. User-triggered downloads
-  // populate HQ/Normal caches lazily without blocking the source lane.
+  // populate the HQ cache lazily without blocking the source lane. Existing
+  // Normal-quality cache rows are preserved but no new Normal warming is scheduled.
   const missingHq = await deepCatalog.missingMediaTracks(tracks, 'hq');
   const albumHqComplete = missingHq.length === 0;
 

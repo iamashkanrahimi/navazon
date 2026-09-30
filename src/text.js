@@ -60,6 +60,29 @@ export function hasCompositeArtistSeparators(value = '') {
   return /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
 }
 
+export function artistCreditParts(value = '') {
+  return cleanText(value)
+    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .map(normalizeText)
+    .filter(Boolean);
+}
+
+export function artistCreditMatchesContext(credit = '', artist = '') {
+  const target = normalizeText(artist);
+  const actual = normalizeText(credit);
+  if (!target || !actual) return false;
+  if (target === actual) return true;
+
+  const wantedParts = artistCreditParts(artist);
+  const actualParts = artistCreditParts(credit);
+  if (!wantedParts.length || !actualParts.length) return false;
+
+  if (wantedParts.length === 1) {
+    return actualParts.includes(wantedParts[0]);
+  }
+  return wantedParts.every(part => actualParts.includes(part));
+}
+
 export function hasAlbumIntent(query = '') {
   const tokens = normalizeText(query).split(' ').filter(Boolean);
   return tokens.some(token => ALBUM_INTENT_WORDS.has(token));
@@ -138,6 +161,25 @@ export function unrequestedTrackVariantWords(query = '', track = {}) {
   );
 }
 
+export function primarySearchQueries(query = '') {
+  const full = cleanText(query);
+  if (!full) return [];
+
+  const base = full
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
+
+  if (base === full) return [full];
+
+  // Explicit version intent is more important than shaving a source round
+  // trip: "feat ... remix/live" must not silently fall back to the original.
+  const hasVariantIntent = /(?:^|\s)(?:remix|live|acoustic|version|edit|mix|ریمیکس|اجرای\s*زنده|آکوستیک)(?:\s|$)/iu
+    .test(full);
+  return [...new Set(
+    (hasVariantIntent ? [full, base] : [base, full]).filter(Boolean)
+  )];
+}
+
 export function meaningfulSearchTokens(query = '') {
   return normalizeText(query)
     .split(' ')
@@ -182,6 +224,25 @@ export function scoreTrackQueryMatch(query = '', track = {}) {
     unrequestedVariants,
   };
 }
+
+export function acceptsShortenedPrimarySearch(
+  originalQuery = '',
+  sourceQuery = '',
+  tracks = []
+) {
+  if (normalizeText(originalQuery) === normalizeText(sourceQuery)) return true;
+
+  const meaningful = meaningfulSearchTokens(originalQuery);
+  if (!meaningful.length) return true;
+
+  const bestCoverage = (tracks || []).reduce(
+    (best, track) =>
+      Math.max(best, scoreTrackQueryMatch(originalQuery, track).coverage),
+    0
+  );
+  return bestCoverage >= meaningful.length;
+}
+
 
 
 function scriptFamily(value = '') {

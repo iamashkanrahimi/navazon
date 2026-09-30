@@ -287,17 +287,17 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
     || (isMeloBot && capabilities.hasHq !== false)
   ) {
     qualityRow.push({
-      text: track?.source === 'ahangify' ? '📥 بهترین کیفیت موجود' : '📥 کیفیت عالی',
+      // Keep quality selection out of the product UI. Navazon serves the best
+      // available primary download path behind one clear action.
+      text: '📥 دانلود آهنگ',
       callback_data: `tqh:${sessionId}`,
     });
   }
-  if (
-    media.normal
-    || capabilities.hasNormal === true
-    || (isMeloBot && capabilities.hasNormal !== false)
-  ) {
-    qualityRow.push({ text: '📥 کیفیت معمولی', callback_data: `tqn:${sessionId}` });
-  }
+  // Normal-quality files/capabilities remain stored for backward
+  // compatibility, but the action is intentionally hidden from all newly
+  // rendered Track pages. Old Telegram messages may still carry a legacy
+  // tqn:* callback and are handled by the callback router without exposing a
+  // new button.
   if (qualityRow.length) rows.push(qualityRow);
 
   const extras = [];

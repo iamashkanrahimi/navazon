@@ -23,6 +23,7 @@ const {
   resolveMeloBotAlbumsFromLiveArtistContext,
   resolveMeloBotArtistAlbumsDirectFirst,
   openMeloBotArtist,
+  openMeloBotArtistFastFresh,
   openMeloBotAlbumByTitle,
   openMeloBotAlbumDirectByTitle,
   openMeloBotAlbumRobustByTitle,
@@ -37,6 +38,7 @@ const {
   downloadMeloBotTopTracks,
   downloadMeloBotRecentTracks,
   downloadMeloBotAlbumTracks,
+  downloadMeloBotBulkTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
   searchMeloBot,
@@ -93,6 +95,9 @@ const {
   shouldUseSearchRelevanceFallback,
   hasCompositeArtistSeparators,
   keepFullCoverageTracksWhenAvailable,
+  primarySearchQueries,
+  acceptsShortenedPrimarySearch,
+  artistCreditMatchesContext,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -621,7 +626,7 @@ test('state-safe album opener is exported for paginated album flows', () => {
   assert.equal(typeof openMeloBotAlbumByTitle, 'function');
 });
 
-test('Ahangify track pages label HQ fallback as best available quality', () => {
+test('all primary Track downloads use one source-agnostic Download Track action', () => {
   const keyboard = trackPageKeyboard(
     'sess',
     { source: 'ahangify', artist: 'Artist', title: 'Track' },
@@ -629,7 +634,8 @@ test('Ahangify track pages label HQ fallback as best available quality', () => {
     { hasHq: true }
   );
   const labels = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(labels.includes('📥 بهترین کیفیت موجود'));
+  assert.ok(labels.includes('📥 دانلود آهنگ'));
+  assert.equal(labels.includes('📥 بهترین کیفیت موجود'), false);
   assert.equal(labels.includes('📥 کیفیت عالی'), false);
 });
 
@@ -2156,8 +2162,9 @@ test('MeloBot track pages keep lazy media actions visible but require source-bac
     {}
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 کیفیت عالی'));
-  assert.ok(texts.includes('📥 کیفیت معمولی'));
+  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.equal(texts.includes('📥 کیفیت عالی'), false);
+  assert.equal(texts.includes('📥 کیفیت معمولی'), false);
   assert.ok(texts.includes('📝 متن'));
   assert.ok(texts.includes('🖼 کاور'));
   assert.ok(texts.includes('📋 مشخصات'));
@@ -2723,7 +2730,7 @@ test('track pages never expose Artist navigation for an inferred primary artist'
 
   assert.equal(callbacks.includes('tar:infer1'), false);
   assert.equal(callbacks.includes('tqh:infer1'), true);
-  assert.equal(callbacks.includes('tqn:infer1'), true);
+  assert.equal(callbacks.includes('tqn:infer1'), false);
   assert.equal(callbacks.includes('tcv:infer1'), true);
   assert.equal(callbacks.includes('tly:infer1'), true);
 });
@@ -3166,7 +3173,8 @@ test('tri-state track UI hides a quality after the current session confirms fail
     }
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 کیفیت عالی'));
+  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
   assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
 });
@@ -4011,4 +4019,430 @@ test('Artist navigation rejects a generic search-results surface after the Artis
     ),
     err => err?.code === 'MELOBOT_ARTIST_PAGE_TIMEOUT'
   );
+});
+
+
+test('SerialQueue can remove stale pending bulk work without touching active work', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const order = [];
+  const queue = new SerialQueue(async item => {
+    order.push(item.id);
+    if (item.id === 'active') await gate;
+  });
+
+  queue.push({ id: 'active', type: 'track_quality', userId: 1 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  queue.push({ id: 'old-top', type: 'download_top', userId: 1 });
+  queue.push({ id: 'other-user', type: 'download_top', userId: 2 });
+  queue.push({ id: 'interactive', type: 'search', userId: 1 });
+
+  const removed = queue.removeWhere(item =>
+    item.userId === 1 && item.type === 'download_top'
+  );
+  assert.deepEqual(removed.map(item => item.id), ['old-top']);
+
+  release();
+  const deadline = Date.now() + 500;
+  while (!queue.isIdle() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(order, ['active', 'other-user', 'interactive']);
+});
+
+test('fresh Artist open uses exact Artist picker without reopening a Track seed', async () => {
+  const artistPicker = '🗣 Farhad';
+  const client = new FakeTelegramClient({
+    Farhad: [[
+      fakeBotMessage(
+        'یکی از خواننده ها رو انتخاب کن',
+        [artistPicker, '🗣 Farhad Ravanbakhsh', '🔍 نتیجه در لیست نیست (جستجوی عمیق) 🔍']
+      ),
+    ]],
+    [artistPicker]: [[
+      fakeBotMessage(
+        'Farhad',
+        [
+          '🎵 Farhad, Ayneha',
+          '🎵 Farhad, Gole Yakh',
+          '📥 دانلود همه (عالی)',
+          'نمایش به ترتیب پربازدیدترین',
+          '💿 آلبوم‌ها',
+        ]
+      ),
+    ]],
+  });
+
+  const context = await openMeloBotArtistFastFresh(
+    client,
+    'Farhad',
+    null,
+    { timeoutMs: 1600 }
+  );
+
+  assert.equal(context.artist, 'Farhad');
+  assert.equal(context.recentTracks.length, 2);
+  assert.deepEqual(client.sent, ['Farhad', artistPicker]);
+});
+
+test('collaboration Artist picker never silently collapses to one member', async () => {
+  const seedRaw = '🎵 Ali Sorena & Bahram, Khoone Khorshid';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[
+      fakeBotMessage('track', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])
+    ]],
+    [artistButton]: [[
+      fakeBotMessage('کدام خواننده؟', ['🗣 Bahram', '🗣 Ali Sorena'])
+    ]],
+  });
+
+  await assert.rejects(
+    () => openMeloBotArtist(
+      client,
+      {
+        ...parseTrackButton(seedRaw),
+        source: 'melobot',
+        sourceStateVersion: getMeloBotStateVersion(),
+      },
+      { timeoutMs: 1000 }
+    ),
+    err => err?.code === 'MELOBOT_ARTIST_RESOLVE_FAILED'
+  );
+
+  assert.deepEqual(client.sent, [seedRaw, artistButton]);
+});
+
+test('bulk download refuses a stale reply-keyboard surface before clicking it', async () => {
+  const state = getMeloBotStateVersion();
+  const client = new FakeTelegramClient({
+    unrelated: [[fakeBotMessage('results', ['🎵 Other, Song'])]],
+  });
+
+  await searchMeloBotTyped(client, 'unrelated', { timeoutMs: 300 });
+
+  await assert.rejects(
+    () => downloadMeloBotBulkTracks(client, {
+      button: '📥 دانلود همه (عالی)',
+      label: 'test bulk',
+      expectedCount: 10,
+      expectedStateVersion: state,
+      timeoutMs: 500,
+    }),
+    err => err?.code === 'MELOBOT_BULK_SURFACE_STALE'
+  );
+  assert.deepEqual(client.sent, ['unrelated']);
+});
+
+test('featured-query planner tries the stable base credit before the verbose query', () => {
+  assert.deepEqual(
+    primarySearchQueries('Sajadii Khoone Ft Shervin Hajipour'),
+    ['Sajadii Khoone', 'Sajadii Khoone Ft Shervin Hajipour']
+  );
+  assert.deepEqual(
+    primarySearchQueries('Shayea Sadegh'),
+    ['Shayea Sadegh']
+  );
+});
+
+
+test('featured remix intent stays ahead of the shortened base query', () => {
+  assert.deepEqual(
+    primarySearchQueries('Xaniar Shabe Mahtab feat Ehaam remix'),
+    [
+      'Xaniar Shabe Mahtab feat Ehaam remix',
+      'Xaniar Shabe Mahtab',
+    ]
+  );
+  assert.deepEqual(
+    primarySearchQueries('Sajadii Khoone feat Shervin Hajipour'),
+    [
+      'Sajadii Khoone',
+      'Sajadii Khoone feat Shervin Hajipour',
+    ]
+  );
+});
+
+test('incidental album suggestions are confirmed but never treated as a complete discography', () => {
+  const surface = inspectMeloBotAlbumListing([
+    fakeBotMessage(
+      'نتیجه جستجو',
+      ['💿 Mojaz - Hichkas']
+    ),
+  ]);
+
+  assert.equal(surface.confirmed, true);
+  assert.equal(surface.albums.length, 1);
+  assert.equal(surface.complete, false);
+});
+
+test('declared album listing can still be complete without pagination', () => {
+  const surface = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده 1',
+    replyMarkup: {
+      rows: [{ buttons: [{ text: 'Mojaz (13)' }] }],
+    },
+  }]);
+
+  assert.equal(surface.confirmed, true);
+  assert.equal(surface.declaredCount, 1);
+  assert.equal(surface.albums.length, 1);
+  assert.equal(surface.complete, true);
+});
+
+
+test('stale Artist seed recovers through one direct search row without repeating the Artist query', async () => {
+  const row = '🎵 Farhad, Ayneha';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    Farhad: [[
+      fakeBotMessage(
+        'نتیجه جستجو',
+        [row, '🎵 Farhad Ravanbakhsh, Ayeneh', '🔍 نتیجه در لیست نیست (جستجوی عمیق) 🔍']
+      ),
+    ]],
+    [row]: [[fakeBotMessage('track menu', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])]],
+    [artistButton]: [[
+      fakeBotMessage('Farhad', ['🎵 Farhad, Ayneha', '🎵 Farhad, Gole Yakh', '💿 آلبوم‌ها'])
+    ]],
+  });
+
+  const context = await openMeloBotArtistFastFresh(
+    client,
+    'Farhad',
+    {
+      ...parseTrackButton(row),
+      source: 'melobot',
+      sourceStateVersion: 1,
+    },
+    { timeoutMs: 1800 }
+  );
+
+  assert.equal(context.artist, 'Farhad');
+  assert.deepEqual(context.recentTracks.map(track => track.title), ['Ayneha', 'Gole Yakh']);
+  assert.deepEqual(client.sent, ['Farhad', row, artistButton]);
+});
+
+test('Track recovery follows one exact nested source row before declaring menu timeout', async () => {
+  const staleRow = '🎵 Farhad, Ayneha x 1M';
+  const freshRow = '🎵 Farhad, Ayneha x 1.1M';
+  const nestedRow = '🎵 Farhad, Ayneha x 1.2M';
+  const hq = '📥 کیفیت عالی';
+  const client = new FakeTelegramClient({
+    'Farhad Ayneha': [[fakeBotMessage('results', [freshRow])]],
+    [freshRow]: [[fakeBotMessage('refined results', [nestedRow])]],
+    [nestedRow]: [[fakeBotMessage('track menu', [hq, '📥 کیفیت معمولی', 'بیشتر...'])]],
+    [hq]: [[{
+      message: '',
+      media: {
+        document: {
+          mimeType: 'audio/mpeg',
+          attributes: [{ className: 'DocumentAttributeAudio', title: 'Ayneha', performer: 'Farhad' }],
+        },
+      },
+    }]],
+  });
+
+  const result = await downloadMeloBotTrackQuality(
+    client,
+    {
+      ...parseTrackButton(staleRow),
+      source: 'melobot',
+      sourceStateVersion: 1,
+    },
+    'hq',
+    { timeoutMs: 1800, menuTimeoutMs: 600, deliveryTimeoutMs: 500 }
+  );
+
+  assert.ok(result.audioMessage);
+  assert.deepEqual(client.sent, ['Farhad Ayneha', freshRow, nestedRow, hq]);
+});
+
+
+test('shortened featured search is accepted only when source rows preserve the full request', () => {
+  assert.equal(
+    acceptsShortenedPrimarySearch(
+      'Sajadii Khoone feat Shervin Hajipour',
+      'Sajadii Khoone',
+      [{ artist: 'Sajadii', title: 'Khoone' }]
+    ),
+    false
+  );
+  assert.equal(
+    acceptsShortenedPrimarySearch(
+      'Sajadii Khoone feat Shervin Hajipour',
+      'Sajadii Khoone',
+      [{ artist: 'Sajadii', title: 'Khoone (feat. Shervin Hajipour)' }]
+    ),
+    true
+  );
+});
+
+
+test('direct Artist search reuses a plain Track result instead of mistaking it for an Artist page', async () => {
+  const row = '🎵 Farhad, Ayneha';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    Farhad: [[
+      fakeBotMessage('نتیجه جستجو', [row])
+    ]],
+    [row]: [[
+      fakeBotMessage('track menu', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])
+    ]],
+    [artistButton]: [[
+      fakeBotMessage('Farhad', [
+        '🎵 Farhad, Gole Yakh',
+        '🎵 Farhad, Ayneha',
+        '📥 دانلود همه (عالی)',
+      ])
+    ]],
+  });
+
+  const opened = await openMeloBotArtistFastFresh(
+    client,
+    'Farhad',
+    null,
+    { timeoutMs: 1800 }
+  );
+
+  assert.equal(opened.artist, 'Farhad');
+  assert.equal(opened.recentTracks.length, 2);
+  assert.deepEqual(client.sent, [ 'Farhad', row, artistButton ]);
+});
+
+
+test('Artist-credit cache guard keeps real collaborations but rejects partial-name pollution', () => {
+  assert.equal(artistCreditMatchesContext('Farhad', 'Farhad'), true);
+  assert.equal(artistCreditMatchesContext('Farhad Ravanbakhsh', 'Farhad'), false);
+  assert.equal(artistCreditMatchesContext('Shayea & Sadegh', 'Shayea'), true);
+  assert.equal(artistCreditMatchesContext('Shayea', 'Shayea & Sadegh'), false);
+  assert.equal(artistCreditMatchesContext('Sadegh & Shayea', 'Shayea & Sadegh'), true);
+});
+
+test('Catalog Artist context rejects a polluted snapshot instead of returning a partial page', async () => {
+  const store = new CatalogStore();
+  store.readArtist = async () => ({
+    key: 'farhad',
+    node: {
+      name: 'Farhad',
+      artistUpdatedAt: new Date().toISOString(),
+      topTracksVersion: 1,
+      recentTracksVersion: 1,
+      topTracks: [
+        { artist: 'Farhad Ravanbakhsh', title: 'Ayeneh', rawText: 'Farhad Ravanbakhsh, Ayeneh' },
+        { artist: 'Farhad', title: 'Gole Yakh', rawText: 'Farhad, Gole Yakh' },
+      ],
+      recentTracks: [],
+    },
+  });
+
+  const context = await store.getArtistContext('Farhad', 60_000);
+  assert.equal(context, null);
+});
+
+
+test('deep Artist list reads past polluted relation rows before applying the visible limit', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    const wrong = Array.from({ length: 10 }, (_, index) => ({
+      artist: 'Farhad Ravanbakhsh',
+      title: `Wrong ${index + 1}`,
+      album: null,
+      duration_seconds: null,
+      popularity_count: 1000 - index,
+      popularity_text: null,
+      content_origin: 'unknown',
+      availability_policy: 'unknown',
+      source_data: {
+        source: 'melobot',
+        rawText: `🎵 Farhad Ravanbakhsh, Wrong ${index + 1}`,
+      },
+      rank: index + 1,
+    }));
+    const correct = Array.from({ length: 10 }, (_, index) => ({
+      artist: 'Farhad',
+      title: `Correct ${index + 1}`,
+      album: null,
+      duration_seconds: null,
+      popularity_count: 900 - index,
+      popularity_text: null,
+      content_origin: 'unknown',
+      availability_policy: 'unknown',
+      source_data: {
+        source: 'melobot',
+        rawText: `🎵 Farhad, Correct ${index + 1}`,
+      },
+      rank: index + 11,
+    }));
+    return { rows: [...wrong, ...correct] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const tracks = await catalog.getArtistList('Farhad', 'top', 10);
+    assert.equal(tracks.length, 10);
+    assert.ok(tracks.every(track => track.artist === 'Farhad'));
+    assert.equal(calls[0].params[2], 30);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('Normal quality stays hidden even when a cached normal file_id and positive capability exist', () => {
+  const keyboard = trackPageKeyboard(
+    'normal-hidden',
+    { source: 'melobot', artist: 'Artist', title: 'Song' },
+    {
+      media: {
+        hq: { fileId: 'hq-file-id' },
+        normal: { fileId: 'normal-file-id' },
+      },
+    },
+    {
+      hasHq: true,
+      hasNormal: true,
+    }
+  );
+
+  const callbacks = keyboard.inline_keyboard
+    .flat()
+    .map(button => button.callback_data);
+  const labels = keyboard.inline_keyboard
+    .flat()
+    .map(button => button.text);
+
+  assert.equal(callbacks.includes('tqn:normal-hidden'), false);
+  assert.equal(labels.includes('📥 کیفیت معمولی'), false);
+  assert.equal(callbacks.includes('tqh:normal-hidden'), true);
+});
+
+test('new Track background warmups enqueue HQ but never Normal quality', async () => {
+  const catalog = new DeepCatalog();
+  const queued = [];
+
+  catalog.upsertTrack = async () => 'artist|song';
+  catalog.enqueueTask = async (kind, payload, options) => {
+    queued.push({ kind, payload, options });
+    return options?.taskKey || kind;
+  };
+
+  await catalog.seedTrackTasks(
+    {
+      source: 'melobot',
+      artist: 'Artist',
+      title: 'Song',
+      rawText: '🎵 Artist, Song',
+    },
+    {
+      includeMedia: true,
+      includeEnrichment: false,
+      preferBulk: false,
+    }
+  );
+
+  assert.equal(queued.some(item => item.kind === 'track_hq'), true);
+  assert.equal(queued.some(item => item.kind === 'track_normal'), false);
 });

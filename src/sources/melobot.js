@@ -762,12 +762,20 @@ export function inspectMeloBotAlbumListing(messages = []) {
   }
 
   const nextButton = albumNextButton(messages);
+  const body = (messages || [])
+    .map(messageText)
+    .filter(Boolean)
+    .join(' ');
+  const explicitListingSurface = declaredCount !== null
+    || explicitEmpty
+    || /(?:آلبوم|البوم|album).*(?:انتخاب|خواننده|لیست|list|choose|artist)/iu.test(body)
+    || /(?:انتخاب|لیست|choose|list).*(?:آلبوم|البوم|album)/iu.test(body);
   const confirmed = albums.length > 0
     || declaredCount !== null
     || explicitEmpty;
   const confirmedEmpty = albums.length === 0 && explicitEmpty;
   const complete = confirmedEmpty
-    || (albums.length > 0 && (
+    || (albums.length > 0 && explicitListingSurface && (
       declaredCount !== null
         ? albums.length >= declaredCount
         : !nextButton
@@ -1057,6 +1065,71 @@ function inspectSelectedCandidateSurface(messages = [], candidate = {}) {
   }
 
   return { kind: 'unknown', tracks: [] };
+}
+
+
+function exactNestedTrackButton(messages = [], candidate = {}) {
+  const wantedTitle = titleIdentity(candidate?.title || '');
+  if (!wantedTitle) return null;
+
+  for (const rawText of buttonsFromMessages(messages)) {
+    const track = parseTrackButton(rawText, candidate?.artist || '');
+    if (!track || titleIdentity(track.title || '') !== wantedTitle) continue;
+    if (
+      candidate?.artist
+      && track?.artist
+      && !artistIdentityCompatible(candidate.artist, track.artist)
+    ) continue;
+    return rawText;
+  }
+  return null;
+}
+
+async function followNestedTrackSurface(
+  client,
+  messages,
+  candidate,
+  {
+    clickedText = '',
+    timeoutMs = 1800,
+    allowAlbumSurface = false,
+  } = {}
+) {
+  const nestedButton = exactNestedTrackButton(messages, candidate);
+  if (!nestedButton || clean(nestedButton) === clean(clickedText)) return null;
+
+  const nested = await sendAndCollect(client, nestedButton, {
+    timeoutMs: Math.max(700, Number(timeoutMs || 1800)),
+    quietMs: 450,
+    stopWhen: message =>
+      hasTrackActionMenu([message])
+      || inspectSelectedCandidateSurface([message], candidate).kind === 'album',
+    stopWhenBatch: batch =>
+      hasTrackActionMenu(batch)
+      || inspectSelectedCandidateSurface(batch, candidate).kind === 'album',
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+  });
+
+  if (hasTrackActionMenu(nested.messages)) {
+    const refreshed = { ...candidate, sourceStateVersion: nested.stateVersion };
+    rememberLiveTrackSurface(client, refreshed, nested.messages, nested.stateVersion);
+    return {
+      messages: nested.messages,
+      candidate: refreshed,
+      route: 'nested_track_refinement',
+    };
+  }
+
+  const surface = inspectSelectedCandidateSurface(nested.messages, candidate);
+  if (allowAlbumSurface && surface.kind === 'album') {
+    return {
+      messages: nested.messages,
+      candidate: { ...candidate, sourceStateVersion: nested.stateVersion },
+      route: 'nested_album_refinement',
+    };
+  }
+  return null;
 }
 
 function exactSearchTrackMatch(query, tracks = []) {
@@ -1399,6 +1472,9 @@ async function openTrackMenuWithCandidate(
   const requested = candidate || {};
   const directText = clean(requested.rawText || '');
   const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
+  const remaining = sourceBudget(cap, cap);
+  const stepTimeout = requestedMs =>
+    Math.max(25, Math.min(Math.max(25, Number(requestedMs || 0)), remaining()));
 
   const liveSurface = currentLiveTrackSurface(client, requested);
   if (liveSurface) {
@@ -1426,7 +1502,7 @@ async function openTrackMenuWithCandidate(
     });
     if (backButton) {
       const back = await sendAndCollect(client, backButton, {
-        timeoutMs: Math.min(cap, 2200),
+        timeoutMs: stepTimeout(2200),
         quietMs: 500,
         stopWhen: message => hasTrackActionMenu([message]),
         stopWhenBatch: messages => hasTrackActionMenu(messages),
@@ -1458,14 +1534,16 @@ async function openTrackMenuWithCandidate(
 
   if (canClickCurrentSurface) {
     const direct = await sendAndCollect(client, directText, {
-      timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
+      timeoutMs: stepTimeout(Math.max(1800, Number(directTimeoutMs || 3000))),
       quietMs: 550,
       stopWhen: m =>
         hasTrackActionMenu([m])
-        || inspectSelectedCandidateSurface([m], requested).kind === 'album',
+        || inspectSelectedCandidateSurface([m], requested).kind === 'album'
+        || Boolean(exactNestedTrackButton([m], requested)),
       stopWhenBatch: messages =>
         hasTrackActionMenu(messages)
-        || inspectSelectedCandidateSurface(messages, requested).kind === 'album',
+        || inspectSelectedCandidateSurface(messages, requested).kind === 'album'
+        || Boolean(exactNestedTrackButton(messages, requested)),
       waitForTarget: true,
       reconcileOnTimeout: true,
     });
@@ -1487,10 +1565,37 @@ async function openTrackMenuWithCandidate(
         route: 'direct_album',
       };
     }
-    console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
+
+    const refined = await followNestedTrackSurface(
+      client,
+      direct.messages,
+      requested,
+      {
+        clickedText: directText,
+        timeoutMs: stepTimeout(1600),
+        allowAlbumSurface,
+      }
+    );
+    if (refined) {
+      console.log(
+        `[melobot.track_menu] route=${refined.route} track=${JSON.stringify(trackLabel(requested))}`
+      );
+      return refined;
+    }
+
+    console.log(
+      `[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))} surface=${describeMeloBotSurface(direct.messages)}`
+    );
   } else if (directText) {
     console.log(
       `[melobot.track_menu] route=stale_surface_refresh track=${JSON.stringify(trackLabel(requested))}`
+    );
+  }
+
+  if (remaining.expired()) {
+    throw meloError(
+      'MELOBOT_TRACK_MENU_TIMEOUT',
+      `MeloBot track recovery budget exhausted for: ${trackLabel(requested)}`
     );
   }
 
@@ -1498,7 +1603,7 @@ async function openTrackMenuWithCandidate(
     client,
     requested,
     {
-      timeoutMs: Math.min(cap, Math.max(2000, Number(resolveTimeoutMs || 3500))),
+      timeoutMs: stepTimeout(Math.max(2000, Number(resolveTimeoutMs || 3500))),
       forceIdentity: Boolean(requested.artistInferred),
     }
   );
@@ -1506,15 +1611,24 @@ async function openTrackMenuWithCandidate(
     throw meloError('MELOBOT_TRACK_RESOLVE_FAILED', 'MeloBot live track button was not found.');
   }
 
+  if (remaining.expired()) {
+    throw meloError(
+      'MELOBOT_TRACK_MENU_TIMEOUT',
+      `MeloBot track-menu budget exhausted for: ${trackLabel(liveCandidate)}`
+    );
+  }
+
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: Math.min(cap, Math.max(2200, Number(menuTimeoutMs || 4000))),
+    timeoutMs: stepTimeout(Math.max(2200, Number(menuTimeoutMs || 4000))),
     quietMs: 550,
     stopWhen: m =>
       hasTrackActionMenu([m])
-      || inspectSelectedCandidateSurface([m], liveCandidate).kind === 'album',
+      || inspectSelectedCandidateSurface([m], liveCandidate).kind === 'album'
+      || Boolean(exactNestedTrackButton([m], liveCandidate)),
     stopWhenBatch: messages =>
       hasTrackActionMenu(messages)
-      || inspectSelectedCandidateSurface(messages, liveCandidate).kind === 'album',
+      || inspectSelectedCandidateSurface(messages, liveCandidate).kind === 'album'
+      || Boolean(exactNestedTrackButton(messages, liveCandidate)),
     waitForTarget: true,
     reconcileOnTimeout: true,
   });
@@ -1527,9 +1641,27 @@ async function openTrackMenuWithCandidate(
         route: 'resolved_album',
       };
     }
+
+    const refined = await followNestedTrackSurface(
+      client,
+      selected.messages,
+      liveCandidate,
+      {
+        clickedText: liveCandidate.rawText,
+        timeoutMs: stepTimeout(1700),
+        allowAlbumSurface,
+      }
+    );
+    if (refined) {
+      console.log(
+        `[melobot.track_menu] route=${refined.route} track=${JSON.stringify(trackLabel(liveCandidate))}`
+      );
+      return refined;
+    }
+
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
-      `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)}`
+      `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)} surface=${describeMeloBotSurface(selected.messages)}`
     );
   }
   const refreshedCandidate = {
@@ -2402,10 +2534,182 @@ function isArtistNavigationSurface(message = {}, artist = '') {
   if (hasArtistControls) return true;
 
   const tracks = parseTracksFromMessages(messages, artist);
-  const looksLikeSearchResults = buttons.some(text =>
-    /نتیجه\s*در\s*لیست\s*نیست|جستجوی\s*عمیق|deep\s*search/iu.test(clean(text))
+  if (!tracks.length) return false;
+
+  // Plain search results can contain only Track rows and no deep-search
+  // control. Accept Track-only layouts as an Artist page only when the message
+  // body itself identifies the requested Artist; otherwise reuse a live Track
+  // row and enter the Artist page through its explicit control.
+  const body = normalize(messageText(message));
+  const target = normalize(artist);
+  return Boolean(
+    target
+    && (
+      body === target
+      || body === `${target} tracks`
+      || body.includes(`آهنگ های ${target}`)
+      || body.includes(`آثار ${target}`)
+    )
   );
-  return tracks.length > 0 && !looksLikeSearchResults;
+}
+
+
+function buildArtistContextFromPage(
+  messages = [],
+  selectedArtist = '',
+  {
+    seedTrack = null,
+    recoveredFromAlbum = false,
+    relatedArtists = [],
+    stateVersion = sourceStateVersion,
+  } = {}
+) {
+  const allButtons = buttonsFromMessages(messages);
+  const recentTracks = parseTracksFromMessages(messages, selectedArtist);
+  const albumListing = inspectMeloBotAlbumListing(messages);
+  const albumButton = albumListing.confirmed
+    ? null
+    : albumNavigationButton(messages);
+  const orderButton = allButtons.find(text => /ترتیب/u.test(clean(text))) || null;
+  const moreButton = allButtons.find(text => /بیشتر|more/iu.test(clean(text))) || null;
+  const recentBulkHighButton = findButton(messages, text =>
+    /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
+  );
+  const recentBulkNormalButton = findButton(messages, text =>
+    /دانلود همه/u.test(clean(text)) && /معمولی/u.test(clean(text))
+  );
+
+  return {
+    artist: selectedArtist,
+    tracks: recentTracks,
+    recentTracks,
+    albumButton,
+    albumList: albumListing.albums,
+    albumListingConfirmed: albumListing.confirmed,
+    albumListingConfirmedEmpty: albumListing.confirmedEmpty,
+    albumDeclaredCount: albumListing.declaredCount,
+    albumListingComplete: albumListing.complete,
+    albumNextButton: albumListing.nextButton || null,
+    orderButton,
+    moreButton,
+    sourceAfterId: maxMessageId(messages),
+    sourceButtons: allButtons.slice(0, 30),
+    sourceStateVersion: Number(stateVersion || sourceStateVersion),
+    recentBulkHighButton,
+    recentBulkNormalButton,
+    relatedArtists,
+    seedTrack: seedTrack || recentTracks[0] || null,
+    recoveredFromAlbum,
+  };
+}
+
+function isCurrentMeloBotSeed(seed = {}) {
+  return Boolean(
+    seed?.rawText
+    && seed?.source !== 'ahangify'
+    && Number(seed?.sourceStateVersion || -1) === Number(sourceStateVersion)
+  );
+}
+
+async function openMeloBotArtistDirectBase(
+  client,
+  artist,
+  { timeoutMs = 4500 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 4500);
+  const first = await sendAndCollect(client, artist, {
+    timeoutMs: Math.min(2500, remaining()),
+    quietMs: 450,
+    stopWhen: message => {
+      const pickers = artistPickerItems([message]);
+      if (pickers.some(item => normalize(item.name) === normalize(artist))) return true;
+      if (isArtistNavigationSurface(message, artist) && !pickers.length) return true;
+
+      // A plain search-result layout is still useful if it already exposes an
+      // exact/compatible Track row for this artist; stop collecting and reuse
+      // that live row instead of waiting for the Artist-search timeout.
+      return parseTracksFromMessages([message], artist).some(track =>
+        artistIdentityCompatible(artist, track.artist || '')
+      );
+    },
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+  });
+
+  const directPage = first.messages?.find(message => {
+    const pickers = artistPickerItems([message]);
+    return !pickers.length && isArtistNavigationSurface(message, artist);
+  });
+  if (directPage) {
+    return buildArtistContextFromPage(
+      first.messages,
+      artist,
+      { stateVersion: first.stateVersion }
+    );
+  }
+
+  const pickers = artistPickerItems(first.messages);
+  const chosen = pickers.find(item => normalize(item.name) === normalize(artist)) || null;
+  if (!chosen) {
+    // Some MeloBot layouts return Track rows but no Artist picker. Reuse that
+    // already-live row immediately instead of issuing the same Artist search a
+    // second time and losing the only scripted/source surface.
+    const freshSeed = parseTracksFromMessages(first.messages, artist)
+      .find(track => artistIdentityCompatible(artist, track.artist || ''))
+      || null;
+    if (freshSeed && !remaining.expired()) {
+      return openMeloBotArtistBase(
+        client,
+        {
+          ...freshSeed,
+          source: 'melobot',
+          sourceStateVersion: first.stateVersion,
+        },
+        {
+          timeoutMs: remaining(),
+          allowArtistSearchFallback: false,
+        }
+      );
+    }
+
+    throw meloError(
+      'MELOBOT_ARTIST_RESOLVE_FAILED',
+      `MeloBot direct Artist search did not expose an exact picker: ${artist}`
+    );
+  }
+  if (remaining.expired()) {
+    throw new Error(`MeloBot direct Artist budget exhausted: ${artist}`);
+  }
+
+  const page = await sendAndCollect(client, chosen.rawText, {
+    timeoutMs: remaining(),
+    quietMs: 650,
+    stopWhen: message => {
+      const nested = artistPickerItems([message]);
+      return !nested.length && isArtistNavigationSurface(message, chosen.name);
+    },
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+  });
+  const confirmed = page.messages?.some(message => {
+    const nested = artistPickerItems([message]);
+    return !nested.length && isArtistNavigationSurface(message, chosen.name);
+  });
+  if (!confirmed) {
+    throw meloError(
+      'MELOBOT_ARTIST_PAGE_TIMEOUT',
+      `MeloBot direct Artist picker did not open a confirmed page: ${chosen.name}`
+    );
+  }
+
+  return buildArtistContextFromPage(
+    page.messages,
+    chosen.name,
+    {
+      relatedArtists: pickers.map(item => item.name),
+      stateVersion: page.stateVersion,
+    }
+  );
 }
 
 async function openMeloBotArtistBase(
@@ -2554,12 +2858,19 @@ async function openMeloBotArtistBase(
     const requestedParts = artistIdentityParts(effectiveSeed.artist);
 
     const chosen = pickerButtons.find(item => normalize(item.name) === requested)
-      || pickerButtons.find(item => requestedParts.includes(normalize(item.name)))
       || (
         requestedParts.length === 1
           ? pickerButtons.find(item => {
               const name = normalize(item.name);
-              return requestedParts[0].includes(name) || name.includes(requestedParts[0]);
+              return name === requestedParts[0]
+                || (
+                  requestedParts[0].split(' ').length > 1
+                  && name.split(' ').length > 1
+                  && (
+                    requestedParts[0].includes(name)
+                    || name.includes(requestedParts[0])
+                  )
+                );
             })
           : null
       );
@@ -2591,59 +2902,19 @@ async function openMeloBotArtistBase(
     }
   }
 
-  const allButtons = buttonsFromMessages(artistPage.messages);
-  const recentTracks = parseTracksFromMessages(artistPage.messages, selectedArtist);
-  const albumListing = inspectMeloBotAlbumListing(artistPage.messages);
-  const albumButton = albumListing.confirmed
-    ? null
-    : albumNavigationButton(artistPage.messages);
-
-  const orderButton = allButtons.find(text => /ترتیب/u.test(clean(text))) || null;
-  const moreButton = allButtons.find(text => /بیشتر|more/iu.test(clean(text))) || null;
-  const sourceAfterId = maxMessageId(artistPage.messages);
-  const recentBulkHighButton = findButton(artistPage.messages, text =>
-    /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
+  return buildArtistContextFromPage(
+    artistPage.messages,
+    selectedArtist,
+    {
+      seedTrack: effectiveSeed,
+      recoveredFromAlbum,
+      relatedArtists,
+      stateVersion: artistPage.stateVersion || sourceStateVersion,
+    }
   );
-  const recentBulkNormalButton = findButton(artistPage.messages, text =>
-    /دانلود همه/u.test(clean(text)) && /معمولی/u.test(clean(text))
-  );
-
-  return {
-    artist: selectedArtist,
-    tracks: recentTracks,
-    recentTracks,
-    albumButton,
-    albumList: albumListing.albums,
-    albumListingConfirmed: albumListing.confirmed,
-    albumListingConfirmedEmpty: albumListing.confirmedEmpty,
-    albumDeclaredCount: albumListing.declaredCount,
-    albumListingComplete: albumListing.complete,
-    albumNextButton: albumListing.nextButton || null,
-    orderButton,
-    moreButton,
-    sourceAfterId,
-    sourceButtons: allButtons.slice(0, 30),
-    sourceStateVersion: sourceStateVersion,
-    recentBulkHighButton,
-    recentBulkNormalButton,
-    relatedArtists,
-    seedTrack: effectiveSeed,
-    recoveredFromAlbum,
-  };
 }
 
-export async function openMeloBotArtistFast(
-  client,
-  seedTrack,
-  { timeoutMs = 8000 } = {}
-) {
-  const remaining = sourceBudget(timeoutMs, 8000);
-  const base = await openMeloBotArtistBase(
-    client,
-    seedTrack,
-    { timeoutMs: remaining() }
-  );
-
+async function finalizeMeloBotArtistFast(client, base, remaining) {
   let tracks = (base.recentTracks || []).slice(0, 10);
   let route = tracks.length ? 'artist_base' : 'artist_search_recovery';
   let liveStateValid = true;
@@ -2699,6 +2970,20 @@ export async function openMeloBotArtistFast(
   };
 }
 
+export async function openMeloBotArtistFast(
+  client,
+  seedTrack,
+  { timeoutMs = 8000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 8000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
+  return finalizeMeloBotArtistFast(client, base, remaining);
+}
+
 export async function openMeloBotArtistFastFresh(
   client,
   artist,
@@ -2706,6 +2991,29 @@ export async function openMeloBotArtistFastFresh(
   { timeoutMs = 8000 } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 8000);
+
+  // A Track row from the currently visible MeloBot surface is already the
+  // cheapest possible route. Only use the direct Artist picker when that row
+  // is absent/stale; otherwise a speculative Artist query would invalidate it.
+  if (isCurrentMeloBotSeed(preferredSeed)) {
+    return openMeloBotArtistFast(
+      client,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+  }
+
+  try {
+    const directBase = await openMeloBotArtistDirectBase(
+      client,
+      artist,
+      { timeoutMs: Math.min(3600, remaining()) }
+    );
+    return await finalizeMeloBotArtistFast(client, directBase, remaining);
+  } catch (err) {
+    console.warn('[melobot direct artist fallback]', artist, err.message);
+  }
+
   const seed = await findArtistSeed(
     client,
     artist,
@@ -2722,17 +3030,7 @@ export async function openMeloBotArtistFastFresh(
   );
 }
 
-export async function openMeloBotArtist(
-  client,
-  seedTrack,
-  { timeoutMs = 9000 } = {}
-) {
-  const remaining = sourceBudget(timeoutMs, 9000);
-  const base = await openMeloBotArtistBase(
-    client,
-    seedTrack,
-    { timeoutMs: remaining() }
-  );
+async function completeMeloBotArtistTop(client, base, remaining) {
   let topTracks = [];
   let bulkHighButton = null;
   let bulkNormalButton = null;
@@ -2875,6 +3173,20 @@ export async function openMeloBotArtist(
   };
 }
 
+export async function openMeloBotArtist(
+  client,
+  seedTrack,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
+  return completeMeloBotArtistTop(client, base, remaining);
+}
+
 export async function resolveMeloBotArtistTrackList(
   client,
   artist,
@@ -2884,19 +3196,40 @@ export async function resolveMeloBotArtistTrackList(
 ) {
   const remaining = sourceBudget(timeoutMs, 8000);
   const wantedMode = mode === 'recent' ? 'recent' : 'top';
-  const seed = await findArtistSeed(
-    client,
-    artist,
-    preferredSeed,
-    { timeoutMs: remaining() }
-  );
 
-  if (wantedMode === 'top') {
-    const context = await openMeloBotArtist(
+  let directBase = null;
+  let seed = isCurrentMeloBotSeed(preferredSeed) ? preferredSeed : null;
+
+  if (!seed) {
+    try {
+      directBase = await openMeloBotArtistDirectBase(
+        client,
+        artist,
+        { timeoutMs: Math.min(3600, remaining()) }
+      );
+    } catch (err) {
+      console.warn('[melobot artist list direct fallback]', artist, err.message);
+    }
+    seed = directBase?.seedTrack || null;
+  }
+
+  if (!directBase && !seed) {
+    seed = await findArtistSeed(
       client,
-      seed,
+      artist,
+      preferredSeed,
       { timeoutMs: remaining() }
     );
+  }
+
+  if (wantedMode === 'top') {
+    const context = directBase
+      ? await completeMeloBotArtistTop(client, directBase, remaining)
+      : await openMeloBotArtist(
+          client,
+          seed,
+          { timeoutMs: remaining() }
+        );
     let tracks = (context.topTracks || []).slice(0, 10);
     let route = 'artist_top';
 
@@ -2939,7 +3272,7 @@ export async function resolveMeloBotArtistTrackList(
     };
   }
 
-  const base = await openMeloBotArtistBase(
+  const base = directBase || await openMeloBotArtistBase(
     client,
     seed,
     { timeoutMs: remaining() }
@@ -3028,17 +3361,41 @@ export async function prepareMeloBotBulkTopTracks(
   { timeoutMs = 7000 } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 7000);
-  const seed = await findArtistSeed(
-    client,
-    artist,
-    preferredSeed,
-    { timeoutMs: remaining() }
-  );
-  const context = await openMeloBotArtist(
-    client,
-    seed,
-    { timeoutMs: remaining() }
-  );
+  let context = null;
+
+  if (isCurrentMeloBotSeed(preferredSeed)) {
+    context = await openMeloBotArtist(
+      client,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+  } else {
+    try {
+      const directBase = await openMeloBotArtistDirectBase(
+        client,
+        artist,
+        { timeoutMs: Math.min(3400, remaining()) }
+      );
+      context = await completeMeloBotArtistTop(client, directBase, remaining);
+    } catch (err) {
+      console.warn('[melobot bulk top direct fallback]', artist, err.message);
+    }
+  }
+
+  if (!context) {
+    const seed = await findArtistSeed(
+      client,
+      artist,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+    context = await openMeloBotArtist(
+      client,
+      seed,
+      { timeoutMs: remaining() }
+    );
+  }
+
   if (!context.bulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the sorted artist page.');
   }
@@ -3052,17 +3409,40 @@ export async function prepareMeloBotBulkRecentTracks(
   { timeoutMs = 6500 } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 6500);
-  const seed = await findArtistSeed(
-    client,
-    artist,
-    preferredSeed,
-    { timeoutMs: remaining() }
-  );
-  const context = await openMeloBotArtistBase(
-    client,
-    seed,
-    { timeoutMs: remaining() }
-  );
+  let context = null;
+
+  if (isCurrentMeloBotSeed(preferredSeed)) {
+    context = await openMeloBotArtistBase(
+      client,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+  } else {
+    try {
+      context = await openMeloBotArtistDirectBase(
+        client,
+        artist,
+        { timeoutMs: Math.min(3400, remaining()) }
+      );
+    } catch (err) {
+      console.warn('[melobot bulk recent direct fallback]', artist, err.message);
+    }
+  }
+
+  if (!context) {
+    const seed = await findArtistSeed(
+      client,
+      artist,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+    context = await openMeloBotArtistBase(
+      client,
+      seed,
+      { timeoutMs: remaining() }
+    );
+  }
+
   if (!context.recentBulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the newest artist page.');
   }
@@ -3139,8 +3519,19 @@ export async function downloadMeloBotBulkTracks(client, {
   label = 'bulk',
   expectedCount = 0,
   timeoutMs = null,
+  expectedStateVersion = null,
 } = {}) {
   if (!button) throw new Error(`MeloBot ${label} bulk button not found.`);
+  if (
+    expectedStateVersion !== null
+    && expectedStateVersion !== undefined
+    && Number(expectedStateVersion) !== Number(sourceStateVersion)
+  ) {
+    throw meloError(
+      'MELOBOT_BULK_SURFACE_STALE',
+      `MeloBot ${label} bulk surface is stale.`
+    );
+  }
 
   const adaptiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? timeoutMs
@@ -3152,22 +3543,58 @@ export async function downloadMeloBotBulkTracks(client, {
         30000
       );
 
-  const download = await sendAndCollect(client, button, {
-    timeoutMs: adaptiveTimeoutMs,
-    quietMs: expectedCount > 0 ? 650 : 900,
-    stopWhenBatch: expectedCount > 0
-      ? messages => messages.filter(isAudioMessage).length >= expectedCount
-      : undefined,
-    waitForTarget: expectedCount > 0,
+  // Fail quickly when a stale/wrong bulk button produces no audio at all.
+  // Once the first audio arrives, keep listening for the remaining files using
+  // the inbox buffer so large valid albums still get their full delivery time.
+  const startedAt = Date.now();
+  const firstAudioTimeoutMs = Math.min(
+    adaptiveTimeoutMs,
+    expectedCount > 0 ? 3200 : 4000
+  );
+  const first = await sendAndCollect(client, button, {
+    timeoutMs: firstAudioTimeoutMs,
+    quietMs: 450,
+    stopWhen: message => isAudioMessage(message),
+    waitForTarget: true,
     reconcileOnTimeout: true,
   });
 
-  const audios = download.messages.filter(isAudioMessage).map(audioMeta);
-  if (!audios.length) {
-    const response = download.messages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot ${label} bulk HQ did not deliver audio. ${response.slice(0, 350)}`);
+  const firstAudios = first.messages.filter(isAudioMessage);
+  if (!firstAudios.length) {
+    const response = first.messages.map(messageText).filter(Boolean).join('\n');
+    throw meloError(
+      'MELOBOT_BULK_DELIVERY_TIMEOUT',
+      `MeloBot ${label} bulk HQ did not deliver audio (no initial audio). ${response.slice(0, 350)}`
+    );
   }
 
+  let messages = [...first.messages];
+  const remainingCount = expectedCount > 0
+    ? Math.max(0, expectedCount - firstAudios.length)
+    : null;
+  const elapsed = Date.now() - startedAt;
+  const remainingMs = Math.max(0, adaptiveTimeoutMs - elapsed);
+
+  if (remainingMs > 250 && (remainingCount === null || remainingCount > 0)) {
+    const afterId = maxMessageId(first.messages);
+    const late = await collectNewMessages(
+      client,
+      config.melobotUsername,
+      afterId,
+      {
+        timeoutMs: remainingMs,
+        quietMs: expectedCount > 0 ? 700 : 900,
+        stopWhenBatch: remainingCount
+          ? batch => batch.filter(isAudioMessage).length >= remainingCount
+          : undefined,
+        waitForTarget: Boolean(remainingCount),
+        reconcileOnTimeout: true,
+      }
+    );
+    messages = mergeMessageSets(messages, late.messages || []);
+  }
+
+  const audios = messages.filter(isAudioMessage).map(audioMeta);
   return {
     source: 'melobot',
     audioItems: audios,
@@ -3184,6 +3611,7 @@ export async function downloadMeloBotTopTracks(
     label: 'top tracks',
     expectedCount: artistContext.topTracks?.length || artistContext.tracks?.length || 0,
     timeoutMs,
+    expectedStateVersion: artistContext.sourceStateVersion,
   });
 }
 
@@ -3197,6 +3625,7 @@ export async function downloadMeloBotRecentTracks(
     label: 'recent tracks',
     expectedCount: artistContext.recentTracks?.length || artistContext.tracks?.length || 0,
     timeoutMs,
+    expectedStateVersion: artistContext.sourceStateVersion,
   });
 }
 
@@ -3210,6 +3639,7 @@ export async function downloadMeloBotAlbumTracks(
     label: `album ${albumContext.album?.title || ''}`,
     expectedCount: albumContext.tracks?.length || 0,
     timeoutMs,
+    expectedStateVersion: albumContext.sourceStateVersion,
   });
 }
 
@@ -3302,13 +3732,24 @@ function chooseArtistPicker(items = [], requested = '') {
   const target = normalize(requested);
   const exact = items.find(item => normalize(item.name) === target);
   if (exact) return exact;
-  if (target) {
-    return items.find(item => {
-      const name = normalize(item.name);
-      return name && (name.includes(target) || target.includes(name));
-    }) || null;
+
+  const parts = artistIdentityParts(requested);
+  if (parts.length > 1) return null;
+
+  if (parts.length === 1) {
+    const wanted = parts[0];
+    const wantedTokens = wanted.split(' ').filter(Boolean);
+    if (wantedTokens.length > 1) {
+      return items.find(item => {
+        const name = normalize(item.name);
+        const nameTokens = name.split(' ').filter(Boolean);
+        return name
+          && nameTokens.length > 1
+          && (name.includes(wanted) || wanted.includes(name));
+      }) || null;
+    }
   }
-  return items[0] || null;
+  return requested ? null : (items[0] || null);
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
@@ -4074,6 +4515,13 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
 
     if (!normalized.albums.length && !normalized.confirmedEmpty && !allowEmpty) {
       throw new Error('Direct-first album route returned no usable albums.');
+    }
+    if (
+      normalized.albums.length
+      && !normalized.complete
+      && !normalized.confirmedEmpty
+    ) {
+      throw new Error('Direct-first album surface was only a partial search suggestion.');
     }
 
     return normalized;
