@@ -1213,8 +1213,12 @@ async function openTrackMenuWithCandidate(
   const requested = candidate || {};
   const directText = clean(requested.rawText || '');
   const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
+  const canClickCurrentSurface = Boolean(
+    directText
+    && Number(requested.sourceStateVersion || -1) === Number(sourceStateVersion)
+  );
 
-  if (directText) {
+  if (canClickCurrentSurface) {
     const direct = await sendAndCollect(client, directText, {
       timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
       quietMs: 550,
@@ -1237,6 +1241,10 @@ async function openTrackMenuWithCandidate(
       return { messages: direct.messages, candidate: requested, route: 'direct_non_track' };
     }
     console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
+  } else if (directText) {
+    console.log(
+      `[melobot.track_menu] route=stale_surface_refresh track=${JSON.stringify(trackLabel(requested))}`
+    );
   }
 
   const liveCandidate = await resolveMeloBotTrackCandidate(
