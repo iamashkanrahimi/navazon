@@ -32,6 +32,7 @@ const {
   getMeloBotLyrics,
   getMeloBotTrackMetadata,
   enrichMeloBotTrack,
+  inspectMeloBotTrack,
   downloadMeloBotTrackQuality,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
@@ -55,7 +56,11 @@ const {
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
 const { trackCacheKey } = await import('../src/cache.js');
-const { DeepCatalog, deepTrackKey } = await import('../src/deepCatalog.js');
+const {
+  DeepCatalog,
+  deepTrackKey,
+  isSuspendedBackgroundMediaTaskKind,
+} = await import('../src/deepCatalog.js');
 const { CatalogStore } = await import('../src/catalog.js');
 const { db } = await import('../src/db.js');
 const {
@@ -972,6 +977,57 @@ test('cover delivery follows More and waits for the actual photo target', async 
   assert.equal(result.available, true);
   assert.deepEqual(client.sent, [query, raw, more, cover]);
   assert.ok(result.photoMessage?.media?.photo);
+});
+
+test('track inspection follows the target-aware More surface for hidden capabilities', async () => {
+  const raw = '🎵 Artist, Hidden';
+  const more = 'بیشتر...';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('track menu', [
+      '📥 کیفیت عالی',
+      '📥 کیفیت معمولی',
+      more,
+    ])]],
+    [more]: [[fakeBotMessage('more menu', [
+      'کاور',
+      'متن آهنگ',
+      'بقیه مشخصات',
+    ])]],
+  });
+
+  const result = await inspectMeloBotTrack(client, {
+    source: 'melobot',
+    artist: 'Artist',
+    title: 'Hidden',
+    rawText: raw,
+    sourceStateVersion: getMeloBotStateVersion(),
+  });
+
+  assert.equal(result.hasHq, true);
+  assert.equal(result.hasNormal, true);
+  assert.equal(result.hasCover, true);
+  assert.equal(result.hasLyrics, true);
+  assert.equal(result.hasMetadata, true);
+  assert.deepEqual(client.sent, [raw, more]);
+});
+
+test('heavy background media tasks stay off the interactive MeloBot lane', () => {
+  for (const kind of [
+    'artist_bulk_media',
+    'album_bulk_media',
+    'track_enrich',
+    'track_hq',
+    'track_normal',
+    'track_metadata',
+    'track_cover',
+    'track_lyrics',
+  ]) {
+    assert.equal(isSuspendedBackgroundMediaTaskKind(kind), true, kind);
+  }
+
+  for (const kind of ['feed', 'home_discovery', 'artist_profile', 'album_index', 'album_detail']) {
+    assert.equal(isSuspendedBackgroundMediaTaskKind(kind), false, kind);
+  }
 });
 
 test('priority serial queue lets interactive work jump ahead of queued background work', async () => {
