@@ -2701,10 +2701,12 @@ export async function downloadMeloBotBulkTracks(client, {
           Math.max(Number(config.downloadTimeoutMs || 30000), 1000),
           30000
         ),
-    quietMs: expectedCount > 20 ? 12000 : 8000,
+    quietMs: expectedCount > 0 ? 650 : 900,
     stopWhenBatch: expectedCount > 0
       ? messages => messages.filter(isAudioMessage).length >= expectedCount
       : undefined,
+    waitForTarget: expectedCount > 0,
+    reconcileOnTimeout: true,
   });
 
   const audios = download.messages.filter(isAudioMessage).map(audioMeta);
