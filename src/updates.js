@@ -270,12 +270,52 @@ export async function handleUpdate(update) {
           index: Number(parts[2]),
         });
       } else if (action === 'ar') {
+        const seedIndex = Number(parts[2]);
+        const seed = session.options?.[seedIndex];
+        const artistChoices = artistChoicesFromCredit(seed?.artist || '');
+        if (artistChoices.length > 1) {
+          session.artistChoices = artistChoices;
+          session.artistChoiceSeedIndex = seedIndex;
+          session.busy = false;
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            'صفحه‌ی کدوم خواننده رو باز کنم؟',
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  ...artistChoices.map((artist, index) => ([{
+                    text: `🗣 ${artist}`,
+                    callback_data: `arc:${sessionId}:${index}`,
+                  }])),
+                  [{ text: '🔙 برگشت', callback_data: `rs:${sessionId}` }],
+                ],
+              },
+            }
+          );
+        } else {
+          session.busy = true;
+          await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+          queueSessionSource(sessionId, session, {
+            type: 'artist',
+            messageId,
+            seedIndex,
+          });
+        }
+      } else if (action === 'arc') {
+        const artist = session.artistChoices?.[Number(parts[2])];
+        if (!artist) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          `در حال باز کردن صفحه‌ی ${artist}…`
+        );
         queueSessionSource(sessionId, session, {
           type: 'artist',
+          artistOverride: artist,
+          seedIndex: Number(session.artistChoiceSeedIndex),
           messageId,
-          seedIndex: Number(parts[2]),
         });
       } else if (action === 'aar') {
         const albumIndex = Number(parts[2]);
