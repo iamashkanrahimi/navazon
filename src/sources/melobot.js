@@ -3000,19 +3000,36 @@ export async function resolveMeloBotArtistTrackList(
 ) {
   const remaining = sourceBudget(timeoutMs, 8000);
   const wantedMode = mode === 'recent' ? 'recent' : 'top';
-  const seed = await findArtistSeed(
-    client,
-    artist,
-    preferredSeed,
-    { timeoutMs: remaining() }
-  );
 
-  if (wantedMode === 'top') {
-    const context = await openMeloBotArtist(
+  let directBase = null;
+  try {
+    directBase = await openMeloBotArtistDirectBase(
       client,
-      seed,
+      artist,
+      { timeoutMs: Math.min(3600, remaining()) }
+    );
+  } catch (err) {
+    console.warn('[melobot artist list direct fallback]', artist, err.message);
+  }
+
+  let seed = directBase?.seedTrack || null;
+  if (!directBase) {
+    seed = await findArtistSeed(
+      client,
+      artist,
+      preferredSeed,
       { timeoutMs: remaining() }
     );
+  }
+
+  if (wantedMode === 'top') {
+    const context = directBase
+      ? await completeMeloBotArtistTop(client, directBase, remaining)
+      : await openMeloBotArtist(
+          client,
+          seed,
+          { timeoutMs: remaining() }
+        );
     let tracks = (context.topTracks || []).slice(0, 10);
     let route = 'artist_top';
 
@@ -3055,7 +3072,7 @@ export async function resolveMeloBotArtistTrackList(
     };
   }
 
-  const base = await openMeloBotArtistBase(
+  const base = directBase || await openMeloBotArtistBase(
     client,
     seed,
     { timeoutMs: remaining() }
@@ -3144,17 +3161,33 @@ export async function prepareMeloBotBulkTopTracks(
   { timeoutMs = 7000 } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 7000);
-  const seed = await findArtistSeed(
-    client,
-    artist,
-    preferredSeed,
-    { timeoutMs: remaining() }
-  );
-  const context = await openMeloBotArtist(
-    client,
-    seed,
-    { timeoutMs: remaining() }
-  );
+  let context = null;
+
+  try {
+    const directBase = await openMeloBotArtistDirectBase(
+      client,
+      artist,
+      { timeoutMs: Math.min(3400, remaining()) }
+    );
+    context = await completeMeloBotArtistTop(client, directBase, remaining);
+  } catch (err) {
+    console.warn('[melobot bulk top direct fallback]', artist, err.message);
+  }
+
+  if (!context) {
+    const seed = await findArtistSeed(
+      client,
+      artist,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+    context = await openMeloBotArtist(
+      client,
+      seed,
+      { timeoutMs: remaining() }
+    );
+  }
+
   if (!context.bulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the sorted artist page.');
   }
@@ -3168,17 +3201,32 @@ export async function prepareMeloBotBulkRecentTracks(
   { timeoutMs = 6500 } = {}
 ) {
   const remaining = sourceBudget(timeoutMs, 6500);
-  const seed = await findArtistSeed(
-    client,
-    artist,
-    preferredSeed,
-    { timeoutMs: remaining() }
-  );
-  const context = await openMeloBotArtistBase(
-    client,
-    seed,
-    { timeoutMs: remaining() }
-  );
+  let context = null;
+
+  try {
+    context = await openMeloBotArtistDirectBase(
+      client,
+      artist,
+      { timeoutMs: Math.min(3400, remaining()) }
+    );
+  } catch (err) {
+    console.warn('[melobot bulk recent direct fallback]', artist, err.message);
+  }
+
+  if (!context) {
+    const seed = await findArtistSeed(
+      client,
+      artist,
+      preferredSeed,
+      { timeoutMs: remaining() }
+    );
+    context = await openMeloBotArtistBase(
+      client,
+      seed,
+      { timeoutMs: remaining() }
+    );
+  }
+
   if (!context.recentBulkHighButton) {
     throw new Error('MeloBot bulk HQ button was not found on the newest artist page.');
   }
