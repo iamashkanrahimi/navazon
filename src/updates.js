@@ -54,6 +54,16 @@ function cancelQueuedBulkForUser(userId) {
   return removed.length;
 }
 
+
+function artistChoicesFromCredit(value = '') {
+  return [...new Set(
+    String(value || '')
+      .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+      .map(part => part.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+  )];
+}
+
 function searchAllowed(userId) {
   const now = Date.now();
   const key = String(userId);
@@ -479,16 +489,52 @@ export async function handleUpdate(update) {
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tar') {
         if (!session.currentTrack) return;
-        session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
-        const openedLocal = await tryOpenTrackArtistLocal(
-          sessionId,
-          session,
-          messageId
-        ).catch(() => false);
-        if (!openedLocal) {
-          queueSessionSource(sessionId, session, { type: 'track_artist', messageId });
+        const artistChoices = artistChoicesFromCredit(session.currentTrack.artist);
+        if (artistChoices.length > 1) {
+          session.artistChoices = artistChoices;
+          session.busy = false;
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            'صفحه‌ی کدوم خواننده رو باز کنم؟',
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  ...artistChoices.map((artist, index) => ([{
+                    text: `🗣 ${artist}`,
+                    callback_data: `tac:${sessionId}:${index}`,
+                  }])),
+                  [{ text: '🔙 برگشت', callback_data: `trt:${sessionId}` }],
+                ],
+              },
+            }
+          );
+        } else {
+          session.busy = true;
+          await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+          const openedLocal = await tryOpenTrackArtistLocal(
+            sessionId,
+            session,
+            messageId
+          ).catch(() => false);
+          if (!openedLocal) {
+            queueSessionSource(sessionId, session, { type: 'track_artist', messageId });
+          }
         }
+      } else if (action === 'tac') {
+        const artist = session.artistChoices?.[Number(parts[2])];
+        if (!artist || !session.currentTrack) return;
+        session.busy = true;
+        await bot.editMessageText(
+          session.chatId,
+          messageId,
+          `در حال باز کردن صفحه‌ی ${artist}…`
+        );
+        queueSessionSource(sessionId, session, {
+          type: 'track_artist',
+          artistOverride: artist,
+          messageId,
+        });
       } else if (action === 'tal') {
         if (!session.currentTrack) return;
         session.busy = true;
