@@ -123,12 +123,13 @@ function trackLabel(candidate = {}) {
     || 'unknown track';
 }
 
-function rememberLiveTrackSurface(candidate = {}, messages = [], version = sourceStateVersion) {
-  if (!candidate?.title || !hasTrackActionMenu(messages)) {
+function rememberLiveTrackSurface(client, candidate = {}, messages = [], version = sourceStateVersion) {
+  if (!client || !candidate?.title || !hasTrackActionMenu(messages)) {
     liveTrackSurface = null;
     return null;
   }
   liveTrackSurface = {
+    client,
     candidate: { ...candidate },
     messages: [...messages],
     version: Number(version || sourceStateVersion),
@@ -136,8 +137,8 @@ function rememberLiveTrackSurface(candidate = {}, messages = [], version = sourc
   return liveTrackSurface;
 }
 
-function currentLiveTrackSurface(candidate = {}) {
-  if (!liveTrackSurface) return null;
+function currentLiveTrackSurface(client, candidate = {}) {
+  if (!liveTrackSurface || liveTrackSurface.client !== client) return null;
   if (Number(liveTrackSurface.version) !== Number(sourceStateVersion)) return null;
 
   const wantedTitle = titleIdentity(candidate?.title || '');
@@ -1103,6 +1104,7 @@ export async function probeMeloBotCandidateSurface(
 
   if (inspected.kind === 'track') {
     rememberLiveTrackSurface(
+      client,
       { ...candidate, sourceStateVersion: selected.stateVersion },
       selected.messages,
       selected.stateVersion
@@ -1304,7 +1306,7 @@ async function openTrackMenuWithCandidate(
   const directText = clean(requested.rawText || '');
   const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
 
-  const liveSurface = currentLiveTrackSurface(requested);
+  const liveSurface = currentLiveTrackSurface(client, requested);
   if (liveSurface) {
     console.log(
       `[melobot.track_menu] route=live_surface track=${JSON.stringify(trackLabel(requested))}`
@@ -1343,7 +1345,7 @@ async function openTrackMenuWithCandidate(
         ...requested,
         sourceStateVersion: direct.stateVersion,
       };
-      rememberLiveTrackSurface(liveCandidate, direct.messages, direct.stateVersion);
+      rememberLiveTrackSurface(client, liveCandidate, direct.messages, direct.stateVersion);
       console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
       return { messages: direct.messages, candidate: liveCandidate, route: 'direct_raw_text' };
     }
@@ -1396,7 +1398,7 @@ async function openTrackMenuWithCandidate(
     ...liveCandidate,
     sourceStateVersion: selected.stateVersion,
   };
-  rememberLiveTrackSurface(refreshedCandidate, selected.messages, selected.stateVersion);
+  rememberLiveTrackSurface(client, refreshedCandidate, selected.messages, selected.stateVersion);
   console.log(`[melobot.track_menu] route=resolved track=${JSON.stringify(trackLabel(liveCandidate))}`);
   return { messages: selected.messages, candidate: refreshedCandidate, route: 'resolved_search' };
 }
@@ -1498,7 +1500,7 @@ export async function downloadMeloBotTrackQuality(
   // the verified Track-menu snapshot hot so an immediate Normal/HQ follow-up
   // does not perform another search. Any unrelated source command invalidates
   // this snapshot in sendAndCollect().
-  rememberLiveTrackSurface(refreshedCandidate, menuMessages, result.stateVersion);
+  rememberLiveTrackSurface(client, refreshedCandidate, menuMessages, result.stateVersion);
 
   console.log(
     `[melobot.quality] stage=audio_received quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
