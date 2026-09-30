@@ -730,7 +730,10 @@ export async function tryOpenAlbumsLocal(
   const artist = session?.artistContext?.artist;
   if (!artist) return false;
 
-  if (!Array.isArray(session.albums)) {
+  const trustedSessionAlbums = Array.isArray(session.albums) && (
+    session.albums.length > 0 || session.albumsEmptyConfirmed === true
+  );
+  if (!trustedSessionAlbums) {
     const cached = await catalog.getAlbums(
       artist,
       config.catalogAlbumsTtlMs,
