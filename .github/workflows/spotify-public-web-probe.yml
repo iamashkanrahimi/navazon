@@ -9,19 +9,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect MyStreamCount letter endpoint
+      - name: Inspect MyStreamCount artist page track markup
         run: |
           python - <<'PY'
-          import urllib.request,json,re,html
-          for letter in ['H','S','O']:
-            u='https://www.mystreamcount.com/artists/letter/'+letter
-            req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
-            with urllib.request.urlopen(req,timeout=30) as r:
-              d=json.load(r)
-            print('LETTER',letter,'keys',d.keys(),'count',d.get('count'),'htmlbytes',len(d.get('html','')))
-            h=d.get('html','')
-            links=re.findall(r'href=["\']([^"\']*/artist/[^"\']+)["\']',h,re.I)
-            texts=re.findall(r'href=["\']([^"\']*/artist/([^"\']+))["\'][^>]*>[\s\S]{0,700}?<h[1-6][^>]*>([\s\S]*?)</h',h,re.I)
-            print('links',links[:20])
-            print('sample',h[:5000])
+          import urllib.request,re
+          for aid in ['4WPjbuFjnb2CaknMPZgr1Y','0yyGyaFI5hg8VJMJwV5CwK','62AW9VlTxtw554o2Sll0fK']:
+            u='https://www.mystreamcount.com/artist/'+aid
+            req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req,timeout=30) as r:d=r.read().decode('utf-8','replace')
+            print('ID',aid,'bytes',len(d),'tracklinks',d.count('/track/'))
+            for needle in ['/track/','Dokhtare Mashreghi','Ghoroor','Hamine']:
+              i=d.find(needle)
+              print('needle',needle,'idx',i)
+              if i>=0: print(d[max(0,i-700):i+1500])
           PY
