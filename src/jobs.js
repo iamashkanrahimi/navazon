@@ -1802,13 +1802,14 @@ export const sourceQueue = new SerialQueue(async job => {
       try {
         session.currentTrack = await resolveTrackIdentity(session.currentTrack);
         const seed = session.currentTrack;
-        if (!seed?.artist) throw new Error('Track artist is missing.');
-        if (seed.artistInferred) {
+        const targetArtist = String(job.artistOverride || seed?.artist || '').trim();
+        if (!targetArtist) throw new Error('Track artist is missing.');
+        if (!job.artistOverride && seed.artistInferred) {
           throw new Error('Track primary artist could not be confirmed.');
         }
 
         const cachedArtist = await catalog.getArtistContext(
-          seed.artist,
+          targetArtist,
           config.catalogArtistTtlMs
         );
 
@@ -1817,8 +1818,8 @@ export const sourceQueue = new SerialQueue(async job => {
           artistRoute = cachedArtist.healedLegacyLists ? 'catalog_healed' : 'catalog';
         } else {
           const [storedTop, storedRecent] = await Promise.all([
-            deepCatalog.getArtistList(seed.artist, 'top', TOP_TRACKS_LIMIT),
-            deepCatalog.getArtistList(seed.artist, 'recent', TOP_TRACKS_LIMIT),
+            deepCatalog.getArtistList(targetArtist, 'top', TOP_TRACKS_LIMIT),
+            deepCatalog.getArtistList(targetArtist, 'recent', TOP_TRACKS_LIMIT),
           ]);
           const derivedTop = storedTop.length
             ? storedTop
@@ -1839,8 +1840,8 @@ export const sourceQueue = new SerialQueue(async job => {
           } else {
             session.artistContext = await openMeloBotArtistFastFresh(
               tg,
-              seed.artist,
-              seed.source === 'melobot' ? seed : null
+              targetArtist,
+              !job.artistOverride && seed.source === 'melobot' ? seed : null
             );
             artistRoute = session.artistContext.recoveredFromAlbum
               ? 'live_album_recovery'
@@ -1853,7 +1854,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         session.artistSeed = session.artistContext.seedTrack
-          || (seed.source === 'melobot'
+          || (!job.artistOverride && seed.source === 'melobot'
             ? seed
             : (session.artistContext.recentTracks?.[0] || session.artistContext.topTracks?.[0] || null));
 
