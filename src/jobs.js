@@ -439,30 +439,50 @@ async function deliverNativeBulkHq(session, tracks, bulkResult, {
 
 async function deliverBulkFromCacheIfComplete(session, tracks) {
   const sourceTracks = (tracks || []).slice();
-  if (!sourceTracks.length) return { complete: false, sent: 0, quality: 'hq' };
+  if (!sourceTracks.length) {
+    return { complete: false, sent: 0, quality: 'hq', canonicalTracks: [] };
+  }
 
-  const canonicalTracks = sourceTracks.filter(track => !track?.artistInferred);
-  const hqCache = await deepCatalog.getMediaMap(canonicalTracks, 'hq');
-  const complete = sourceTracks.every(track =>
-    !track?.artistInferred && hqCache.has(deepTrackKey(track))
-  );
-  if (!complete) return { complete: false, sent: 0, quality: 'hq' };
+  // Inferred Album rows may already have verified HQ media under the page
+  // artist/title key. Use Telegram audio metadata to repair their primary
+  // artist before deciding whether a live source round-trip is necessary.
+  const hqCache = await deepCatalog.getMediaMap(sourceTracks, 'hq');
+  const canonicalTracks = [];
+  const mediaRows = [];
+
+  for (const sourceTrack of sourceTracks) {
+    const cachedHq = hqCache.get(deepTrackKey(sourceTrack));
+    if (!cachedHq) {
+      return { complete: false, sent: 0, quality: 'hq', canonicalTracks: [] };
+    }
+    const canonical = canonicalTrackFromAudioMetadata(sourceTrack, cachedHq);
+    canonicalTracks.push(canonical);
+    mediaRows.push(cachedHq);
+  }
 
   let sent = 0;
-  for (const sourceTrack of sourceTracks) {
-    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+  for (let index = 0; index < canonicalTracks.length; index += 1) {
+    const track = applyPolicyDefaults({
+      ...canonicalTracks[index],
+      source: canonicalTracks[index].source || 'melobot',
+    });
     assertDeliveryAllowed(track, session.userRegion || 'unknown');
     await sendMedia(
       session.chatId,
       track,
-      hqCache.get(deepTrackKey(track)),
+      mediaRows[index],
       { cacheHit: true }
     );
     sent += 1;
   }
 
-  console.log(`[fastpath] bulk_hq_cache=complete count=${sent}`);
-  return { complete: true, sent, quality: 'hq' };
+  console.log(
+    `[fastpath] bulk_hq_cache=complete count=${sent} canonicalized=${canonicalTracks.filter((track, index) =>
+      normalize(track.artist || '') !== normalize(sourceTracks[index]?.artist || '')
+      || Boolean(sourceTracks[index]?.artistInferred)
+    ).length}`
+  );
+  return { complete: true, sent, quality: 'hq', canonicalTracks };
 }
 
 function structuralNativeBulkFailure(err) {
@@ -561,11 +581,20 @@ async function deliverAvailableBulkCache(session, tracks) {
 
   let sent = 0;
   let missing = 0;
+  const canonicalTracks = [];
   for (const sourceTrack of sourceTracks) {
-    const track = applyPolicyDefaults({ ...sourceTrack, source: 'melobot' });
+    const cachedHq = hqCache.get(deepTrackKey(sourceTrack));
+    const canonical = cachedHq
+      ? canonicalTrackFromAudioMetadata(sourceTrack, cachedHq)
+      : sourceTrack;
+    canonicalTracks.push(canonical);
+
+    const track = applyPolicyDefaults({
+      ...canonical,
+      source: canonical.source || sourceTrack.source || 'melobot',
+    });
     try {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
-      const cachedHq = hqCache.get(deepTrackKey(track));
       if (!cachedHq) {
         missing += 1;
         continue;
@@ -577,7 +606,7 @@ async function deliverAvailableBulkCache(session, tracks) {
     }
   }
 
-  return { sent, missing, quality: 'hq' };
+  return { sent, missing, quality: 'hq', canonicalTracks };
 }
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
