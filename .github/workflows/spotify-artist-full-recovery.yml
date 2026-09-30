@@ -1,0 +1,122 @@
+name: Spotify Artist Image Full Recovery
+
+on:
+  push:
+    branches:
+      - experiment/spotify-artist-pilot
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  prepare:
+    if: contains(github.event.head_commit.message, '[spotify-full-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check script
+        run: python -m py_compile src/spotify-artist-full-recovery.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-recovery-candidate
+          path: archive-builder/runtime/v5-candidate
+          run-id: 36776483167
+          github-token: ${{ github.token }}
+      - name: Build target set and exact-name index
+        run: >-
+          python src/spotify-artist-full-recovery.py prepare
+          --candidate ./runtime/v5-candidate
+          --out ./out/spotify-full-prepared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spotify-full-prepared
+          path: archive-builder/out/spotify-full-prepared
+          retention-days: 30
+
+  recover:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: spotify-full-prepared
+          path: archive-builder/runtime/spotify-full-prepared
+      - name: Recover shard
+        run: >-
+          python src/spotify-artist-full-recovery.py shard
+          --input ./runtime/spotify-full-prepared/spotify-full-prepared.jsonl.gz
+          --out ./out/spotify-full-shard
+          --shard ${{ matrix.shard }}
+          --shards 8
+          --workers 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spotify-full-shard-${{ matrix.shard }}
+          path: archive-builder/out/spotify-full-shard
+          retention-days: 30
+
+  merge:
+    needs:
+      - prepare
+      - recover
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-recovery-candidate
+          path: archive-builder/runtime/v5-candidate
+          run-id: 36776483167
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: spotify-full-prepared
+          path: archive-builder/runtime/spotify-full-prepared
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: spotify-full-shard-*
+          path: archive-builder/runtime/spotify-shards
+      - name: Merge and strict QA
+        run: >-
+          python src/spotify-artist-full-recovery.py merge
+          --candidate ./runtime/v5-candidate
+          --prepared ./runtime/spotify-full-prepared/spotify-full-prepared.jsonl.gz
+          --shard-dir ./runtime/spotify-shards
+          --out ./out/spotify-full-final
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spotify-artist-full-recovery-report
+          path: archive-builder/out/spotify-full-final
+          retention-days: 90
