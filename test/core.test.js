@@ -34,6 +34,8 @@ const {
   enrichMeloBotTrack,
   inspectMeloBotTrack,
   downloadMeloBotTrackQuality,
+  downloadMeloBotTopTracks,
+  downloadMeloBotRecentTracks,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
@@ -3765,4 +3767,105 @@ test('single-token zero-coverage source suggestions are filtered instead of cach
     { artist: 'Another', title: 'Farhad Remix' },
   ];
   assert.equal(keepFullCoverageTracksWhenAvailable('farhad', matching).length, 2);
+});
+
+
+test('live Top artist context keeps its bulk button clickable without rebuilding Artist navigation', async () => {
+  const seedRaw = '🎵 Bulk Artist, Seed';
+  const artistButton = '🎤 خواننده';
+  const orderButton = 'نمایش به ترتیب پردانلودترین';
+  const bulkButton = '📥 دانلود همه (عالی)';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[fakeBotMessage('track', ['کیفیت عالی', 'کیفیت معمولی', artistButton])]],
+    [artistButton]: [[
+      fakeBotMessage('Bulk Artist', ['🎵 Bulk Artist, New One', orderButton])
+    ]],
+    [orderButton]: [[
+      fakeBotMessage('پربازدیدترین', [
+        '🎵 Bulk Artist, Top One',
+        '🎵 Bulk Artist, Top Two',
+        bulkButton,
+      ])
+    ]],
+    [bulkButton]: [[
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'Top One', performer: 'Bulk Artist' }],
+          },
+        },
+      },
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'Top Two', performer: 'Bulk Artist' }],
+          },
+        },
+      },
+    ]],
+  });
+
+  const seed = { ...parseTrackButton(seedRaw), source: 'melobot' };
+  const context = await openMeloBotArtist(client, seed, { timeoutMs: 1800 });
+  assert.equal(context.bulkHighButton, bulkButton);
+  assert.equal(context.sourceStateVersion, getMeloBotStateVersion());
+
+  const bulk = await downloadMeloBotTopTracks(client, context, { timeoutMs: 800 });
+  assert.equal(bulk.audioItems.length, 2);
+  assert.deepEqual(client.sent, [seedRaw, artistButton, orderButton, bulkButton]);
+});
+
+test('live Recent artist context keeps its bulk button clickable without a second navigation pass', async () => {
+  const seedRaw = '🎵 Recent Artist, Seed';
+  const artistButton = '🎤 خواننده';
+  const bulkButton = '📥 دانلود همه (عالی)';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[fakeBotMessage('track', ['کیفیت عالی', 'کیفیت معمولی', artistButton])]],
+    [artistButton]: [[
+      fakeBotMessage('Recent Artist', [
+        '🎵 Recent Artist, New One',
+        '🎵 Recent Artist, New Two',
+        bulkButton,
+      ])
+    ]],
+    [bulkButton]: [[
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'New One', performer: 'Recent Artist' }],
+          },
+        },
+      },
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'New Two', performer: 'Recent Artist' }],
+          },
+        },
+      },
+    ]],
+  });
+
+  const seed = { ...parseTrackButton(seedRaw), source: 'melobot' };
+  const resolved = await resolveMeloBotArtistTrackList(
+    client,
+    'Recent Artist',
+    'recent',
+    seed,
+    { timeoutMs: 1800 }
+  );
+  assert.equal(resolved.context.recentBulkHighButton, bulkButton);
+  assert.equal(resolved.context.sourceStateVersion, getMeloBotStateVersion());
+
+  const bulk = await downloadMeloBotRecentTracks(client, resolved.context, { timeoutMs: 800 });
+  assert.equal(bulk.audioItems.length, 2);
+  assert.deepEqual(client.sent, [seedRaw, artistButton, bulkButton]);
 });
