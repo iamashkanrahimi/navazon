@@ -4336,3 +4336,53 @@ test('Catalog Artist context rejects a polluted snapshot instead of returning a 
   const context = await store.getArtistContext('Farhad', 60_000);
   assert.equal(context, null);
 });
+
+
+test('deep Artist list reads past polluted relation rows before applying the visible limit', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    calls.push({ sql: String(sql), params });
+    const wrong = Array.from({ length: 10 }, (_, index) => ({
+      artist: 'Farhad Ravanbakhsh',
+      title: `Wrong ${index + 1}`,
+      album: null,
+      duration_seconds: null,
+      popularity_count: 1000 - index,
+      popularity_text: null,
+      content_origin: 'unknown',
+      availability_policy: 'unknown',
+      source_data: {
+        source: 'melobot',
+        rawText: `🎵 Farhad Ravanbakhsh, Wrong ${index + 1}`,
+      },
+      rank: index + 1,
+    }));
+    const correct = Array.from({ length: 10 }, (_, index) => ({
+      artist: 'Farhad',
+      title: `Correct ${index + 1}`,
+      album: null,
+      duration_seconds: null,
+      popularity_count: 900 - index,
+      popularity_text: null,
+      content_origin: 'unknown',
+      availability_policy: 'unknown',
+      source_data: {
+        source: 'melobot',
+        rawText: `🎵 Farhad, Correct ${index + 1}`,
+      },
+      rank: index + 11,
+    }));
+    return { rows: [...wrong, ...correct] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const tracks = await catalog.getArtistList('Farhad', 'top', 10);
+    assert.equal(tracks.length, 10);
+    assert.ok(tracks.every(track => track.artist === 'Farhad'));
+    assert.equal(calls[0].params[2], 30);
+  } finally {
+    db.query = originalQuery;
+  }
+});
