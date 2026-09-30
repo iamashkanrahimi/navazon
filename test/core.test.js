@@ -4139,3 +4139,48 @@ test('featured-query planner tries the stable base credit before the verbose que
     ['Shayea Sadegh']
   );
 });
+
+
+test('featured remix intent stays ahead of the shortened base query', () => {
+  assert.deepEqual(
+    primarySearchQueries('Xaniar Shabe Mahtab feat Ehaam remix'),
+    [
+      'Xaniar Shabe Mahtab feat Ehaam remix',
+      'Xaniar Shabe Mahtab',
+    ]
+  );
+  assert.deepEqual(
+    primarySearchQueries('Sajadii Khoone feat Shervin Hajipour'),
+    [
+      'Sajadii Khoone',
+      'Sajadii Khoone feat Shervin Hajipour',
+    ]
+  );
+});
+
+test('incidental album suggestions are confirmed but never treated as a complete discography', () => {
+  const surface = inspectMeloBotAlbumListing([
+    fakeBotMessage(
+      'نتیجه جستجو',
+      ['💿 Mojaz - Hichkas']
+    ),
+  ]);
+
+  assert.equal(surface.confirmed, true);
+  assert.equal(surface.albums.length, 1);
+  assert.equal(surface.complete, false);
+});
+
+test('declared album listing can still be complete without pagination', () => {
+  const surface = inspectMeloBotAlbumListing([{
+    message: 'آلبوم های خواننده 1',
+    replyMarkup: {
+      rows: [{ buttons: [{ text: 'Mojaz (13)' }] }],
+    },
+  }]);
+
+  assert.equal(surface.confirmed, true);
+  assert.equal(surface.declaredCount, 1);
+  assert.equal(surface.albums.length, 1);
+  assert.equal(surface.complete, true);
+});
