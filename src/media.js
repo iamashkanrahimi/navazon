@@ -186,7 +186,7 @@ function interactionBudget(timeoutMs = Math.min(config.searchTimeoutMs, 14000)) 
 }
 
 
-function primarySearchQueries(query = '') {
+export function primarySearchQueries(query = '') {
   const full = String(query || '').replace(/\s+/g, ' ').trim();
   if (!full) return [];
 
