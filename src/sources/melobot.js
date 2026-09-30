@@ -2834,17 +2834,7 @@ export async function openMeloBotArtistFastFresh(
   );
 }
 
-export async function openMeloBotArtist(
-  client,
-  seedTrack,
-  { timeoutMs = 9000 } = {}
-) {
-  const remaining = sourceBudget(timeoutMs, 9000);
-  const base = await openMeloBotArtistBase(
-    client,
-    seedTrack,
-    { timeoutMs: remaining() }
-  );
+async function completeMeloBotArtistTop(client, base, remaining) {
   let topTracks = [];
   let bulkHighButton = null;
   let bulkNormalButton = null;
@@ -2985,6 +2975,20 @@ export async function openMeloBotArtist(
     liveAlbumNextButton,
     liveAlbumSourceStateVersion,
   };
+}
+
+export async function openMeloBotArtist(
+  client,
+  seedTrack,
+  { timeoutMs = 9000 } = {}
+) {
+  const remaining = sourceBudget(timeoutMs, 9000);
+  const base = await openMeloBotArtistBase(
+    client,
+    seedTrack,
+    { timeoutMs: remaining() }
+  );
+  return completeMeloBotArtistTop(client, base, remaining);
 }
 
 export async function resolveMeloBotArtistTrackList(
