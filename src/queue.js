@@ -51,6 +51,16 @@ export class SerialQueue {
     return this.items.some(entry => predicate(entry.item));
   }
 
+  removeWhere(predicate) {
+    const removed = [];
+    this.items = this.items.filter(entry => {
+      if (!predicate(entry.item)) return true;
+      removed.push(entry.item);
+      return false;
+    });
+    return removed;
+  }
+
   active() {
     return this.activeItem?.item || null;
   }
