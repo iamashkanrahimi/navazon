@@ -11,7 +11,10 @@ function stableVariant(track = {}) {
   if (track.rawText) {
     value = value
       .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
-      .replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '')
+      .replace(
+        /\s+x\s+(?:<\s*)?\d+(?:\.\d+)?\s*[kKmMgG]?(?:\s*[.…]+)?\s*$/u,
+        ''
+      )
       .trim();
   }
   return normalize(value);
