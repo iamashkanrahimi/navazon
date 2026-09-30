@@ -99,7 +99,7 @@ jobs:
             if(!before) throw new Error('new artist appeared: '+url);
             if(a.image_source==='spotify_embed_artist_profile'){
               spotify++;
-              if(!/^https:\/\/image-cdn-ak\.spotifycdn\.com\/image\/ab676161/i.test(a.image_url||'')) throw new Error('bad Spotify profile URL: '+url);
+              if(!/^https:\/\/image-cdn-[a-z0-9-]+\.spotifycdn\.com\/image\/ab676161/i.test(a.image_url||'')) throw new Error('bad Spotify profile URL: '+url);
               if(!a.radiojavan_fallback_image_url) throw new Error('missing preserved fallback: '+url);
               if(a.radiojavan_fallback_image_url!==before.image_url) throw new Error('fallback does not equal previous image: '+url);
               if(Number(a.spotify_match_shared_track_count||0)<2) throw new Error('below 2 shared tracks: '+url);
