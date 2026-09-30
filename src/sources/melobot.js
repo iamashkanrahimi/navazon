@@ -2007,7 +2007,7 @@ export async function inspectMeloBotTrack(client, candidate) {
   const hasNormal = menuButtons.some(text =>
     clean(text).includes('کیفیت معمولی') && !clean(text).includes('دانلود همه')
   );
-  const hasLyrics = menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
+  let hasLyrics = menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
   const hasArtistPage = Boolean(
     findArtistButtonFor(menuMessages, candidate?.artist || '')
   );
@@ -2017,13 +2017,18 @@ export async function inspectMeloBotTrack(client, candidate) {
   let hasMetadata = false;
   if (moreButton) {
     try {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: config.searchTimeoutMs,
-        quietMs: 550,
-      });
-      const moreButtons = buttonsFromMessages(more.messages);
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        menuMessages,
+        {
+          timeoutMs: Math.min(config.searchTimeoutMs, 3000),
+          capability: 'inspect_track',
+        }
+      );
+      const moreButtons = buttonsFromMessages(moreMessages);
       hasCover = moreButtons.some(text => /کاور/u.test(clean(text)));
       hasMetadata = moreButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text)));
+      hasLyrics ||= moreButtons.some(text => /متن\s*آهنگ/u.test(clean(text)));
     } catch (err) {
       console.warn('[melobot inspect more]', err.message);
     }
