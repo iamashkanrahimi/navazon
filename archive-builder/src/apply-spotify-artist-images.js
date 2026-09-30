@@ -36,7 +36,7 @@ for(const p of patches){
   if(pmap.has(p.canonical_url)) throw new Error('duplicate patch canonical_url: '+p.canonical_url);
   if(Number(p.shared_track_count||0)<2) throw new Error('patch below 2-track threshold: '+p.canonical_url);
   if(p.image_kind!=='artist_profile') throw new Error('patch is not artist_profile: '+p.canonical_url);
-  if(!/^https:\/\/image-cdn-ak\.spotifycdn\.com\/image\/ab676161/i.test(p.image_url||'')) {
+  if(!/^https:\/\/image-cdn-[a-z0-9-]+\.spotifycdn\.com\/image\/ab676161/i.test(p.image_url||'')) {
     throw new Error('patch image is not Spotify artist-profile image: '+p.canonical_url);
   }
   pmap.set(p.canonical_url,p);
