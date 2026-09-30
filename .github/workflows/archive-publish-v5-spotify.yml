@@ -1,0 +1,91 @@
+name: Publish Radio Javan V5 Spotify Candidate
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: contains(github.event.head_commit.message, '[publish-v5-spotify]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-spotify-candidate
+          path: /tmp/rj-v5
+          run-id: 36785523003
+          github-token: ${{ github.token }}
+
+      - name: Verify approved candidate
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import zlib from 'node:zlib';
+          import readline from 'node:readline';
+
+          const manifest=JSON.parse(fs.readFileSync('/tmp/rj-v5/manifest.json','utf8'));
+          const qa=JSON.parse(fs.readFileSync('/tmp/rj-v5/spotify-artist-image-final-qa.json','utf8'));
+          const expected={
+            tracks:32737,
+            artists:9263,
+            albums:1923,
+            album_tracks:16710,
+            media_images:37186,
+            artist_final_fallbacks:8,
+            suspicious_artists:3,
+            tracks_with_cover:32737,
+            artists_with_image:9263,
+            albums_with_cover:1923,
+            tracks_with_lyrics:14867
+          };
+          for(const [k,v] of Object.entries(expected)){
+            if(manifest.counts?.[k]!==v) throw new Error(k+': expected '+v+', got '+manifest.counts?.[k]);
+          }
+          if(qa.spotify_profile_images_applied!==140) throw new Error('Spotify profile image QA mismatch');
+          if(qa.preserved_fallbacks!==140) throw new Error('fallback preservation QA mismatch');
+          if(qa.untouched_artist_image_mismatches!==0) throw new Error('unintended artist image changes detected');
+
+          let spotify=0;
+          const rl=readline.createInterface({
+            input:fs.createReadStream('/tmp/rj-v5/rj-artists.jsonl.gz').pipe(zlib.createGunzip()),
+            crlfDelay:Infinity
+          });
+          for await(const line of rl){
+            if(!line.trim()) continue;
+            const a=JSON.parse(line);
+            if(a.image_source==='spotify_embed_artist_profile'){
+              spotify++;
+              if(Number(a.spotify_match_shared_track_count||0)<2) throw new Error('below 2-track match: '+a.canonical_url);
+              if(Number(a.spotify_direct_validated_track_count||0)<2) throw new Error('below 2 direct validations: '+a.canonical_url);
+              if(!a.radiojavan_fallback_image_url) throw new Error('missing fallback: '+a.canonical_url);
+            }
+          }
+          if(spotify!==140) throw new Error('expected 140 Spotify artist profiles, got '+spotify);
+          console.log(JSON.stringify({manifest:manifest.counts,spotify_profile_images:spotify,qa},null,2));
+          NODE
+
+      - name: Publish approved V5 files
+        run: |
+          rm -rf archive-builder/data/v5
+          mkdir -p archive-builder/data/v5
+          cp -a /tmp/rj-v5/. archive-builder/data/v5/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add archive-builder/data/v5
+          if git diff --cached --quiet; then
+            echo "No V5 changes to publish"
+            exit 0
+          fi
+          git commit -m "[archive-v5-data] Publish recovered V5 with 140 verified Spotify artist images"
+          git push origin HEAD:archive-builder-cloud
