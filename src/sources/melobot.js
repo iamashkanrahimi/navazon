@@ -1351,12 +1351,16 @@ export async function downloadMeloBotTrackQuality(
   console.log(
     `[melobot.quality] stage=button_found quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
+  await sleep(220);
   const result = await sendAndCollect(client, button, {
     timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 7000)),
     quietMs: 650,
     stopWhen: isAudioMessage,
     waitForTarget: true,
     reconcileOnTimeout: true,
+    onMessage: message => {
+      console.log('[melobot.quality.incoming]', JSON.stringify(describeTargetMessage(message)));
+    },
   });
 
   const audio = result.messages.find(isAudioMessage);
@@ -1460,6 +1464,8 @@ export async function getMeloBotLyrics(
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
+      await sleep(180);
+      await sleep(180);
       const more = await sendAndCollect(client, moreButton, {
         timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
         quietMs: 900,
@@ -1485,12 +1491,16 @@ export async function getMeloBotLyrics(
   console.log(
     `[melobot.lyrics] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
+  await sleep(180);
   const result = await sendAndCollect(client, lyricsButton, {
     timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 6500)),
     quietMs: 900,
     stopWhen: m => Boolean(messageText(m)),
     waitForTarget: true,
     reconcileOnTimeout: true,
+    onMessage: message => {
+      console.log('[melobot.lyrics.incoming]', JSON.stringify(describeTargetMessage(message)));
+    },
   });
 
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
@@ -1684,12 +1694,16 @@ export async function getMeloBotCover(
   console.log(
     `[melobot.cover] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
+  await sleep(180);
   const result = await sendAndCollect(client, coverButton, {
     timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 6500)),
     quietMs: 650,
     stopWhen: photoMessage,
     waitForTarget: true,
     reconcileOnTimeout: true,
+    onMessage: message => {
+      console.log('[melobot.cover.incoming]', JSON.stringify(describeTargetMessage(message)));
+    },
   });
 
   const photo = result.messages.find(photoMessage);
