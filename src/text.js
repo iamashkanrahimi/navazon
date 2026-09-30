@@ -108,6 +108,25 @@ const SEARCH_NOISE_WORDS = new Set([
   'the', 'a', 'an',
 ]);
 
+const TRACK_VARIANT_WORDS = new Set([
+  'remix', 'mix', 'edit', 'version', 'live', 'acoustic', 'instrumental',
+  'remaster', 'remastered', 'rework', 'sped', 'slowed', 'karaoke',
+  'ریمیکس', 'لایو', 'آکوستیک', 'بیکلام', 'بی‌کلام',
+]);
+
+export function unrequestedTrackVariantWords(query = '', track = {}) {
+  const querySet = new Set(
+    normalizeText(query).split(' ').filter(Boolean)
+  );
+  const titleTokens = normalizeText(track?.title || '')
+    .split(' ')
+    .filter(Boolean);
+
+  return titleTokens.filter(token =>
+    TRACK_VARIANT_WORDS.has(token) && !querySet.has(token)
+  );
+}
+
 export function meaningfulSearchTokens(query = '') {
   return normalizeText(query)
     .split(' ')
@@ -139,14 +158,29 @@ export function scoreTrackQueryMatch(query = '', track = {}) {
   let score = coverage * 10;
   if (title && normalizeText(query).includes(title)) score += 8;
   if (artist && normalizeText(query).includes(artist)) score += 6;
+
+  const unrequestedVariants = unrequestedTrackVariantWords(query, track);
+  score -= unrequestedVariants.length * 18;
+
   if (track.artistInferred) score -= 1;
 
-  return { score, coverage, total: queryTokens.length };
+  return {
+    score,
+    coverage,
+    total: queryTokens.length,
+    unrequestedVariants,
+  };
 }
 
-export function shouldUseSearchRelevanceFallback(query = '', bestCoverage = 0) {
+export function shouldUseSearchRelevanceFallback(
+  query = '',
+  bestCoverage = 0,
+  bestTrack = null
+) {
   const meaningful = meaningfulSearchTokens(query);
-  return meaningful.length >= 2 && Number(bestCoverage || 0) < meaningful.length;
+  if (meaningful.length < 2) return false;
+  if (Number(bestCoverage || 0) < meaningful.length) return true;
+  return unrequestedTrackVariantWords(query, bestTrack || {}).length > 0;
 }
 
 export function rankTracksForQuery(query = '', tracks = []) {
