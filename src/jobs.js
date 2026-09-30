@@ -1019,7 +1019,7 @@ async function deliverFastBulkFallback(session, tracks = [], label = 'bulk fallb
     return cached;
   }
 
-  if ((cached.missingTracks || []).length <= 3 && !hasPendingForegroundSourceWork()) {
+  if ((cached.missingTracks || []).length <= 3 && !hasPendingForegroundSourceWork(session?.userId)) {
     const individual = await finishMissingBulkIndividually(
       session,
       cached.missingTracks,
@@ -1051,11 +1051,11 @@ async function deliverBulkIndividuallyHq(session, tracks, {
   let missing = 0;
 
   for (let index = 0; index < sourceTracks.length; index += 1) {
-    if (hasPendingForegroundSourceWork() || Date.now() >= deadline) {
+    if (hasPendingForegroundSourceWork(session?.userId) || Date.now() >= deadline) {
       missing += sourceTracks.length - index;
       console.warn(
         `[${label}] paused remaining=${sourceTracks.length - index} reason=`
-        + (hasPendingForegroundSourceWork() ? 'foreground' : 'time_budget')
+        + (hasPendingForegroundSourceWork(session?.userId) ? 'foreground' : 'time_budget')
       );
       break;
     }
@@ -1980,7 +1980,7 @@ export const sourceQueue = new SerialQueue(async job => {
                   { timeoutMs: 4200 }
                 );
               }
-              if (hasPendingForegroundSourceWork()) {
+              if (hasPendingForegroundSourceWork(session?.userId)) {
                 const err = new Error('bulk deferred because foreground work is waiting');
                 err.code = 'BULK_DEFERRED_FOR_FOREGROUND';
                 throw err;
@@ -1997,7 +1997,7 @@ export const sourceQueue = new SerialQueue(async job => {
               console.warn('[native bulk recent retry]', attempt + 1, err.message);
               if (
                 attempt === 0
-                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork())
+                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork(session?.userId))
               ) {
                 console.warn(
                   '[bulk guard] recent retry skipped:',
@@ -2159,7 +2159,7 @@ export const sourceQueue = new SerialQueue(async job => {
                   { timeoutMs: 4200 }
                 );
               }
-              if (hasPendingForegroundSourceWork()) {
+              if (hasPendingForegroundSourceWork(session?.userId)) {
                 const err = new Error('bulk deferred because foreground work is waiting');
                 err.code = 'BULK_DEFERRED_FOR_FOREGROUND';
                 throw err;
@@ -2176,7 +2176,7 @@ export const sourceQueue = new SerialQueue(async job => {
               console.warn('[native bulk top retry]', attempt + 1, err.message);
               if (
                 attempt === 0
-                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork())
+                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork(session?.userId))
               ) {
                 console.warn(
                   '[bulk guard] top retry skipped:',
@@ -2338,7 +2338,7 @@ export const sourceQueue = new SerialQueue(async job => {
                 throw new Error('MeloBot bulk HQ button was not found on the album page.');
               }
 
-              if (hasPendingForegroundSourceWork()) {
+              if (hasPendingForegroundSourceWork(session?.userId)) {
                 const err = new Error('bulk deferred because foreground work is waiting');
                 err.code = 'BULK_DEFERRED_FOR_FOREGROUND';
                 throw err;
@@ -2355,7 +2355,7 @@ export const sourceQueue = new SerialQueue(async job => {
               console.warn('[native bulk album retry]', attempt + 1, err.message);
               if (
                 attempt === 0
-                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork())
+                && (structuralNativeBulkFailure(err) || hasPendingForegroundSourceWork(session?.userId))
               ) {
                 console.warn(
                   '[bulk guard] album retry skipped:',
@@ -2491,7 +2491,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         let supplemental = 0;
-        if (config.discoveryUseAhangify && !hasPendingForegroundSourceWork()) {
+        if (config.discoveryUseAhangify && !hasPendingForegroundSourceWork(session?.userId)) {
           try {
             const extra = await searchAhangify(
               tg,
@@ -2523,7 +2523,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         let albums = [];
-        if (!hasPendingForegroundSourceWork()) {
+        if (!hasPendingForegroundSourceWork(session?.userId)) {
           try {
             albums = await listMeloBotAlbums(
               tg,
