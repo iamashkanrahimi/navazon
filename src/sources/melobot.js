@@ -3680,7 +3680,9 @@ export async function openMeloBotAlbumByTitle(
   if (!circuitRemainingMs) {
     try {
       seed = await findArtistSeed(client, artist, preferredSeed);
-      const artistContext = await openMeloBotArtistBase(client, seed);
+      const artistContext = await openMeloBotArtistBase(client, seed, {
+        allowArtistSearchFallback: false,
+      });
       resolvedArtist = artistContext.artist;
       const initial = await getInitialMeloBotAlbumListing(client, artistContext);
       state = initial.listing;
