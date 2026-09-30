@@ -1823,9 +1823,9 @@ export const sourceQueue = new SerialQueue(async job => {
           ]);
           const derivedTop = storedTop.length
             ? storedTop
-            : await deepCatalog.deriveArtistList(seed.artist, 'top', TOP_TRACKS_LIMIT);
+            : await deepCatalog.deriveArtistList(targetArtist, 'top', TOP_TRACKS_LIMIT);
           const deepContext = {
-            artist: seed.artist,
+            artist: targetArtist,
             tracks: derivedTop.length ? derivedTop : storedRecent,
             topTracks: derivedTop,
             recentTracks: storedRecent,
