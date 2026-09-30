@@ -1,0 +1,4 @@
+import fsp from 'node:fs/promises';import path from 'node:path';import { parseArgs } from './utils.js';
+const args=parseArgs();const tracks=path.resolve(args.tracks||'./runtime/phase2/album-candidates.jsonl');const discovered=path.resolve(args.discovered||'./runtime/artists-final/discovered-album-urls.txt');const out=path.resolve(args.out||'./runtime/phase2/all-album-candidates.jsonl');
+const trackRows=(await fsp.readFile(tracks,'utf8')).split(/\n/).filter(Boolean).map(JSON.parse);let urls=[];try{urls=(await fsp.readFile(discovered,'utf8')).split(/\n/).filter(Boolean);}catch{}
+const rows=[...trackRows,...urls.map(canonical_url=>({canonical_url,source:'artist_discovery'}))];await fsp.mkdir(path.dirname(out),{recursive:true});await fsp.writeFile(out,rows.map(x=>JSON.stringify(x)).join('\n')+'\n');console.log(JSON.stringify({track_album_candidates:trackRows.length,artist_discovered_urls:urls.length,total_jobs:rows.length}));

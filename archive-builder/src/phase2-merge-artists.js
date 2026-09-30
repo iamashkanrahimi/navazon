@@ -1,0 +1,11 @@
+import fs from 'node:fs';import fsp from 'node:fs/promises';import path from 'node:path';import zlib from 'node:zlib';import readline from 'node:readline';import { parseArgs } from './utils.js';
+const args=parseArgs();const inDir=path.resolve(args.in||'./artifacts/phase2-artists');const outDir=path.resolve(args.out||'./out/phase2-artists-final');await fsp.mkdir(outDir,{recursive:true});
+async function files(dir){let out=[];for(const e of await fsp.readdir(dir,{withFileTypes:true})){const p=path.join(dir,e.name);out.push(...(e.isDirectory()?await files(p):[p]));}return out;}
+async function readGz(file,fn){const rl=readline.createInterface({input:fs.createReadStream(file).pipe(zlib.createGunzip()),crlfDelay:Infinity});for await(const l of rl)if(l.trim())fn(JSON.parse(l));}
+const all=await files(inDir);const resolvedFiles=all.filter(x=>/-resolved\.jsonl\.gz$/.test(x));const failureFiles=all.filter(x=>/-failures\.jsonl\.gz$/.test(x));
+const artists=new Map(),failures=[];for(const f of resolvedFiles)await readGz(f,r=>{if(!artists.has(r.canonical_url))artists.set(r.canonical_url,r);});for(const f of failureFiles)await readGz(f,r=>failures.push(r));
+const rows=[...artists.values()].sort((a,b)=>a.canonical_url.localeCompare(b.canonical_url));const albumUrls=[...new Set(rows.flatMap(x=>x.album_urls||[]))].sort();
+const gz=zlib.createGzip({level:9});const stream=fs.createWriteStream(path.join(outDir,'rj-artists.jsonl.gz'));gz.pipe(stream);for(const r of rows)gz.write(JSON.stringify(r)+'\n');await new Promise((res,rej)=>{stream.on('finish',res);stream.on('error',rej);gz.end();});
+await fsp.writeFile(path.join(outDir,'artists-sitemap.txt'),rows.map(x=>x.canonical_url).join('\n')+'\n');await fsp.writeFile(path.join(outDir,'discovered-album-urls.txt'),albumUrls.join('\n')+(albumUrls.length?'\n':''));
+const summary={resolved_artists:rows.length,failed_candidates:failures.length,with_image:rows.filter(x=>x.image_url).length,discovered_album_urls:albumUrls.length,discovered_song_urls:new Set(rows.flatMap(x=>x.song_urls||[])).size};
+await fsp.writeFile(path.join(outDir,'artist-summary.json'),JSON.stringify(summary,null,2));await fsp.writeFile(path.join(outDir,'artist-failures.jsonl'),failures.map(x=>JSON.stringify(x)).join('\n')+(failures.length?'\n':''));console.log(JSON.stringify(summary,null,2));
