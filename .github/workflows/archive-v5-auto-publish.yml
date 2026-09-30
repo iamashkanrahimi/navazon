@@ -1,0 +1,44 @@
+name: Auto Publish Radio Javan V5
+
+on:
+  workflow_run:
+    workflows:
+      - Radio Javan Album API Full Repair and Freeze V5
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'archive-builder-cloud'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive-builder-cloud
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-final
+          path: /tmp/rj-v5
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Publish V5 to archive branch
+        run: |
+          rm -rf archive-builder/data/v5
+          mkdir -p archive-builder/data/v5
+          cp -a /tmp/rj-v5/. archive-builder/data/v5/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add archive-builder/data/v5
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "[archive-v5-data] Publish frozen Radio Javan V5 dataset"
+          git push origin HEAD:archive-builder-cloud
