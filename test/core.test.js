@@ -96,6 +96,7 @@ const {
   hasCompositeArtistSeparators,
   keepFullCoverageTracksWhenAvailable,
   primarySearchQueries,
+  acceptsShortenedPrimarySearch,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -4251,4 +4252,24 @@ test('Track recovery follows one exact nested source row before declaring menu t
 
   assert.ok(result.audioMessage);
   assert.deepEqual(client.sent, ['Farhad Ayneha', freshRow, nestedRow, hq]);
+});
+
+
+test('shortened featured search is accepted only when source rows preserve the full request', () => {
+  assert.equal(
+    acceptsShortenedPrimarySearch(
+      'Sajadii Khoone feat Shervin Hajipour',
+      'Sajadii Khoone',
+      [{ artist: 'Sajadii', title: 'Khoone' }]
+    ),
+    false
+  );
+  assert.equal(
+    acceptsShortenedPrimarySearch(
+      'Sajadii Khoone feat Shervin Hajipour',
+      'Sajadii Khoone',
+      [{ artist: 'Sajadii', title: 'Khoone (feat. Shervin Hajipour)' }]
+    ),
+    true
+  );
 });
