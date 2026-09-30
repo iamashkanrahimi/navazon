@@ -138,6 +138,17 @@ export function unrequestedTrackVariantWords(query = '', track = {}) {
   );
 }
 
+export function primarySearchQueries(query = '') {
+  const full = cleanText(query);
+  if (!full) return [];
+
+  const base = full
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
+
+  return [...new Set([base, full].filter(Boolean))];
+}
+
 export function meaningfulSearchTokens(query = '') {
   return normalizeText(query)
     .split(' ')
