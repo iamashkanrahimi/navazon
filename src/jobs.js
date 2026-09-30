@@ -152,7 +152,7 @@ function sourceJobKey(job = {}) {
 
 function bulkDownloadBudget(trackCount = 0) {
   return Math.min(
-    9000,
+    10_000,
     Math.max(5000, 2200 + Math.max(0, Number(trackCount || 0)) * 550)
   );
 }
