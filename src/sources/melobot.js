@@ -1059,6 +1059,71 @@ function inspectSelectedCandidateSurface(messages = [], candidate = {}) {
   return { kind: 'unknown', tracks: [] };
 }
 
+
+function exactNestedTrackButton(messages = [], candidate = {}) {
+  const wantedTitle = titleIdentity(candidate?.title || '');
+  if (!wantedTitle) return null;
+
+  for (const rawText of buttonsFromMessages(messages)) {
+    const track = parseTrackButton(rawText, candidate?.artist || '');
+    if (!track || titleIdentity(track.title || '') !== wantedTitle) continue;
+    if (
+      candidate?.artist
+      && track?.artist
+      && !artistIdentityCompatible(candidate.artist, track.artist)
+    ) continue;
+    return rawText;
+  }
+  return null;
+}
+
+async function followNestedTrackSurface(
+  client,
+  messages,
+  candidate,
+  {
+    clickedText = '',
+    timeoutMs = 1800,
+    allowAlbumSurface = false,
+  } = {}
+) {
+  const nestedButton = exactNestedTrackButton(messages, candidate);
+  if (!nestedButton || clean(nestedButton) === clean(clickedText)) return null;
+
+  const nested = await sendAndCollect(client, nestedButton, {
+    timeoutMs: Math.max(700, Number(timeoutMs || 1800)),
+    quietMs: 450,
+    stopWhen: message =>
+      hasTrackActionMenu([message])
+      || inspectSelectedCandidateSurface([message], candidate).kind === 'album',
+    stopWhenBatch: batch =>
+      hasTrackActionMenu(batch)
+      || inspectSelectedCandidateSurface(batch, candidate).kind === 'album',
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+  });
+
+  if (hasTrackActionMenu(nested.messages)) {
+    const refreshed = { ...candidate, sourceStateVersion: nested.stateVersion };
+    rememberLiveTrackSurface(client, refreshed, nested.messages, nested.stateVersion);
+    return {
+      messages: nested.messages,
+      candidate: refreshed,
+      route: 'nested_track_refinement',
+    };
+  }
+
+  const surface = inspectSelectedCandidateSurface(nested.messages, candidate);
+  if (allowAlbumSurface && surface.kind === 'album') {
+    return {
+      messages: nested.messages,
+      candidate: { ...candidate, sourceStateVersion: nested.stateVersion },
+      route: 'nested_album_refinement',
+    };
+  }
+  return null;
+}
+
 function exactSearchTrackMatch(query, tracks = []) {
   const wanted = normalize(query);
   if (!wanted) return null;
@@ -1487,7 +1552,27 @@ async function openTrackMenuWithCandidate(
         route: 'direct_album',
       };
     }
-    console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
+
+    const refined = await followNestedTrackSurface(
+      client,
+      direct.messages,
+      requested,
+      {
+        clickedText: directText,
+        timeoutMs: Math.min(1600, cap),
+        allowAlbumSurface,
+      }
+    );
+    if (refined) {
+      console.log(
+        `[melobot.track_menu] route=${refined.route} track=${JSON.stringify(trackLabel(requested))}`
+      );
+      return refined;
+    }
+
+    console.log(
+      `[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))} surface=${describeMeloBotSurface(direct.messages)}`
+    );
   } else if (directText) {
     console.log(
       `[melobot.track_menu] route=stale_surface_refresh track=${JSON.stringify(trackLabel(requested))}`
@@ -1527,9 +1612,27 @@ async function openTrackMenuWithCandidate(
         route: 'resolved_album',
       };
     }
+
+    const refined = await followNestedTrackSurface(
+      client,
+      selected.messages,
+      liveCandidate,
+      {
+        clickedText: liveCandidate.rawText,
+        timeoutMs: Math.min(1700, cap),
+        allowAlbumSurface,
+      }
+    );
+    if (refined) {
+      console.log(
+        `[melobot.track_menu] route=${refined.route} track=${JSON.stringify(trackLabel(liveCandidate))}`
+      );
+      return refined;
+    }
+
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
-      `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)}`
+      `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)} surface=${describeMeloBotSurface(selected.messages)}`
     );
   }
   const refreshedCandidate = {
