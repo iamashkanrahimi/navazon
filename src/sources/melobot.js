@@ -1406,10 +1406,17 @@ function photoMessage(message) {
 
 function isMoreMenuSurface(message = {}) {
   // Do not stop on the explanatory text alone. MeloBot can send the text
-  // first and attach/edit the reply keyboard a moment later; the submenu is
-  // confirmed only after at least one actionable secondary control exists.
-  return replyButtons(message).some(text =>
+  // first and attach/edit the reply keyboard a moment later. A keyboard plus
+  // the More-menu prompt is enough to confirm the submenu even when a
+  // particular capability (for example Cover) is genuinely absent.
+  const buttons = replyButtons(message);
+  if (!buttons.length) return false;
+  if (buttons.some(text =>
     /کاور|بقیه\s*مشخصات|مشخصات|متن\s*آهنگ/u.test(clean(text))
+  )) return true;
+
+  return /اینجا\s+امکانات\s+بیشتری|امکانات\s+بیشتری/u.test(
+    messageText(message)
   );
 }
 
