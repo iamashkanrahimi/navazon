@@ -253,30 +253,72 @@ def main():
         evaluated = []
         for cand in candidates:
             sid = cand["spotify_id"]
+            ev = {
+                "spotify_id": sid,
+                "indexed_name": cand.get("indexed_name"),
+                "indexed_image": None,
+                "catalog_track_count": 0,
+                "catalog_shared": [],
+                "official_name": None,
+                "official_image": None,
+                "official_image_width": None,
+                "official_image_height": None,
+                "official_tracks": [],
+                "official_shared": [],
+                "shared": [],
+                "error": None,
+            }
+            errors = []
             try:
                 if sid not in page_cache:
                     page_cache[sid] = http_text("https://www.mystreamcount.com/artist/" + sid)
-                    time.sleep(0.18)
+                    time.sleep(0.12)
                 group = parse_musicgroup(page_cache[sid])
-                if not group:
-                    evaluated.append({"spotify_id": sid, "error": "musicgroup_missing", "shared": []})
-                    continue
-                if norm_name(group.get("name")) != key:
-                    evaluated.append({"spotify_id": sid, "error": "indexed_name_identity_mismatch", "shared": []})
-                    continue
-                shared = shared_titles(sorted(rj_titles), group.get("tracks") or [])
-                evaluated.append({
-                    "spotify_id": sid,
-                    "indexed_name": group.get("name"),
-                    "indexed_image": group.get("image"),
-                    "catalog_track_count": len(group.get("tracks") or []),
-                    "shared": shared,
-                    "error": None,
-                })
+                if group:
+                    ev["indexed_name"] = group.get("name")
+                    ev["indexed_image"] = group.get("image")
+                    ev["catalog_track_count"] = len(group.get("tracks") or [])
+                    if norm_name(group.get("name")) == key:
+                        ev["catalog_shared"] = shared_titles(sorted(rj_titles), group.get("tracks") or [])
+                    else:
+                        errors.append("indexed_name_identity_mismatch")
+                else:
+                    errors.append("musicgroup_missing")
             except Exception as e:
-                evaluated.append({"spotify_id": sid, "error": "catalog_page_error:" + repr(e), "shared": []})
+                errors.append("catalog_page_error:" + repr(e))
 
-        evaluated.sort(key=lambda c: (-len(c.get("shared") or []), c.get("spotify_id") or ""))
+            try:
+                if sid not in embed_cache:
+                    embed_cache[sid] = http_text("https://open.spotify.com/embed/artist/" + sid)
+                    time.sleep(0.16)
+                embed = parse_spotify_embed(embed_cache[sid])
+                if not embed:
+                    errors.append("spotify_embed_next_data_missing")
+                else:
+                    ev["official_name"] = embed.get("name")
+                    ev["official_image"] = embed.get("image")
+                    ev["official_image_width"] = embed.get("image_width")
+                    ev["official_image_height"] = embed.get("image_height")
+                    ev["official_tracks"] = embed.get("tracks") or []
+                    if norm_name(embed.get("name")) == key:
+                        ev["official_shared"] = shared_titles(sorted(rj_titles), embed.get("tracks") or [])
+                    else:
+                        errors.append("official_name_mismatch")
+            except Exception as e:
+                errors.append("spotify_embed_error:" + repr(e))
+
+            combined = []
+            seen_pairs = set()
+            for hit in list(ev["official_shared"]) + list(ev["catalog_shared"]):
+                pair_key = (norm_track_relaxed(hit.get("radiojavan")), norm_track_relaxed(hit.get("spotify")))
+                if pair_key not in seen_pairs:
+                    seen_pairs.add(pair_key)
+                    combined.append(hit)
+            ev["shared"] = combined
+            ev["error"] = ";".join(errors) if errors else None
+            evaluated.append(ev)
+
+        evaluated.sort(key=lambda c: (-len(c.get("shared") or []), -len(c.get("official_shared") or []), c.get("spotify_id") or ""))
         best = evaluated[0] if evaluated else None
         top_overlap = len(best.get("shared") or []) if best else 0
         tied = [c for c in evaluated if len(c.get("shared") or []) == top_overlap and top_overlap > 0]
@@ -316,35 +358,21 @@ def main():
             result["spotify_id"] = sid
             result["shared_tracks"] = best.get("shared") or []
             result["shared_track_count"] = len(result["shared_tracks"])
-            try:
-                if sid not in embed_cache:
-                    embed_cache[sid] = http_text("https://open.spotify.com/embed/artist/" + sid)
-                    time.sleep(0.20)
-                embed = parse_spotify_embed(embed_cache[sid])
-                if not embed:
-                    raise RuntimeError("spotify_embed_next_data_missing")
-                result["spotify_name"] = embed.get("name")
-                if norm_name(embed.get("name")) != key:
-                    result["status"] = "official_name_mismatch"
-                else:
-                    result["spotify_image_url"] = embed.get("image") or best.get("indexed_image")
-                    result["spotify_image_width"] = embed.get("image_width")
-                    result["spotify_image_height"] = embed.get("image_height")
-                    result["spotify_image_class"] = image_class(result["spotify_image_url"])
-                    result["official_top_track_overlap"] = shared_titles(sorted(rj_titles), embed.get("tracks") or [])
-                    if result["spotify_image_class"] == "artist_profile":
-                        result["status"] = "confirmed_profile_image"
-                    elif result["spotify_image_class"] == "cover_like":
-                        result["status"] = "confirmed_but_cover_like"
-                    else:
-                        result["status"] = "confirmed_image_unknown_type"
-            except Exception as e:
-                result["status"] = "catalog_confirmed_spotify_embed_error"
-                result["spotify_id"] = sid
-                result["spotify_name"] = best.get("indexed_name")
-                result["spotify_image_url"] = best.get("indexed_image")
-                result["spotify_image_class"] = image_class(result["spotify_image_url"])
-                result["error"] = repr(e)
+            result["spotify_name"] = best.get("official_name") or best.get("indexed_name")
+            result["spotify_image_url"] = best.get("official_image") or best.get("indexed_image")
+            result["spotify_image_width"] = best.get("official_image_width")
+            result["spotify_image_height"] = best.get("official_image_height")
+            result["spotify_image_class"] = image_class(result["spotify_image_url"])
+            result["official_top_track_overlap"] = best.get("official_shared") or []
+            result["error"] = best.get("error")
+            if norm_name(best.get("official_name")) != key:
+                result["status"] = "official_name_mismatch"
+            elif result["spotify_image_class"] == "artist_profile":
+                result["status"] = "confirmed_profile_image"
+            elif result["spotify_image_class"] == "cover_like":
+                result["status"] = "confirmed_but_cover_like"
+            else:
+                result["status"] = "confirmed_image_unknown_type"
 
         result["candidate_evaluations"] = evaluated
         rows.append(result)
@@ -376,7 +404,7 @@ def main():
             "fill": sum(1 for _, s in sample if s == "fill"),
             "description": "40 highest-track-count + 30 deterministic artists with 2-10 RJ tracks + 30 deterministic single-track artists, all with Latin-letter English display names",
         },
-        "matching_rule": "Exact normalized English artist name plus >=1 shared track title; ties are ambiguous. Official Spotify embed name must also match.",
+        "matching_rule": "Exact normalized English artist name plus >=1 shared track title from the indexed Spotify catalog or official Spotify embed top tracks; ties at the best overlap are ambiguous. Official Spotify embed name must also match.",
         "exact_name_found": exact_name_found,
         "confirmed_by_name_and_shared_track": confirmed,
         "confirmed_profile_image": profile,
