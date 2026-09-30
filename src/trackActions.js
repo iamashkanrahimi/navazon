@@ -199,6 +199,32 @@ async function sendAudioMedia(chatId, track, media) {
   });
 }
 
+export async function trySendCachedTrackQuality(
+  chatId,
+  track,
+  quality,
+  userRegion = 'unknown'
+) {
+  assertDeliveryAllowed(track, userRegion);
+  const details = await safeTrackDetails(track);
+  const media = details?.media?.[quality] || null;
+  if (!media) return false;
+
+  await sendAudioMedia(chatId, track, media);
+  if (hasCanonicalTrackIdentity(track)) {
+    try {
+      await Promise.all([
+        cache.recordServe(track, { cacheHit: true }),
+        deepCatalog.clearCapabilityFailure(
+          track,
+          quality === 'hq' ? 'hasHq' : 'hasNormal'
+        ),
+      ]);
+    } catch {}
+  }
+  return true;
+}
+
 export async function sendTrackQuality(
   chatId,
   track,
