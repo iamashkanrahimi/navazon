@@ -94,7 +94,9 @@ function clean(value = '') {
 function sourceBudget(timeoutMs, fallbackMs = config.searchTimeoutMs) {
   const total = Math.max(800, Number(timeoutMs || fallbackMs));
   const deadline = Date.now() + total;
-  const remaining = () => Math.max(450, deadline - Date.now());
+  // Never silently grant another 450ms after the budget has expired. Callers
+  // that forget to check expired() get a near-immediate final probe instead.
+  const remaining = () => Math.max(25, deadline - Date.now());
   remaining.expired = () => Date.now() >= deadline;
   return remaining;
 }
