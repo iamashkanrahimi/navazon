@@ -3128,3 +3128,19 @@ test('Artist picker matches icon labeled buttons', () => {
   const messages = [fakeBotMessage('results', ['🗣 Ali Yasini'])];
   assert.equal(findArtistButtonFor(messages, 'Ali Yasini'), '🗣 Ali Yasini');
 });
+
+
+test('explicit Track resolver rejects unrelated search results', async () => {
+  const row = '🎵 Ehaam, Boghze Modaam x 335.9k';
+  const client = new FakeTelegramClient({
+    'Xaniar Shabe Mahtab (feat. Ehaam)': [[fakeBotMessage('results', [row])]],
+    'Shabe Mahtab (feat. Ehaam)': [[fakeBotMessage('results', [row])]],
+  });
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(client, {
+      source: 'melobot', artist: 'Xaniar', title: 'Shabe Mahtab (feat. Ehaam)',
+      rawText: '🎬🎵 Xaniar, Shabe Mahtab (feat. Ehaam)', sourceStateVersion: 1,
+    }, { timeoutMs: 1200 }),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+});
