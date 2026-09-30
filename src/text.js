@@ -60,6 +60,29 @@ export function hasCompositeArtistSeparators(value = '') {
   return /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
 }
 
+export function artistCreditParts(value = '') {
+  return cleanText(value)
+    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .map(normalizeText)
+    .filter(Boolean);
+}
+
+export function artistCreditMatchesContext(credit = '', artist = '') {
+  const target = normalizeText(artist);
+  const actual = normalizeText(credit);
+  if (!target || !actual) return false;
+  if (target === actual) return true;
+
+  const wantedParts = artistCreditParts(artist);
+  const actualParts = artistCreditParts(credit);
+  if (!wantedParts.length || !actualParts.length) return false;
+
+  if (wantedParts.length === 1) {
+    return actualParts.includes(wantedParts[0]);
+  }
+  return wantedParts.every(part => actualParts.includes(part));
+}
+
 export function hasAlbumIntent(query = '') {
   const tokens = normalizeText(query).split(' ').filter(Boolean);
   return tokens.some(token => ALBUM_INTENT_WORDS.has(token));
