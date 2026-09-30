@@ -210,14 +210,32 @@ function stripFeedRankPrefix(value = '') {
     .trim();
 }
 
+function metricSuffixMatch(value = '') {
+  return clean(value).match(
+    /\s+x\s+(<\s*)?(\d+(?:\.\d+)?)\s*([kKmMgG])?(\s*[.…]+)?\s*$/u
+  );
+}
+
 function parsePopularity(value = '') {
-  const text = clean(value);
-  const match = text.match(/\s+x\s+(\d+(?:\.\d+)?)\s*([kKmMgG])?\s*$/u);
+  const match = metricSuffixMatch(value);
   if (!match) return { text: undefined, count: undefined };
-  const raw = `${match[1]}${match[2] || ''}`;
-  const amount = Number(match[1]);
-  const unit = (match[2] || '').toLowerCase();
-  const multiplier = unit === 'k' ? 1_000 : unit === 'm' ? 1_000_000 : unit === 'g' ? 1_000_000_000 : 1;
+
+  const isUpperBound = Boolean(match[1]);
+  const isTruncated = Boolean(match[4]);
+  const raw = `${isUpperBound ? '<' : ''}${match[2]}${match[3] || ''}${isTruncated ? '…' : ''}`;
+  if (isUpperBound || isTruncated) {
+    return { text: raw, count: undefined };
+  }
+
+  const amount = Number(match[2]);
+  const unit = (match[3] || '').toLowerCase();
+  const multiplier = unit === 'k'
+    ? 1_000
+    : unit === 'm'
+      ? 1_000_000
+      : unit === 'g'
+        ? 1_000_000_000
+        : 1;
   return {
     text: raw,
     count: Number.isFinite(amount) ? Math.round(amount * multiplier) : undefined,
@@ -225,9 +243,10 @@ function parsePopularity(value = '') {
 }
 
 function stripMetricSuffix(value = '') {
-  return clean(value)
-    .replace(/\s+x\s+\d+(?:\.\d+)?\s*[kKmMgG]?\s*$/u, '')
-    .trim();
+  const text = clean(value);
+  const match = metricSuffixMatch(text);
+  if (!match) return text;
+  return clean(text.slice(0, match.index));
 }
 
 export function replyButtons(message) {
