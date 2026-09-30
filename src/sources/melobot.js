@@ -3406,8 +3406,19 @@ export async function downloadMeloBotBulkTracks(client, {
   label = 'bulk',
   expectedCount = 0,
   timeoutMs = null,
+  expectedStateVersion = null,
 } = {}) {
   if (!button) throw new Error(`MeloBot ${label} bulk button not found.`);
+  if (
+    expectedStateVersion !== null
+    && expectedStateVersion !== undefined
+    && Number(expectedStateVersion) !== Number(sourceStateVersion)
+  ) {
+    throw meloError(
+      'MELOBOT_BULK_SURFACE_STALE',
+      `MeloBot ${label} bulk surface is stale.`
+    );
+  }
 
   const adaptiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? timeoutMs
@@ -3419,22 +3430,58 @@ export async function downloadMeloBotBulkTracks(client, {
         30000
       );
 
-  const download = await sendAndCollect(client, button, {
-    timeoutMs: adaptiveTimeoutMs,
-    quietMs: expectedCount > 0 ? 650 : 900,
-    stopWhenBatch: expectedCount > 0
-      ? messages => messages.filter(isAudioMessage).length >= expectedCount
-      : undefined,
-    waitForTarget: expectedCount > 0,
+  // Fail quickly when a stale/wrong bulk button produces no audio at all.
+  // Once the first audio arrives, keep listening for the remaining files using
+  // the inbox buffer so large valid albums still get their full delivery time.
+  const startedAt = Date.now();
+  const firstAudioTimeoutMs = Math.min(
+    adaptiveTimeoutMs,
+    expectedCount > 0 ? 3200 : 4000
+  );
+  const first = await sendAndCollect(client, button, {
+    timeoutMs: firstAudioTimeoutMs,
+    quietMs: 450,
+    stopWhen: message => isAudioMessage(message),
+    waitForTarget: true,
     reconcileOnTimeout: true,
   });
 
-  const audios = download.messages.filter(isAudioMessage).map(audioMeta);
-  if (!audios.length) {
-    const response = download.messages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot ${label} bulk HQ did not deliver audio. ${response.slice(0, 350)}`);
+  const firstAudios = first.messages.filter(isAudioMessage);
+  if (!firstAudios.length) {
+    const response = first.messages.map(messageText).filter(Boolean).join('\n');
+    throw meloError(
+      'MELOBOT_BULK_DELIVERY_TIMEOUT',
+      `MeloBot ${label} bulk HQ did not deliver initial audio. ${response.slice(0, 350)}`
+    );
   }
 
+  let messages = [...first.messages];
+  const remainingCount = expectedCount > 0
+    ? Math.max(0, expectedCount - firstAudios.length)
+    : null;
+  const elapsed = Date.now() - startedAt;
+  const remainingMs = Math.max(0, adaptiveTimeoutMs - elapsed);
+
+  if (remainingMs > 250 && (remainingCount === null || remainingCount > 0)) {
+    const afterId = maxMessageId(first.messages);
+    const late = await collectNewMessages(
+      client,
+      config.melobotUsername,
+      afterId,
+      {
+        timeoutMs: remainingMs,
+        quietMs: expectedCount > 0 ? 700 : 900,
+        stopWhenBatch: remainingCount
+          ? batch => batch.filter(isAudioMessage).length >= remainingCount
+          : undefined,
+        waitForTarget: Boolean(remainingCount),
+        reconcileOnTimeout: true,
+      }
+    );
+    messages = mergeMessageSets(messages, late.messages || []);
+  }
+
+  const audios = messages.filter(isAudioMessage).map(audioMeta);
   return {
     source: 'melobot',
     audioItems: audios,
@@ -3451,6 +3498,7 @@ export async function downloadMeloBotTopTracks(
     label: 'top tracks',
     expectedCount: artistContext.topTracks?.length || artistContext.tracks?.length || 0,
     timeoutMs,
+    expectedStateVersion: artistContext.sourceStateVersion,
   });
 }
 
@@ -3464,6 +3512,7 @@ export async function downloadMeloBotRecentTracks(
     label: 'recent tracks',
     expectedCount: artistContext.recentTracks?.length || artistContext.tracks?.length || 0,
     timeoutMs,
+    expectedStateVersion: artistContext.sourceStateVersion,
   });
 }
 
@@ -3477,6 +3526,7 @@ export async function downloadMeloBotAlbumTracks(
     label: `album ${albumContext.album?.title || ''}`,
     expectedCount: albumContext.tracks?.length || 0,
     timeoutMs,
+    expectedStateVersion: albumContext.sourceStateVersion,
   });
 }
 
