@@ -1766,7 +1766,7 @@ export const sourceQueue = new SerialQueue(async job => {
                 tg,
                 session.artistContext.artist,
                 seed,
-                { timeoutMs: 3500 }
+                { timeoutMs: 2500 }
               );
               if (hasPendingForegroundSourceWork()) {
                 throw new Error('bulk deferred because foreground work is waiting');
@@ -1774,7 +1774,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotRecentTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 4500 }
+                { timeoutMs: 3000 }
               );
               lastError = null;
               break;
@@ -1912,7 +1912,7 @@ export const sourceQueue = new SerialQueue(async job => {
                 tg,
                 session.artistContext.artist,
                 seed,
-                { timeoutMs: 3500 }
+                { timeoutMs: 2500 }
               );
               if (hasPendingForegroundSourceWork()) {
                 throw new Error('bulk deferred because foreground work is waiting');
@@ -1920,7 +1920,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotTopTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 4500 }
+                { timeoutMs: 3000 }
               );
               lastError = null;
               break;
@@ -2058,8 +2058,8 @@ export const sourceQueue = new SerialQueue(async job => {
                   albumTitle,
                   {
                     album: session.currentAlbum,
-                    timeoutMs: 4500,
-                    maxPages: 8,
+                    timeoutMs: 2800,
+                    maxPages: 6,
                   }
                 );
                 session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
@@ -2075,7 +2075,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: 4500 }
+                { timeoutMs: 3000 }
               );
               lastError = null;
               break;
