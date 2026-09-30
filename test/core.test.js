@@ -1728,7 +1728,7 @@ test('artist recovery accepts two exact-artist rows without popularity metadata'
       fakeBotMessage('مرتب سازی', ['پربازدیدترین‌ها']),
     ]],
     'پربازدیدترین‌ها': [[
-      fakeBotMessage('بدون ردیف آهنگ', []),
+      fakeBotMessage('بدون ردیف آهنگ', ['📥 دانلود همه (عالی)']),
     ]],
     'Shayea': [[
       fakeBotMessage(
@@ -1747,6 +1747,11 @@ test('artist recovery accepts two exact-artist rows without popularity metadata'
   assert.deepEqual(
     artist.topTracks.map(track => track.title),
     ['Search One', 'Search Two']
+  );
+  assert.equal(
+    artist.bulkHighButton,
+    null,
+    'bulk control from the pre-recovery Artist surface must be invalidated'
   );
 });
 
