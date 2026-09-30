@@ -2513,10 +2513,23 @@ function isArtistNavigationSurface(message = {}, artist = '') {
   if (hasArtistControls) return true;
 
   const tracks = parseTracksFromMessages(messages, artist);
-  const looksLikeSearchResults = buttons.some(text =>
-    /نتیجه\s*در\s*لیست\s*نیست|جستجوی\s*عمیق|deep\s*search/iu.test(clean(text))
+  if (!tracks.length) return false;
+
+  // Plain search results can contain only Track rows and no deep-search
+  // control. Accept Track-only layouts as an Artist page only when the message
+  // body itself identifies the requested Artist; otherwise reuse a live Track
+  // row and enter the Artist page through its explicit control.
+  const body = normalize(messageText(message));
+  const target = normalize(artist);
+  return Boolean(
+    target
+    && (
+      body === target
+      || body === `${target} tracks`
+      || body.includes(`آهنگ های ${target}`)
+      || body.includes(`آثار ${target}`)
+    )
   );
-  return tracks.length > 0 && !looksLikeSearchResults;
 }
 
 
