@@ -124,6 +124,36 @@ function hasPendingForegroundSourceWork() {
   );
 }
 
+function sourceJobKey(job = {}) {
+  if (job.type === 'search') {
+    return job.chatId && job.query
+      ? `search:${job.chatId}:${normalize(job.query)}`
+      : null;
+  }
+  if (job.type === 'deep_crawl') {
+    return job.task?.id ? `deep:${job.task.id}` : null;
+  }
+  if (!job.sessionId) return null;
+
+  const discriminator = [
+    job.quality,
+    job.mode,
+    job.index,
+    job.page,
+    job.feedKey,
+    job.playlistKey,
+  ].filter(value => value !== undefined && value !== null).join(':');
+
+  return `session:${job.sessionId}:${job.type}:${discriminator}`;
+}
+
+function bulkDownloadBudget(trackCount = 0) {
+  return Math.min(
+    9000,
+    Math.max(5000, 2200 + Math.max(0, Number(trackCount || 0)) * 550)
+  );
+}
+
 async function syncArtistContext(artistContext) {
   if (!artistContext?.artist) return false;
   const topTracks = artistContext.topTracks || artistContext.tracks || [];
@@ -1850,21 +1880,31 @@ export const sourceQueue = new SerialQueue(async job => {
           let liveArtist;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 1; attempt += 1) {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-              liveArtist = await prepareMeloBotBulkRecentTracks(
-                tg,
-                session.artistContext.artist,
-                seed,
-                { timeoutMs: 2500 }
+              const canUseLiveArtist = Boolean(
+                attempt === 0
+                && session.artistContext?.recentBulkHighButton
+                && Number(session.artistContext?.sourceStateVersion || -1) === getMeloBotStateVersion()
               );
+              if (canUseLiveArtist) {
+                liveArtist = session.artistContext;
+                console.log('[fastpath] recent_bulk=current_artist_page');
+              } else {
+                liveArtist = await prepareMeloBotBulkRecentTracks(
+                  tg,
+                  session.artistContext.artist,
+                  seed,
+                  { timeoutMs: 4200 }
+                );
+              }
               if (hasPendingForegroundSourceWork()) {
                 throw new Error('bulk deferred because foreground work is waiting');
               }
               bulk = await downloadMeloBotRecentTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 3000 }
+                { timeoutMs: bulkDownloadBudget(liveArtist.recentTracks?.length || requestedTracks.length) }
               );
               lastError = null;
               break;
@@ -1996,21 +2036,31 @@ export const sourceQueue = new SerialQueue(async job => {
           let liveArtist;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 1; attempt += 1) {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-              liveArtist = await prepareMeloBotBulkTopTracks(
-                tg,
-                session.artistContext.artist,
-                seed,
-                { timeoutMs: 2500 }
+              const canUseLiveArtist = Boolean(
+                attempt === 0
+                && session.artistContext?.bulkHighButton
+                && Number(session.artistContext?.sourceStateVersion || -1) === getMeloBotStateVersion()
               );
+              if (canUseLiveArtist) {
+                liveArtist = session.artistContext;
+                console.log('[fastpath] top_bulk=current_artist_page');
+              } else {
+                liveArtist = await prepareMeloBotBulkTopTracks(
+                  tg,
+                  session.artistContext.artist,
+                  seed,
+                  { timeoutMs: 4200 }
+                );
+              }
               if (hasPendingForegroundSourceWork()) {
                 throw new Error('bulk deferred because foreground work is waiting');
               }
               bulk = await downloadMeloBotTopTracks(
                 tg,
                 liveArtist,
-                { timeoutMs: 3000 }
+                { timeoutMs: bulkDownloadBudget(liveArtist.topTracks?.length || liveArtist.tracks?.length || requestedTracks.length) }
               );
               lastError = null;
               break;
@@ -2118,7 +2168,7 @@ export const sourceQueue = new SerialQueue(async job => {
           let albumContext;
           let bulk;
           let lastError;
-          for (let attempt = 0; attempt < 1; attempt += 1) {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
               const preferredSeed = session.artistSeed
                 || session.albumOriginTrack
@@ -2148,8 +2198,8 @@ export const sourceQueue = new SerialQueue(async job => {
                   albumTitle,
                   {
                     album: session.currentAlbum,
-                    timeoutMs: 2800,
-                    maxPages: 6,
+                    timeoutMs: 4200,
+                    maxPages: 8,
                   }
                 );
                 session.artistSeed = albumContext.seed || session.artistSeed || preferredSeed;
@@ -2165,7 +2215,7 @@ export const sourceQueue = new SerialQueue(async job => {
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
                 albumContext,
-                { timeoutMs: 3000 }
+                { timeoutMs: bulkDownloadBudget(albumContext.tracks?.length || requestedTracks.length) }
               );
               lastError = null;
               break;
@@ -2842,4 +2892,7 @@ export const sourceQueue = new SerialQueue(async job => {
       `[perf] job=${job.type} queue_wait_ms=${queueWaitMs} run_ms=${runMs} total_ms=${queueWaitMs + runMs}`
     );
   }
-}, { priorityOf: sourceJobPriority });
+}, {
+  priorityOf: sourceJobPriority,
+  keyOf: sourceJobKey,
+});
