@@ -1,0 +1,38 @@
+name: Radio Javan Remaining Artist Image Pilot
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  pilot:
+    if: contains(github.event.head_commit.message, '[remaining-image-pilot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete-v3
+          path: archive-builder/runtime/v3
+          run-id: 36746227263
+          github-token: ${{ github.token }}
+      - run: node --check src/remaining-artist-image-pilot.js
+      - run: node src/remaining-artist-image-pilot.js ./runtime/v3/artists/rj-artists.jsonl.gz ./out/fallback-pilot
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-remaining-artist-image-pilot
+          path: archive-builder/out/fallback-pilot
+          retention-days: 30
