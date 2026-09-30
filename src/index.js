@@ -151,6 +151,44 @@ server.listen(config.port,'0.0.0.0',async () => {
     const webhookUrl = `${config.publicBaseUrl}/telegram/webhook`;
     await bot.setWebhook(webhookUrl,config.webhookSecret);
     console.log(`Telegram webhook ready: ${webhookUrl}`);
+
+    const mediaCacheChatId = process.env.MEDIA_CACHE_CHAT_ID?.trim();
+    const mediaCacheTestUrl = process.env.MEDIA_CACHE_TEST_URL?.trim();
+    if (mediaCacheChatId && mediaCacheTestUrl) {
+      try {
+        const key = 'media_cache_sendphoto_test_v1';
+        const previous = await getState(key,{ url: null });
+        if (previous?.url !== mediaCacheTestUrl) {
+          const message = await bot.sendPhoto(mediaCacheChatId,mediaCacheTestUrl,{
+            caption: 'Navazon Media Cache test',
+          });
+          const photo = Array.isArray(message?.photo) && message.photo.length
+            ? message.photo[message.photo.length - 1]
+            : null;
+          console.log('[media-cache-test]',JSON.stringify({
+            ok: Boolean(photo),
+            chat_id: mediaCacheChatId,
+            message_id: message?.message_id || null,
+            file_id: photo?.file_id || null,
+            file_unique_id: photo?.file_unique_id || null,
+            width: photo?.width || null,
+            height: photo?.height || null,
+            file_size: photo?.file_size || null,
+          }));
+          await setState(key,{
+            url: mediaCacheTestUrl,
+            messageId: message?.message_id || null,
+            fileId: photo?.file_id || null,
+            fileUniqueId: photo?.file_unique_id || null,
+            at: Date.now(),
+          });
+        } else {
+          console.log('[media-cache-test] skipped; URL already tested');
+        }
+      } catch (err) {
+        console.error('[media-cache-test]',err.message);
+      }
+    }
   } catch (err) { console.error('[setWebhook]',err.message); }
 });
 
