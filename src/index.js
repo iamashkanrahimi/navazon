@@ -4,6 +4,7 @@ import { bot, catalog, db, deepCatalog, tg } from './runtime.js';
 import { handleUpdate } from './updates.js';
 import { sourceQueue } from './jobs.js';
 import { getState, setState, getStats, getLastUserActivity } from './state.js';
+import { createNonOverlappingScheduler } from './crawlerScheduler.js';
 
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
@@ -106,6 +107,20 @@ async function queueCrawler() {
   return { queued: true, type: 'bootstrap' };
 }
 
+const crawlerScheduler = createNonOverlappingScheduler(
+  async trigger => {
+    const result = await queueCrawler();
+    if (trigger === 'manual') {
+      console.log('[crawler manual]', JSON.stringify(result));
+    }
+    return result;
+  },
+  {
+    intervalMs: config.discoverySchedulerMs,
+    label: 'crawler scheduler',
+  }
+);
+
 async function readJson(req) {
   const chunks=[]; let total=0;
   for await (const chunk of req) {
@@ -125,6 +140,19 @@ const server = http.createServer(async (req,res) => {
       res.end(JSON.stringify({ ok:true, sourceQueue:sourceQueue.size(), mtproto:true }));
       return;
     }
+    if ((req.method === 'HEAD' || req.method === 'GET') && url.pathname === '/wake') {
+      if (!authorized(req,config.crawlerToken)) {
+        res.writeHead(401,{ 'content-length':'0' });
+        res.end();
+        return;
+      }
+      res.writeHead(204,{
+        'cache-control':'no-store',
+        'content-length':'0',
+      });
+      res.end();
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/telegram/webhook') {
       if (req.headers['x-telegram-bot-api-secret-token'] !== config.webhookSecret) {
         res.writeHead(403).end('forbidden'); return;
@@ -135,10 +163,18 @@ const server = http.createServer(async (req,res) => {
       return;
     }
     if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/crawler') {
-      if (!authorized(req,config.crawlerToken)) { res.writeHead(401).end('unauthorized'); return; }
-      const result = await queueCrawler();
-      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok:true, ...result })); return;
+      if (!authorized(req,config.crawlerToken)) {
+        res.writeHead(401,{ 'content-length':'0' });
+        res.end();
+        return;
+      }
+      void crawlerScheduler.tick('manual');
+      res.writeHead(204,{
+        'cache-control':'no-store',
+        'content-length':'0',
+      });
+      res.end();
+      return;
     }
     if (req.method === 'GET' && url.pathname === '/admin/stats') {
       if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
@@ -163,12 +199,23 @@ server.listen(config.port,'0.0.0.0',async () => {
     const webhookUrl = `${config.publicBaseUrl}/telegram/webhook`;
     await bot.setWebhook(webhookUrl,config.webhookSecret);
     console.log(`Telegram webhook ready: ${webhookUrl}`);
+    crawlerScheduler.start();
+    console.log(
+      `Internal crawler scheduler started: every ${Math.round(config.discoverySchedulerMs / 1000)}s`
+    );
 
-  } catch (err) { console.error('[setWebhook]',err.message); }
+  } catch (err) {
+    console.error('[setWebhook]',err.message);
+    crawlerScheduler.start();
+    console.log(
+      `Internal crawler scheduler started without webhook update: every ${Math.round(config.discoverySchedulerMs / 1000)}s`
+    );
+  }
 });
 
 async function shutdown(signal) {
   console.log(`${signal}: shutting down...`);
+  crawlerScheduler.stop();
   server.close();
   try { await tg.disconnect(); } catch {}
   try { await db.end(); } catch {}
