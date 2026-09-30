@@ -1,0 +1,107 @@
+name: Radio Javan Final Album Recovery QA
+
+on:
+  push:
+    branches:
+      - fix/rj-v5-final-album-recovery
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  recover-and-freeze:
+    if: contains(github.event.head_commit.message, '[album-recovery-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check recovery scripts
+        run: node --check src/album-final-recovery.js && node --check src/freeze-v5.js
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-v5-album-input
+          path: archive-builder/runtime/input
+          run-id: 36762405500
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-v5-albums-repaired
+          path: archive-builder/runtime/repaired
+          run-id: 36762405500
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-full-final
+          path: archive-builder/runtime/songs
+          run-id: 36646058761
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete-v4
+          path: archive-builder/runtime/v4
+          run-id: 36752120633
+          github-token: ${{ github.token }}
+      - name: Recover 21 missing Albums
+        run: >-
+          node src/album-final-recovery.js
+          --input ./runtime/input/rj-albums.jsonl.gz
+          --repaired ./runtime/repaired
+          --tracks ./runtime/songs/rj-tracks.jsonl.gz
+          --out ./out/albums-complete
+          --expected 1923
+      - name: Freeze recovery candidate V5
+        run: >-
+          node src/freeze-v5.js
+          --tracks ./runtime/songs/rj-tracks.jsonl.gz
+          --artists ./runtime/v4/artists/rj-artists.jsonl.gz
+          --albums ./out/albums-complete
+          --out ./out/archive-v5-recovery
+      - name: Strict final QA
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import zlib from 'node:zlib';
+          import readline from 'node:readline';
+          const manifest=JSON.parse(fs.readFileSync('./out/archive-v5-recovery/manifest.json','utf8'));
+          const c=manifest.counts;
+          const expected={tracks:32737,artists:9263,albums:1923,tracks_with_cover:32737,artists_with_image:9263,albums_with_cover:1923};
+          for(const [k,v] of Object.entries(expected)) if(c[k]!==v) throw new Error(k+': expected '+v+', got '+c[k]);
+          const file='./out/archive-v5-recovery/rj-album-tracks.jsonl.gz';
+          const perAlbum=new Map();
+          const rl=readline.createInterface({input:fs.createReadStream(file).pipe(zlib.createGunzip()),crlfDelay:Infinity});
+          for await(const line of rl){
+            if(!line.trim()) continue;
+            const r=JSON.parse(line);
+            const arr=perAlbum.get(r.album_key)||[];
+            arr.push(Number(r.position));
+            perAlbum.set(r.album_key,arr);
+          }
+          if(perAlbum.size!==1923) throw new Error('album track groups: expected 1923, got '+perAlbum.size);
+          for(const [key,pos] of perAlbum){
+            pos.sort((a,b)=>a-b);
+            if(!pos.every((p,i)=>p===i+1)) throw new Error('non-contiguous positions: '+key);
+          }
+          console.log(JSON.stringify({manifest:manifest.counts,album_groups:perAlbum.size},null,2));
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-v5-final-album-recovery-report
+          path: |
+            archive-builder/out/albums-complete/album-final-recovery-summary.json
+            archive-builder/out/albums-complete/album-final-recovery-unresolved.json
+            archive-builder/out/albums-complete/album-final-recovery-issues.json
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: rj-archive-v5-recovery-candidate
+          path: archive-builder/out/archive-v5-recovery
+          retention-days: 90
