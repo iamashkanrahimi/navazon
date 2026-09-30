@@ -2861,7 +2861,10 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
   }
 
   if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
-  const artistContext = await openMeloBotArtistBase(client, seed, { timeoutMs: remaining() });
+  const artistContext = await openMeloBotArtistBase(client, seed, {
+    timeoutMs: remaining(),
+    allowArtistSearchFallback: false,
+  });
   const initial = await getInitialMeloBotAlbumListing(client, artistContext, { timeoutMs: remaining() });
   return {
     artist: artistContext.artist,
@@ -2965,7 +2968,10 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     || null;
 
   if (seed) {
-    const artistContext = await openMeloBotArtistBase(client, seed, { timeoutMs: remaining() });
+    const artistContext = await openMeloBotArtistBase(client, seed, {
+      timeoutMs: remaining(),
+      allowArtistSearchFallback: false,
+    });
     const resolved = await resolveMeloBotAlbums(
       client,
       artistContext,
@@ -3018,7 +3024,9 @@ export async function discoverMeloBotAlbumsForQuery(client, query, seedTracks = 
 
   for (const [, seed] of candidates) {
     try {
-      const artistContext = await openMeloBotArtistBase(client, seed);
+      const artistContext = await openMeloBotArtistBase(client, seed, {
+        allowArtistSearchFallback: false,
+      });
       const artistAlbums = await listMeloBotAlbums(client, artistContext);
       for (const album of artistAlbums) {
         if (!albumQueryMatches(query, artistContext.artist, album.title)) continue;
