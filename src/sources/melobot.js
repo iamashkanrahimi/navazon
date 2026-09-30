@@ -762,12 +762,20 @@ export function inspectMeloBotAlbumListing(messages = []) {
   }
 
   const nextButton = albumNextButton(messages);
+  const body = (messages || [])
+    .map(messageText)
+    .filter(Boolean)
+    .join(' ');
+  const explicitListingSurface = declaredCount !== null
+    || explicitEmpty
+    || /(?:آلبوم|البوم|album).*(?:انتخاب|خواننده|لیست|list|choose|artist)/iu.test(body)
+    || /(?:انتخاب|لیست|choose|list).*(?:آلبوم|البوم|album)/iu.test(body);
   const confirmed = albums.length > 0
     || declaredCount !== null
     || explicitEmpty;
   const confirmedEmpty = albums.length === 0 && explicitEmpty;
   const complete = confirmedEmpty
-    || (albums.length > 0 && (
+    || (albums.length > 0 && explicitListingSurface && (
       declaredCount !== null
         ? albums.length >= declaredCount
         : !nextButton
@@ -3647,13 +3655,24 @@ function chooseArtistPicker(items = [], requested = '') {
   const target = normalize(requested);
   const exact = items.find(item => normalize(item.name) === target);
   if (exact) return exact;
-  if (target) {
-    return items.find(item => {
-      const name = normalize(item.name);
-      return name && (name.includes(target) || target.includes(name));
-    }) || null;
+
+  const parts = artistIdentityParts(requested);
+  if (parts.length > 1) return null;
+
+  if (parts.length === 1) {
+    const wanted = parts[0];
+    const wantedTokens = wanted.split(' ').filter(Boolean);
+    if (wantedTokens.length > 1) {
+      return items.find(item => {
+        const name = normalize(item.name);
+        const nameTokens = name.split(' ').filter(Boolean);
+        return name
+          && nameTokens.length > 1
+          && (name.includes(wanted) || wanted.includes(name));
+      }) || null;
+    }
   }
-  return items[0] || null;
+  return requested ? null : (items[0] || null);
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
@@ -4419,6 +4438,13 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
 
     if (!normalized.albums.length && !normalized.confirmedEmpty && !allowEmpty) {
       throw new Error('Direct-first album route returned no usable albums.');
+    }
+    if (
+      normalized.albums.length
+      && !normalized.complete
+      && !normalized.confirmedEmpty
+    ) {
+      throw new Error('Direct-first album surface was only a partial search suggestion.');
     }
 
     return normalized;
