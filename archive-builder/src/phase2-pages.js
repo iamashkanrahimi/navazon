@@ -97,7 +97,11 @@ export async function resolveArtist(client,candidate,{deep=true}={}){
   const keyExpected=normalizeText(candidate.key||candidate.candidate_name||'');
   const keyActual=normalizeText(name||'');
   if(!name || keyExpected!==keyActual) throw new Error(`artist identity mismatch expected=${candidate.key} actual=${name||'missing'}`);
-  const canonical=canonicalLink(first.html,first.url);
+  let canonical=canonicalLink(first.html,first.url);
+  try {
+    const cu=new URL(canonical);
+    if (!cu.pathname.toLowerCase().startsWith('/artist/') || /\/artist\/(?:undefined|null)?$/i.test(cu.pathname)) canonical=first.url || requested;
+  } catch { canonical=first.url || requested; }
   const pages=[first];
   if(deep){
     for(const suffix of ['/songs','/albums']){
@@ -115,19 +119,31 @@ export async function resolveArtist(client,candidate,{deep=true}={}){
   };
 }
 
+function albumGuessUrl(candidate={}){
+  const raw=`${cleanText(candidate.artist||'')} ${cleanText(candidate.title||'')}`.trim().toLowerCase()
+    .replace(/[’'\`´]/g,'').replace(/&/g,' ').replace(/[^\\p{L}\\p{N}()]+/gu,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');
+  return `${BASE}/album/${encodeURI(raw)}`;
+}
 export async function resolveAlbum(client,candidate){
-  const page=await client.fetch(candidate.source_url||candidate.canonical_url);
+  let page; let primaryError=null;
+  try { page=await client.fetch(candidate.source_url||candidate.canonical_url); }
+  catch(e){ primaryError=e; }
+  if(!page && candidate.title && candidate.artist) page=await client.fetch(albumGuessUrl(candidate));
+  if(!page) throw primaryError||new Error('album fetch failed');
   const title=h1(page.html);
   if(!title) throw new Error('album h1 missing');
-  const canonical=canonicalLink(page.html,page.url);
+  if(candidate.title && normalizeText(title)!==normalizeText(candidate.title)) throw new Error(`album identity mismatch expected=${candidate.title} actual=${title}`);
+  let canonical=canonicalLink(page.html,page.url);
+  if(!new URL(canonical).pathname.toLowerCase().startsWith('/album/')) canonical=page.url;
   if(!new URL(canonical).pathname.toLowerCase().startsWith('/album/')) throw new Error(`album redirect not canonical: ${canonical}`);
   const images=imageProxyOriginals(page.html,'album');
   const stats=albumStats(page.html);
+  const songs=extractUrls(page.html,'song');
   return {
     source_url:candidate.source_url||null,canonical_url:canonical,title,title_farsi:candidate.title_farsi||null,
     candidate_title:candidate.title||null,candidate_artist:candidate.artist||null,
     cover_url:images[0]||candidate.cover_urls?.[0]||null,
-    artist_urls:extractUrls(page.html,'artist'),song_urls:extractUrls(page.html,'song'),
+    artist_urls:extractUrls(page.html,'artist'),song_urls:stats.track_count?songs.slice(0,stats.track_count):songs,
     ...stats,known_track_ids:candidate.track_ids||[],track_refs:candidate.track_refs||[],attempts:page.attempts,
   };
 }
