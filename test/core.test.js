@@ -626,7 +626,7 @@ test('state-safe album opener is exported for paginated album flows', () => {
   assert.equal(typeof openMeloBotAlbumByTitle, 'function');
 });
 
-test('Ahangify track pages label HQ fallback as best available quality', () => {
+test('all primary Track downloads use one source-agnostic Download Track action', () => {
   const keyboard = trackPageKeyboard(
     'sess',
     { source: 'ahangify', artist: 'Artist', title: 'Track' },
@@ -634,7 +634,8 @@ test('Ahangify track pages label HQ fallback as best available quality', () => {
     { hasHq: true }
   );
   const labels = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(labels.includes('📥 بهترین کیفیت موجود'));
+  assert.ok(labels.includes('📥 دانلود آهنگ'));
+  assert.equal(labels.includes('📥 بهترین کیفیت موجود'), false);
   assert.equal(labels.includes('📥 کیفیت عالی'), false);
 });
 
@@ -2161,7 +2162,8 @@ test('MeloBot track pages keep lazy media actions visible but require source-bac
     {}
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 کیفیت عالی'));
+  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
   assert.ok(texts.includes('📝 متن'));
   assert.ok(texts.includes('🖼 کاور'));
