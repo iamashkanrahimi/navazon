@@ -1332,13 +1332,22 @@ export function sanitizeMeloBotLyricsText(raw = '', candidate = {}) {
 export async function getMeloBotLyrics(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    menuTimeoutMs = 4000,
+    submenuTimeoutMs = 3000,
+    deliveryTimeoutMs = 6500,
+  } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs);
   const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: remaining() }
+    {
+      timeoutMs: Math.max(3000, Number(timeoutMs || config.searchTimeoutMs)),
+      directTimeoutMs: Math.min(3000, menuTimeoutMs),
+      resolveTimeoutMs: Math.min(3500, menuTimeoutMs),
+      menuTimeoutMs,
+    }
   );
   const menuMessages = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
@@ -1347,32 +1356,39 @@ export async function getMeloBotLyrics(
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
-      if (remaining.expired()) {
-        throw new Error('MeloBot lyrics submenu budget exhausted.');
-      }
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 600,
+        timeoutMs: Math.max(1800, Number(submenuTimeoutMs || 3000)),
+        quietMs: 900,
       });
-      if (!more.messages?.length) {
-        throw new Error('MeloBot lyrics submenu returned no response.');
-      }
       lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
     }
   }
 
   if (!lyricsButton) {
+    console.log(
+      `[melobot.lyrics] stage=button_absent track=${JSON.stringify(trackLabel(liveCandidate))}`
+    );
     return { available: false, text: '', checked: true, candidate: liveCandidate };
   }
 
+  console.log(
+    `[melobot.lyrics] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   const result = await sendAndCollect(client, lyricsButton, {
-    timeoutMs: remaining(),
-    quietMs: 650,
+    timeoutMs: Math.max(3500, Number(deliveryTimeoutMs || 6500)),
+    quietMs: 900,
+    stopWhen: m => Boolean(messageText(m)),
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
 
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
   if (!raw) {
-    throw new Error('MeloBot lyrics response was empty.');
+    throw meloError(
+      'MELOBOT_DELIVERY_TIMEOUT',
+      `MeloBot lyrics button was confirmed but no text arrived for: ${trackLabel(liveCandidate)}`,
+      { capability: 'hasLyrics' }
+    );
   }
 
   const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
@@ -1389,8 +1405,15 @@ export async function getMeloBotLyrics(
 
   const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
   if (!text) {
-    throw new Error('MeloBot lyrics response contained no usable lyrics.');
+    throw meloError(
+      'MELOBOT_RESPONSE_UNUSABLE',
+      'MeloBot lyrics response contained no usable lyrics.',
+      { capability: 'hasLyrics' }
+    );
   }
+  console.log(
+    `[melobot.lyrics] stage=text_received track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   return {
     available: true,
     text,
@@ -1487,42 +1510,89 @@ export async function getMeloBotTrackMetadata(
 export async function getMeloBotCover(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    menuTimeoutMs = 4000,
+    submenuTimeoutMs = 3000,
+    deliveryTimeoutMs = 6500,
+  } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs);
   const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: remaining() }
+    {
+      timeoutMs: Math.max(3000, Number(timeoutMs || config.searchTimeoutMs)),
+      directTimeoutMs: Math.min(3000, menuTimeoutMs),
+      resolveTimeoutMs: Math.min(3500, menuTimeoutMs),
+      menuTimeoutMs,
+    }
   );
   const trackMenu = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
+  console.log(
+    `[melobot.cover] stage=menu_received track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
 
   let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
 
   if (!coverButton) {
     const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
+      console.log(
+        `[melobot.cover] stage=more_found track=${JSON.stringify(trackLabel(liveCandidate))}`
+      );
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 600,
+        timeoutMs: Math.max(1800, Number(submenuTimeoutMs || 3000)),
+        quietMs: 900,
       });
       coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
     }
   }
 
-  if (!coverButton) return null;
+  if (!coverButton) {
+    console.log(
+      `[melobot.cover] stage=button_absent track=${JSON.stringify(trackLabel(liveCandidate))}`
+    );
+    return {
+      source: 'melobot',
+      available: false,
+      checked: true,
+      reason: 'button_absent',
+      candidate: liveCandidate,
+      photoMessage: null,
+    };
+  }
 
+  console.log(
+    `[melobot.cover] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   const result = await sendAndCollect(client, coverButton, {
-    timeoutMs: remaining(),
+    timeoutMs: Math.max(3500, Number(deliveryTimeoutMs || 6500)),
     quietMs: 650,
     stopWhen: photoMessage,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
 
   const photo = result.messages.find(photoMessage);
-  return photo
-    ? { source: 'melobot', photoMessage: photo, candidate: liveCandidate }
-    : null;
+  if (!photo) {
+    throw meloError(
+      'MELOBOT_DELIVERY_TIMEOUT',
+      `MeloBot cover button was confirmed but no photo arrived for: ${trackLabel(liveCandidate)}`,
+      { capability: 'hasCover' }
+    );
+  }
+
+  console.log(
+    `[melobot.cover] stage=photo_received track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
+  return {
+    source: 'melobot',
+    available: true,
+    checked: true,
+    photoMessage: photo,
+    candidate: liveCandidate,
+  };
 }
 
 export async function enrichMeloBotTrack(
