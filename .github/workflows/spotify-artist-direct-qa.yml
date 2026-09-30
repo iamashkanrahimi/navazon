@@ -1,0 +1,43 @@
+name: Spotify Artist Direct Track QA
+
+on:
+  push:
+    branches:
+      - experiment/spotify-artist-pilot
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  direct-qa:
+    if: contains(github.event.head_commit.message, '[spotify-direct-qa]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check script
+        run: python -m py_compile src/spotify-final-direct-qa.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: spotify-artist-full-recovery-report
+          path: archive-builder/runtime/spotify-full-report
+          run-id: 36783734044
+          github-token: ${{ github.token }}
+      - name: Directly verify two Spotify tracks
+        run: >-
+          python src/spotify-final-direct-qa.py
+          --input-dir ./runtime/spotify-full-report
+          --out ./out/spotify-direct-qa
+          --workers 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spotify-artist-direct-qa-report
+          path: archive-builder/out/spotify-direct-qa
+          retention-days: 90
