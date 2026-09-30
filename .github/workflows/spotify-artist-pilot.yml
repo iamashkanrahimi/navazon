@@ -1,0 +1,44 @@
+name: Spotify Artist Image Pilot
+
+on:
+  push:
+    branches:
+      - experiment/spotify-artist-pilot
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  pilot:
+    if: contains(github.event.head_commit.message, '[spotify-pilot-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check pilot script
+        run: python -m py_compile src/spotify-artist-pilot.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: rj-archive-v5-recovery-candidate
+          path: archive-builder/runtime/v5-candidate
+          run-id: 36776483167
+          github-token: ${{ github.token }}
+      - name: Run 100-artist Spotify pilot
+        run: >-
+          python src/spotify-artist-pilot.py
+          --candidate ./runtime/v5-candidate
+          --out ./out/spotify-artist-pilot
+          --sample-size 100
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spotify-artist-pilot-100-report
+          path: archive-builder/out/spotify-artist-pilot
+          retention-days: 30
