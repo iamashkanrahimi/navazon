@@ -302,5 +302,5 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Both NewMessage and EditedMessage updates are collected; edited reply keyboards can now drive More/Cover/Lyrics and Artist state transitions.
 - Collectors carry an inbox event-sequence cursor so an edited existing message is accepted even when its Telegram message id predates the action.
 - Track menu, quality, cover and lyrics actions use a short settle delay between state transitions and log non-content media metadata for failed target deliveries.
-- The current source-state version is propagated after successful Track, quality, cover and lyrics actions to avoid unnecessary repeat searches.
+- Track-row state tokens remain bound to the search surface where that row is actually clickable; successful actions never relabel a Track-menu state as a Search-results state.
 - All crawler tasks that touch MeloBot are held behind the long user-idle window, and background source probes use short budgets so cache warming cannot dominate foreground latency.
