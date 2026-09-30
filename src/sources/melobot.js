@@ -204,12 +204,15 @@ function artistIdentityCompatible(requested = '', actual = '') {
   if (!a || !b) return false;
   if (a === b) return true;
 
-  const split = value => value
+  // Split the original credit before normalization. normalizeText deliberately
+  // removes punctuation such as "&", so splitting the normalized value loses
+  // collaboration boundaries and makes reordered credits impossible to match.
+  const split = value => clean(value)
     .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
     .map(normalize)
     .filter(Boolean);
-  const requestedParts = split(a);
-  const actualParts = split(b);
+  const requestedParts = split(requested);
+  const actualParts = split(actual);
   const partMatches = (left, right) =>
     left === right || left.includes(right) || right.includes(left);
 
@@ -1230,10 +1233,12 @@ export async function resolveMeloBotTrackCandidate(
   // Title-first resolution is both safer and faster for collaboration credits:
   // the source may reorder "A & B" as "B & A", while we still verify artist
   // compatibility before accepting the exact title.
-  const queries = [
-    candidate?.title,
-    primaryQuery,
-  ].filter(Boolean);
+  const collaborationCredit = /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(
+    clean(candidate?.artist || '')
+  );
+  const queries = (candidate?.artistInferred || collaborationCredit)
+    ? [candidate?.title, primaryQuery]
+    : [primaryQuery, candidate?.title];
   const uniqueQueries = [...new Set(queries.map(clean).filter(Boolean))];
 
   let lastError = null;
