@@ -2780,12 +2780,19 @@ async function openMeloBotArtistBase(
     const requestedParts = artistIdentityParts(effectiveSeed.artist);
 
     const chosen = pickerButtons.find(item => normalize(item.name) === requested)
-      || pickerButtons.find(item => requestedParts.includes(normalize(item.name)))
       || (
         requestedParts.length === 1
           ? pickerButtons.find(item => {
               const name = normalize(item.name);
-              return requestedParts[0].includes(name) || name.includes(requestedParts[0]);
+              return name === requestedParts[0]
+                || (
+                  requestedParts[0].split(' ').length > 1
+                  && name.split(' ').length > 1
+                  && (
+                    requestedParts[0].includes(name)
+                    || name.includes(requestedParts[0])
+                  )
+                );
             })
           : null
       );
