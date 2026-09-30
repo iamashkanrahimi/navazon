@@ -2051,6 +2051,10 @@ export const sourceQueue = new SerialQueue(async job => {
         );
         sent = fallback.sent;
         missing = fallback.missing;
+        if (fallback.canonicalTracks?.length) {
+          session.artistContext.recentTracks = fallback.canonicalTracks;
+          await syncArtistContext(session.artistContext);
+        }
         const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -2219,6 +2223,11 @@ export const sourceQueue = new SerialQueue(async job => {
         );
         sent = fallback.sent;
         missing = fallback.missing;
+        if (fallback.canonicalTracks?.length) {
+          session.artistContext.topTracks = fallback.canonicalTracks;
+          session.artistContext.tracks = fallback.canonicalTracks;
+          await syncArtistContext(session.artistContext);
+        }
         const fallbackMessage = bulkFallbackMessage('top', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -2411,6 +2420,18 @@ export const sourceQueue = new SerialQueue(async job => {
         );
         sent = fallback.sent;
         missing = fallback.missing;
+        if (fallback.canonicalTracks?.length) {
+          session.currentAlbum.tracks = fallback.canonicalTracks;
+          const repairedOwner = await syncAlbumTracks(
+            session.currentAlbum?.artist
+              || session.artistContext?.artist
+              || session.albumOriginTrack?.artist
+              || session.currentTrack?.artist,
+            session.currentAlbum,
+            fallback.canonicalTracks
+          );
+          if (repairedOwner) session.currentAlbum.artist = repairedOwner;
+        }
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
