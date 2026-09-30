@@ -99,6 +99,29 @@ function sourceBudget(timeoutMs, fallbackMs = config.searchTimeoutMs) {
   return remaining;
 }
 
+function meloError(code, message, details = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, details);
+  return err;
+}
+
+function trackLabel(candidate = {}) {
+  return [candidate.artist, candidate.title].filter(Boolean).join(' — ')
+    || candidate.rawText
+    || 'unknown track';
+}
+
+function hasTrackActionMenu(messages = []) {
+  return buttonsFromMessages(messages).some(text => {
+    const value = clean(text);
+    return (
+      (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+      && !value.includes('دانلود همه')
+    );
+  });
+}
+
 function normalize(value = '') {
   return normalizeText(value);
 }
@@ -620,6 +643,8 @@ async function sendAndCollect(client, text, {
   quietMs = 650,
   stopWhen,
   stopWhenBatch,
+  waitForTarget = false,
+  reconcileOnTimeout = false,
   onMessage,
 } = {}) {
   const peer = config.melobotUsername;
@@ -631,6 +656,8 @@ async function sendAndCollect(client, text, {
     quietMs,
     stopWhen,
     stopWhenBatch,
+    waitForTarget,
+    reconcileOnTimeout,
     onMessage,
   });
   return { ...result, stateVersion };
@@ -1087,25 +1114,71 @@ export async function resolveMeloBotTrackCandidate(
 async function openTrackMenuWithCandidate(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    directTimeoutMs = 3000,
+    resolveTimeoutMs = 3500,
+    menuTimeoutMs = 4000,
+  } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs);
+  const requested = candidate || {};
+  const directText = clean(requested.rawText || '');
+  const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
+
+  if (directText) {
+    const direct = await sendAndCollect(client, directText, {
+      timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
+      quietMs: 550,
+      stopWhen: m => replyButtons(m).some(text => {
+        const value = clean(text);
+        return (
+          (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+          && !value.includes('دانلود همه')
+        );
+      }),
+      waitForTarget: true,
+      reconcileOnTimeout: true,
+    });
+    if (hasTrackActionMenu(direct.messages)) {
+      console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
+      return { messages: direct.messages, candidate: requested, route: 'direct_raw_text' };
+    }
+    console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
+  }
+
   const liveCandidate = await resolveMeloBotTrackCandidate(
     client,
-    candidate,
-    { timeoutMs: remaining() }
+    requested,
+    {
+      timeoutMs: Math.min(cap, Math.max(2000, Number(resolveTimeoutMs || 3500))),
+      forceIdentity: Boolean(requested.artistInferred),
+    }
   );
-  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+  if (!liveCandidate?.rawText) {
+    throw meloError('MELOBOT_TRACK_RESOLVE_FAILED', 'MeloBot live track button was not found.');
+  }
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: remaining(),
+    timeoutMs: Math.min(cap, Math.max(2200, Number(menuTimeoutMs || 4000))),
     quietMs: 550,
-    stopWhen: m => replyButtons(m).some(text =>
-      (text.includes('کیفیت عالی') || text.includes('کیفیت معمولی'))
-      && !text.includes('دانلود همه')
-    ),
+    stopWhen: m => replyButtons(m).some(text => {
+      const value = clean(text);
+      return (
+        (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+        && !value.includes('دانلود همه')
+      );
+    }),
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
-  return { messages: selected.messages, candidate: liveCandidate };
+  if (!hasTrackActionMenu(selected.messages)) {
+    throw meloError(
+      'MELOBOT_TRACK_MENU_TIMEOUT',
+      `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)}`
+    );
+  }
+  console.log(`[melobot.track_menu] route=resolved track=${JSON.stringify(trackLabel(liveCandidate))}`);
+  return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_search' };
 }
 
 async function openTrackMenu(client, candidate) {
@@ -1140,14 +1213,19 @@ export async function downloadMeloBotTrackQuality(
   quality = 'hq',
   {
     timeoutMs = config.downloadTimeoutMs,
-    menuTimeoutMs = Math.min(config.searchTimeoutMs, 6000),
+    menuTimeoutMs = 4000,
+    deliveryTimeoutMs = 7000,
   } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs, config.downloadTimeoutMs);
   const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: Math.min(menuTimeoutMs, remaining()) }
+    {
+      timeoutMs: Math.max(3000, Number(timeoutMs || config.downloadTimeoutMs)),
+      directTimeoutMs: Math.min(3000, menuTimeoutMs),
+      resolveTimeoutMs: Math.min(3500, menuTimeoutMs),
+      menuTimeoutMs,
+    }
   );
   const menuMessages = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
@@ -1159,24 +1237,37 @@ export async function downloadMeloBotTrackQuality(
   });
 
   if (!button) {
-    throw new Error(`MeloBot ${quality} quality button not found.`);
-  }
-  if (remaining.expired()) {
-    throw new Error(`MeloBot ${quality} quality request exceeded its source budget.`);
+    throw meloError(
+      'MELOBOT_CAPABILITY_ABSENT',
+      `MeloBot ${quality} quality button not found.`,
+      { capability: quality === 'hq' ? 'hasHq' : 'hasNormal' }
+    );
   }
 
+  console.log(
+    `[melobot.quality] stage=button_found quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   const result = await sendAndCollect(client, button, {
-    timeoutMs: remaining(),
+    timeoutMs: Math.max(3500, Number(deliveryTimeoutMs || 7000)),
     quietMs: 650,
     stopWhen: isAudioMessage,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
 
   const audio = result.messages.find(isAudioMessage);
   if (!audio) {
     const response = result.messages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot did not deliver ${quality} audio. ${response.slice(0, 350)}`);
+    throw meloError(
+      'MELOBOT_DELIVERY_TIMEOUT',
+      `MeloBot did not deliver ${quality} audio after the quality button was confirmed. ${response.slice(0, 350)}`,
+      { capability: quality === 'hq' ? 'hasHq' : 'hasNormal' }
+    );
   }
 
+  console.log(
+    `[melobot.quality] stage=audio_received quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   return {
     source: 'melobot',
     quality,
