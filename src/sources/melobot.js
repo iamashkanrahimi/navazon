@@ -1896,6 +1896,7 @@ export async function getMeloBotTrackMetadata(
   const trackMenu = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
 
+  let actionSurface = 'track';
   let detailsButton = findButton(
     trackMenu,
     text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
@@ -1912,6 +1913,14 @@ export async function getMeloBotTrackMetadata(
           timeoutMs: remaining(),
           capability: 'hasMetadata',
         }
+      );
+      actionSurface = 'more';
+      rememberLiveMoreSurface(
+        client,
+        liveCandidate,
+        surface,
+        sourceStateVersion,
+        trackMenu
       );
       detailsButton = findButton(
         surface,
@@ -1935,11 +1944,31 @@ export async function getMeloBotTrackMetadata(
     quietMs: 650,
   });
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+  if (actionSurface === 'more') {
+    rememberLiveMoreSurface(
+      client,
+      refreshedCandidate,
+      surface,
+      result.stateVersion,
+      trackMenu
+    );
+  } else {
+    rememberLiveTrackSurface(
+      client,
+      refreshedCandidate,
+      trackMenu,
+      result.stateVersion
+    );
+  }
   return {
     raw,
     ...parseReleaseDate(raw),
     ...parsePopularityValue(raw || liveCandidate.rawText || candidate.rawText || ''),
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
   };
 }
 
@@ -1969,6 +1998,8 @@ export async function getMeloBotCover(
     `[melobot.cover] stage=menu_received track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
 
+  let actionSurface = 'track';
+  let actionSurfaceMessages = trackMenu;
   let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
 
   if (!coverButton) {
@@ -1984,6 +2015,15 @@ export async function getMeloBotCover(
           timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
           capability: 'hasCover',
         }
+      );
+      actionSurface = 'more';
+      actionSurfaceMessages = moreMessages;
+      rememberLiveMoreSurface(
+        client,
+        liveCandidate,
+        moreMessages,
+        sourceStateVersion,
+        trackMenu
       );
       coverButton = findButton(moreMessages, text => /کاور/u.test(clean(text)));
     }
@@ -2027,6 +2067,27 @@ export async function getMeloBotCover(
     );
   }
 
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+  if (actionSurface === 'more') {
+    rememberLiveMoreSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion,
+      trackMenu
+    );
+  } else {
+    rememberLiveTrackSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion
+    );
+  }
+
   console.log(
     `[melobot.cover] stage=photo_received track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
@@ -2035,7 +2096,7 @@ export async function getMeloBotCover(
     available: true,
     checked: true,
     photoMessage: photo,
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
   };
 }
 
@@ -2390,11 +2451,18 @@ async function openMeloBotArtistBase(
 
   if (pickerButtons.length) {
     const requested = normalize(effectiveSeed.artist);
-    const requestedParts = requested.split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu).filter(Boolean);
+    const requestedParts = artistIdentityParts(effectiveSeed.artist);
 
     const chosen = pickerButtons.find(item => normalize(item.name) === requested)
       || pickerButtons.find(item => requestedParts.includes(normalize(item.name)))
-      || pickerButtons.find(item => requested.includes(normalize(item.name)));
+      || (
+        requestedParts.length === 1
+          ? pickerButtons.find(item => {
+              const name = normalize(item.name);
+              return requestedParts[0].includes(name) || name.includes(requestedParts[0]);
+            })
+          : null
+      );
 
     if (!chosen) {
       throw meloError(
