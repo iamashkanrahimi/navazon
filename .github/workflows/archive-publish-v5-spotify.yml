@@ -82,7 +82,7 @@ jobs:
           cp -a /tmp/rj-v5/. archive-builder/data/v5/
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add archive-builder/data/v5
+          git add -f archive-builder/data/v5
           if git diff --cached --quiet; then
             echo "No V5 changes to publish"
             exit 0
