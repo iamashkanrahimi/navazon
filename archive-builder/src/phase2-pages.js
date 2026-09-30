@@ -54,17 +54,28 @@ function extractUrls(html='', type) {
   }
   return out;
 }
-function imageProxyOriginals(html='', kind='artist') {
+export function imageProxyOriginals(html='', kind='artist') {
   const out=[]; const seen=new Set();
   const add=(raw)=>{
     if(!raw)return;
     let s=decodeHtml(raw).replace(/\\u0026/g,'&').replace(/\\\//g,'/');
     for(let i=0;i<2;i++){ try{ const d=decodeURIComponent(s); if(d===s)break; s=d; }catch{break;} }
-    try { const u=new URL(s,BASE); if(kind==='artist' ? u.pathname.includes('/static/artists/photos/') : u.pathname.includes('/static/mp3/')) uniquePush(out,seen,u.href); } catch {}
+    try {
+      const u=new URL(s,BASE);
+      const p=u.pathname.toLowerCase();
+      const ok=kind==='artist'
+        ? (p.includes('/api/image-proxy/image/static/artists/') || p.includes('/api/image-proxy/image/static/artist_panel_submissions/'))
+        : p.includes('/api/image-proxy/image/static/mp3/');
+      if(ok) uniquePush(out,seen,u.href);
+    } catch {}
   };
   for(const m of html.matchAll(/[?&]url=([^&"'<> ]+)/gi)) add(m[1]);
   for(const m of html.matchAll(/https?(?::|%3A)(?:\\?\/|%2F){2}play\.radiojavan\.com(?:\\?\/|%2F)api(?:\\?\/|%2F)image-proxy(?:\\?\/|%2F)image(?:\\?\/|%2F)static(?:\\?\/|%2F)[^&"'<> ]+/gi)) add(m[0]);
   for(const m of html.matchAll(/(?:https?:\/\/play\.radiojavan\.com)?\/api\/image-proxy\/image\/static\/[^"'<> ]+/gi)) add(m[0]);
+  for(const re of [
+    /<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image)["'][^>]*content=["']([^"']+)["'][^>]*>/gi,
+    /<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["'][^>]*>/gi,
+  ]) for(const m of html.matchAll(re)) add(m[1]);
   return out;
 }
 function pageText(html='') {
