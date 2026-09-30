@@ -216,28 +216,38 @@ export class CatalogStore {
       try { await this.writeArtist(key, node); } catch {}
     }
 
-    const topTracks = (
+    const rawTopTracks = (
       Number(node.topTracksVersion || 0) >= 1
       && Array.isArray(node.topTracks)
     )
-      ? node.topTracks
-          .map(markLegacyInferredArtist)
-          .filter(track =>
-            !track.artistInferred
-            && artistCreditMatchesContext(track.artist || '', node.name || name)
-          )
+      ? node.topTracks.map(markLegacyInferredArtist)
       : [];
-    const recentTracks = (
+    const rawRecentTracks = (
       Number(node.recentTracksVersion || 0) >= 1
       && Array.isArray(node.recentTracks)
     )
-      ? node.recentTracks
-          .map(markLegacyInferredArtist)
-          .filter(track =>
-            !track.artistInferred
-            && artistCreditMatchesContext(track.artist || '', node.name || name)
-          )
+      ? node.recentTracks.map(markLegacyInferredArtist)
       : [];
+
+    const topTracks = rawTopTracks.filter(track =>
+      !track.artistInferred
+      && artistCreditMatchesContext(track.artist || '', node.name || name)
+    );
+    const recentTracks = rawRecentTracks.filter(track =>
+      !track.artistInferred
+      && artistCreditMatchesContext(track.artist || '', node.name || name)
+    );
+
+    // If a persisted Artist list contains rows that do not belong to this
+    // Artist, do not return a deceptively short "cleaned" page. Treat the
+    // whole snapshot as stale so the existing deep/live fallback can rebuild a
+    // complete list.
+    if (
+      topTracks.length !== rawTopTracks.length
+      || recentTracks.length !== rawRecentTracks.length
+    ) {
+      return null;
+    }
 
     if (!topTracks.length && !recentTracks.length) return null;
     return {
