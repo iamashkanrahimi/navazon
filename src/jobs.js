@@ -33,6 +33,7 @@ import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { renderArtistHomePage } from './artistProfile.js';
 import { executeDeepTask } from './deepCrawler.js';
+import { runAhangifyBestPilotJob } from './ahangifyPilot.js';
 import {
   deepAlbumKey,
   deepTrackKey,
@@ -59,7 +60,7 @@ import {
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
-const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap']);
+const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap', 'ahangify_pilot']);
 const SEARCH_CACHE_NAMESPACE = 'source-lane-v3';
 
 function userSearchCacheKey(query = '') {
@@ -136,6 +137,9 @@ function sourceJobKey(job = {}) {
   }
   if (job.type === 'deep_crawl') {
     return job.task?.id ? `deep:${job.task.id}` : null;
+  }
+  if (job.type === 'ahangify_pilot') {
+    return job.sourceUrl ? `ahangify-pilot:${job.sourceUrl}` : null;
   }
   if (!job.sessionId) return null;
 
@@ -1441,6 +1445,16 @@ export const sourceQueue = new SerialQueue(async job => {
       return;
     }
 
+    if (job.type === 'ahangify_pilot') {
+      try {
+        const result = await runAhangifyBestPilotJob(job);
+        console.log('[ahangify pilot job]', JSON.stringify(result));
+      } catch (err) {
+        console.warn('[ahangify pilot job]', err.message);
+      }
+      return;
+    }
+
     if (job.type === 'deep_crawl') {
       try {
         const kind = job.task?.kind || 'unknown';
@@ -1480,7 +1494,7 @@ export const sourceQueue = new SerialQueue(async job => {
       return;
     }
 
-    if (!session && !['discover','discover_bootstrap'].includes(job.type)) return;
+    if (!session && !['discover','discover_bootstrap','ahangify_pilot'].includes(job.type)) return;
     if (session) session.expiresAt = Date.now() + BUSY_SESSION_TTL_MS;
 
     if (job.type === 'search_album') {
