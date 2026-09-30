@@ -844,7 +844,14 @@ export async function searchMeloBotTyped(client, query, {
 
     const result = await sendAndCollect(client, command, {
       timeoutMs: remaining(),
-      quietMs: 650,
+      quietMs: 350,
+      stopWhen: message => {
+        const surface = parseMeloBotSearchSurface([message], fallbackArtist);
+        if (surface.tracks.length || surface.albums.length) return true;
+        return Boolean(chooseMeloBotSearchRefinement([message], requested));
+      },
+      waitForTarget: true,
+      reconcileOnTimeout: true,
     });
     allMessages.push(...(result.messages || []));
 
