@@ -4273,3 +4273,35 @@ test('shortened featured search is accepted only when source rows preserve the f
     true
   );
 });
+
+
+test('direct Artist search reuses a plain Track result instead of mistaking it for an Artist page', async () => {
+  const row = '🎵 Farhad, Ayneha';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    Farhad: [[
+      fakeBotMessage('نتیجه جستجو', [row])
+    ]],
+    [row]: [[
+      fakeBotMessage('track menu', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])
+    ]],
+    [artistButton]: [[
+      fakeBotMessage('Farhad', [
+        '🎵 Farhad, Gole Yakh',
+        '🎵 Farhad, Ayneha',
+        '📥 دانلود همه (عالی)',
+      ])
+    ]],
+  });
+
+  const opened = await openMeloBotArtistFastFresh(
+    client,
+    'Farhad',
+    null,
+    { timeoutMs: 1800 }
+  );
+
+  assert.equal(opened.artist, 'Farhad');
+  assert.equal(opened.recentTracks.length, 2);
+  assert.deepEqual(client.sent, [ 'Farhad', row, artistButton ]);
+});
