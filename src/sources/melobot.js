@@ -3599,7 +3599,7 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
           allowEmpty,
           maxAlbums,
           skipDirectFallback: true,
-          timeoutMs: Math.min(4500, Math.max(3000, Number(directTimeoutMs || 4500))),
+          timeoutMs: Math.min(4500, Math.max(1800, Number(directTimeoutMs || 4500))),
         }
       );
       return {
