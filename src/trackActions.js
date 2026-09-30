@@ -341,6 +341,54 @@ function chunks(text, max = 3800) {
   return out;
 }
 
+async function sendLyricsText(chatId, track, lyrics) {
+  const parts = chunks(lyrics);
+  for (let index = 0; index < parts.length; index += 1) {
+    const prefix = index === 0 ? `📝 ${trackPageTitle(track)}\n\n` : '';
+    await bot.sendMessage(chatId, `${prefix}${parts[index]}`);
+  }
+}
+
+export async function trySendCachedTrackLyrics(chatId, track) {
+  const details = await safeTrackDetails(track);
+  let lyrics = details?.lyrics_text || '';
+  if (!lyrics) return false;
+
+  const cleaned = sanitizeMeloBotLyricsText(lyrics, track);
+  if (!cleaned) return false;
+  if (cleaned !== lyrics && hasCanonicalTrackIdentity(track)) {
+    lyrics = cleaned;
+    try {
+      await deepCatalog.setLyrics(
+        track,
+        lyrics,
+        details?.lyrics_source || 'melobot'
+      );
+    } catch {}
+  } else {
+    lyrics = cleaned;
+  }
+
+  await sendLyricsText(chatId, track, lyrics);
+  if (hasCanonicalTrackIdentity(track)) {
+    try { await deepCatalog.clearCapabilityFailure(track, 'hasLyrics'); } catch {}
+  }
+  return true;
+}
+
+export async function trySendCachedTrackCover(chatId, track) {
+  const details = await safeTrackDetails(track);
+  if (!details?.cover_file_id) return false;
+
+  await bot.sendPhoto(chatId, details.cover_file_id, {
+    caption: trackPageTitle(track),
+  });
+  if (hasCanonicalTrackIdentity(track)) {
+    try { await deepCatalog.clearCapabilityFailure(track, 'hasCover'); } catch {}
+  }
+  return true;
+}
+
 export async function sendTrackLyrics(chatId, track) {
   let details = await safeTrackDetails(track);
   let lyrics = details?.lyrics_text || '';
@@ -408,21 +456,14 @@ export async function sendTrackLyrics(chatId, track) {
     return false;
   }
 
-  const parts = chunks(lyrics);
-  for (let index = 0; index < parts.length; index += 1) {
-    const prefix = index === 0 ? `📝 ${trackPageTitle(track)}\n\n` : '';
-    await bot.sendMessage(chatId, `${prefix}${parts[index]}`);
-  }
+  await sendLyricsText(chatId, track, lyrics);
   return true;
 }
 
 export async function sendTrackCover(chatId, track) {
-  let details = await safeTrackDetails(track);
-  let media = details?.cover_file_id ? {
-    kind: 'photo',
-    fileId: details.cover_file_id,
-    fileUniqueId: details.cover_unique_id || undefined,
-  } : null;
+  if (await trySendCachedTrackCover(chatId, track)) return true;
+
+  let media = null;
 
   if (!media && track?.source === 'melobot' && track?.rawText) {
     try {
