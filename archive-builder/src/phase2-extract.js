@@ -17,9 +17,9 @@ for await(const line of rl){
   const names=(Array.isArray(row.artist_tags)&&row.artist_tags.length?row.artist_tags:splitArtistNames(row.artist_display||'',[])).map(cleanText).filter(Boolean);
   for(const name of names){
     const key=normalizeText(name);if(!key)continue;
-    let a=artists.get(key);if(!a){a={key,candidate_name:name,sample_track_urls:[],track_ids:[]};artists.set(key,a);}
+    let a=artists.get(key);if(!a){a={key,candidate_name:name,farsi_names:[],track_count:0,sample_track_urls:[],track_ids:[]};artists.set(key,a);} a.track_count+=1;
     if(a.sample_track_urls.length<3&&row.source_url&&!a.sample_track_urls.includes(row.source_url))a.sample_track_urls.push(row.source_url);
-    if(a.track_ids.length<8&&row.source_id&&!a.track_ids.includes(row.source_id))a.track_ids.push(row.source_id);
+    if(a.track_ids.length<8&&row.source_id&&!a.track_ids.includes(row.source_id))a.track_ids.push(row.source_id); if(names.length===1&&row.artist_farsi&&!a.farsi_names.includes(row.artist_farsi))a.farsi_names.push(row.artist_farsi);
   }
   if(row.album_source_url){
     let a=albums.get(row.album_source_url);

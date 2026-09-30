@@ -111,7 +111,7 @@ export async function resolveArtist(client,candidate,{deep=true}={}){
   const joined=pages.map(x=>x.html).join('\n');
   const images=imageProxyOriginals(first.html,'artist');
   return {
-    key:keyExpected,candidate_name:candidate.candidate_name,display_name:name,canonical_url:canonical,
+    key:keyExpected,candidate_name:candidate.candidate_name,display_name:name,farsi_names:candidate.farsi_names||[],track_count:candidate.track_count||null,canonical_url:canonical,
     image_url:images[0]||null,
     song_urls:extractUrls(joined,'song'),album_urls:extractUrls(joined,'album'),video_urls:extractUrls(joined,'video'),
     related_artist_urls:extractUrls(joined,'artist').filter(u=>u!==canonical),
