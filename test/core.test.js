@@ -3122,3 +3122,9 @@ test('legacy trustworthy Artist lists self-heal their semantic version locally',
     db.query = originalQuery;
   }
 });
+
+
+test('Artist picker matches icon labeled buttons', () => {
+  const messages = [fakeBotMessage('results', ['🗣 Ali Yasini'])];
+  assert.equal(findArtistButtonFor(messages, 'Ali Yasini'), '🗣 Ali Yasini');
+});
