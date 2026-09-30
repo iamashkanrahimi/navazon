@@ -32,6 +32,10 @@ export function installTelegramInbox(client) {
     peerIds: new Map(),
     waiters: new Set(),
     sequence: 0,
+    // A single startup history read establishes a safe lower boundary for the
+    // first command after a deploy/cold start without turning normal collection
+    // back into polling.
+    historyBoundaries: new Map(),
   };
 
   const dispatch = (event, edited = false) => {
@@ -184,10 +188,19 @@ async function collectFromInbox(client, peer, afterId, {
               // message itself. MeloBot frequently edits an existing reply
               // keyboard in place, so the current server-side form of
               // messageId === afterId may contain the target submenu even if
-              // the EditedMessage event was missed locally. The caller's
-              // target predicate still decides whether this is usable.
+              // the EditedMessage event was missed locally.
               if (Number(message?.id || 0) < Number(afterId || 0)) continue;
               seen.set(message.id, message);
+            }
+
+            // The reconciled history must pass the same target predicate as
+            // live inbox events. Previously we appended history and finished
+            // immediately, allowing a stale search/listing surface to escape
+            // a target-aware collector.
+            const reconciled = evaluateCollector(seen, { stopWhen, stopWhenBatch });
+            if (reconciled.done) {
+              finish(reconciled.messages, reconciled.hit);
+              return;
             }
           } catch (err) {
             console.warn('[mtproto reconcile]', err.message);
@@ -265,15 +278,31 @@ export function getTelegramInboxSequence(client) {
   return Number(inboxes.get(client)?.sequence || 0);
 }
 
+export async function primeTelegramInboxBoundary(client, peer) {
+  const state = inboxes.get(client);
+  if (!state) return 0;
+
+  const peerId = await resolveInboxPeerId(client, peer);
+  const batch = await client.getMessages(peer, { limit: 1 });
+  const latest = (batch || []).reduce(
+    (max, message) => Math.max(max, Number(message?.id || 0)),
+    0
+  );
+  state.historyBoundaries.set(peerId, latest);
+  return latest;
+}
+
 export async function latestMessageId(client, peer) {
   const state = inboxes.get(client);
   if (state) {
     const peerId = await resolveInboxPeerId(client, peer);
     const buffered = state.buffers.get(peerId) || [];
-    return buffered.reduce(
+    const bufferedLatest = buffered.reduce(
       (max, message) => Math.max(max, Number(message?.id || 0)),
       0
     );
+    if (bufferedLatest) return bufferedLatest;
+    return Number(state.historyBoundaries.get(peerId) || 0);
   }
 
   const msgs = await client.getMessages(peer, { limit: 1 });
