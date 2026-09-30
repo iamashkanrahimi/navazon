@@ -18,6 +18,21 @@ export function deepAlbumKey(artist = '', title = '') {
   return `${deepNormalize(artist)}|${deepNormalize(title)}`;
 }
 
+export const SUSPENDED_BACKGROUND_MEDIA_TASK_KINDS = Object.freeze([
+  'artist_bulk_media',
+  'album_bulk_media',
+  'track_enrich',
+  'track_hq',
+  'track_normal',
+  'track_metadata',
+  'track_cover',
+  'track_lyrics',
+]);
+
+export function isSuspendedBackgroundMediaTaskKind(kind = '') {
+  return SUSPENDED_BACKGROUND_MEDIA_TASK_KINDS.includes(String(kind || ''));
+}
+
 function inferredArtistFromFeaturedTitle(artist = '', title = '') {
   const artistKey = deepNormalize(artist);
   const titleKey = deepNormalize(title);
@@ -894,6 +909,22 @@ export class DeepCatalog {
   }
 
   async compactQueue() {
+    // MeloBot is a single stateful source lane. Background media warming used
+    // to occupy that lane for 4-25 seconds and could make a real user wait.
+    // Retire old queued/running warmers on startup; user-triggered actions still
+    // fetch and cache the same media on demand.
+    await db.query(`
+      UPDATE crawl_tasks
+      SET status = 'done',
+          completed_at = COALESCE(completed_at, NOW()),
+          started_at = NULL,
+          updated_at = NOW(),
+          last_error = NULL,
+          result = result || '{"suspendedBy":"interactive-lane-policy-v164"}'::jsonb
+      WHERE status IN ('queued','running')
+        AND kind = ANY($1::text[])
+    `, [SUSPENDED_BACKGROUND_MEDIA_TASK_KINDS]);
+
     await db.query(`
       UPDATE crawl_tasks legacy
       SET status = 'done',
@@ -964,7 +995,12 @@ export class DeepCatalog {
     return key;
   }
 
-  async seedTrackTasks(track, { priority = 70, preferBulk = false, includeMedia = true } = {}) {
+  async seedTrackTasks(track, {
+    priority = 70,
+    preferBulk = false,
+    includeMedia = true,
+    includeEnrichment = true,
+  } = {}) {
     const trackKey = await this.upsertTrack(track);
     if (!trackKey) return;
 
@@ -975,11 +1011,15 @@ export class DeepCatalog {
 
     const payload = { track: { ...track, trackKey, source: track.source || 'melobot' }, trackKey };
 
-    // One bundled enrichment task replaces three separate 2-minute crawler turns.
-    await this.enqueueTask('track_enrich', payload, {
-      priority: priority + 5,
-      taskKey: `track_enrich:${trackKey}`,
-    });
+    // Background discovery can explicitly opt out of source-backed enrichment.
+    // Interactive actions remain the authoritative path for warming media and
+    // track capabilities so crawler work never monopolizes MeloBot.
+    if (includeEnrichment) {
+      await this.enqueueTask('track_enrich', payload, {
+        priority: priority + 5,
+        taskKey: `track_enrich:${trackKey}`,
+      });
+    }
 
     if (includeMedia && !preferBulk) {
       // For user-selected/standalone tracks, warm files individually.
