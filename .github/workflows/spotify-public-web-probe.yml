@@ -9,22 +9,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Probe MyStreamCount artist browse routes
+      - name: Inspect MyStreamCount browse implementation
         run: |
           python - <<'PY'
-          import urllib.request
-          urls=[
-            'https://www.mystreamcount.com/artists?letter=H',
-            'https://www.mystreamcount.com/artists?startsWith=H',
-            'https://www.mystreamcount.com/artists/H',
-            'https://www.mystreamcount.com/artists/h',
-          ]
-          for u in urls:
-            try:
-              req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
-              with urllib.request.urlopen(req,timeout=30) as r:
-                d=r.read().decode('utf-8','replace')
-              print('URL',u,'status',r.status,'bytes',len(d),'Hamed Pahlan',d.find('Hamed Pahlan'),'artistlinks',d.count('/artist/'))
-              print(d[d.find('Hamed Pahlan')-300:d.find('Hamed Pahlan')+500] if 'Hamed Pahlan' in d else d[:500])
-            except Exception as e: print('ERR',u,repr(e))
+          import urllib.request,re,html
+          u='https://www.mystreamcount.com/artists'
+          req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
+          with urllib.request.urlopen(req,timeout=30) as r:d=r.read().decode('utf-8','replace')
+          for pat in [r'<script[^>]+src="([^"]+)"',r'<link[^>]+href="([^"]+)"']:
+            vals=re.findall(pat,d,re.I)
+            print('ASSETS',vals[-30:])
+          for needle in ['wire:', 'livewire', 'axios', 'fetch(', 'letter', 'artists', 'x-data', 'Alpine']:
+            print('\nNEEDLE',needle,'count',d.lower().count(needle.lower()))
+            start=0
+            for _ in range(5):
+              i=d.lower().find(needle.lower(),start)
+              if i<0: break
+              print(d[max(0,i-500):i+1000])
+              start=i+len(needle)
           PY
