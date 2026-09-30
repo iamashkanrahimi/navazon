@@ -339,7 +339,8 @@ export async function searchPrimaryTyped(
     const needsRelevanceFallback = shouldUseSearchRelevanceFallback(
       query,
       bestCoverage,
-      rankedMelo[0]?.track || null
+      rankedMelo[0]?.track || null,
+      typed.tracks || []
     );
 
     if (needsRelevanceFallback) {

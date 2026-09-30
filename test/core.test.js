@@ -34,6 +34,8 @@ const {
   enrichMeloBotTrack,
   inspectMeloBotTrack,
   downloadMeloBotTrackQuality,
+  downloadMeloBotTopTracks,
+  downloadMeloBotRecentTracks,
   downloadMeloBotAlbumTracks,
   getMeloBotAlbumPrimaryCircuitRemainingMs,
   matchBulkAudioToTracks,
@@ -50,6 +52,7 @@ const {
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const {
   installTelegramInbox,
+  primeTelegramInboxBoundary,
   getTelegramInboxSequence,
   latestMessageId,
   collectNewMessages,
@@ -1375,6 +1378,11 @@ test('artist sorting records only the final reply keyboard as a live album surfa
     opened.liveAlbumSourceStateVersion,
     getMeloBotStateVersion()
   );
+  assert.equal(
+    opened.sourceStateVersion,
+    getMeloBotStateVersion(),
+    'top bulk button must carry the final sorted-page state token'
+  );
   assert.notEqual(opened.liveAlbumButton, '💿 stale albums');
 });
 
@@ -1720,7 +1728,7 @@ test('artist recovery accepts two exact-artist rows without popularity metadata'
       fakeBotMessage('مرتب سازی', ['پربازدیدترین‌ها']),
     ]],
     'پربازدیدترین‌ها': [[
-      fakeBotMessage('بدون ردیف آهنگ', []),
+      fakeBotMessage('بدون ردیف آهنگ', ['📥 دانلود همه (عالی)']),
     ]],
     'Shayea': [[
       fakeBotMessage(
@@ -1739,6 +1747,11 @@ test('artist recovery accepts two exact-artist rows without popularity metadata'
   assert.deepEqual(
     artist.topTracks.map(track => track.title),
     ['Search One', 'Search Two']
+  );
+  assert.equal(
+    artist.bulkHighButton,
+    null,
+    'bulk control from the pre-recovery Artist surface must be invalidated'
   );
 });
 
@@ -2049,6 +2062,11 @@ test('recent artist list can be recovered from the release-date sort surface', a
   assert.equal(resolved.route, 'artist_sort_direct_recent');
   assert.deepEqual(resolved.tracks.map(track => track.title), ['New One', 'New Two']);
   assert.equal(resolved.context.recentBulkHighButton, 'دانلود همه (عالی)');
+  assert.equal(
+    resolved.context.sourceStateVersion,
+    getMeloBotStateVersion(),
+    'recent bulk button must carry the final recent-page state token'
+  );
 });
 
 test('robust album opener falls back to a collaborator component when combined artist lookup misses', async () => {
@@ -3018,7 +3036,11 @@ test('refreshing only recent Artist tracks never blesses a legacy top list', asy
 test('two-token partial search coverage triggers relevance fallback', () => {
   assert.equal(shouldUseSearchRelevanceFallback('Sadegh Khalesaneh', 1), true);
   assert.equal(shouldUseSearchRelevanceFallback('Reza Bahram', 2), false);
-  assert.equal(shouldUseSearchRelevanceFallback('Hichkas', 0), false);
+  assert.equal(
+    shouldUseSearchRelevanceFallback('Hichkas', 0),
+    true,
+    'single-token zero coverage must not accept unrelated source suggestions'
+  );
 });
 
 test('lyrics action can find the lyrics button behind a More submenu', async () => {
@@ -3578,4 +3600,415 @@ test('SerialQueue coalesces duplicate active and pending keys', async () => {
   }
 
   assert.deepEqual(order, ['first', 'other']);
+});
+
+
+test('MTProto reconciliation re-evaluates the target predicate after history recovery', async () => {
+  class ReconcileTargetClient {
+    constructor() {
+      this.handlers = [];
+      this.history = [];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() { return this.history; }
+  }
+
+  const client = new ReconcileTargetClient();
+  installTelegramInbox(client);
+  const original = {
+    id: 50,
+    senderId: 42n,
+    out: false,
+    message: 'old track menu',
+    replyMarkup: { rows: [{ buttons: [{ text: 'بیشتر...' }] }] },
+  };
+  client.handlers[0].handler({ message: original, chatId: 42n });
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  client.history = [{
+    ...original,
+    message: 'اینجا امکانات بیشتری میتونی انتخاب کنی',
+    replyMarkup: { rows: [{ buttons: [{ text: 'کاور' }] }] },
+  }];
+
+  const result = await collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 30,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    afterSequence,
+    stopWhen: message =>
+      (message?.replyMarkup?.rows || [])
+        .flatMap(row => row.buttons || [])
+        .some(button => button.text === 'کاور'),
+  });
+
+  assert.equal(result.hit?.replyMarkup?.rows?.[0]?.buttons?.[0]?.text, 'کاور');
+});
+
+test('MTProto startup boundary prevents pre-deploy history from becoming a new reply', async () => {
+  class PrimeClient {
+    constructor() {
+      this.handlers = [];
+      this.historyCalls = 0;
+      this.history = [{ id: 777, out: false, message: 'old reply' }];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() {
+      this.historyCalls += 1;
+      return this.history;
+    }
+  }
+
+  const client = new PrimeClient();
+  installTelegramInbox(client);
+  assert.equal(await latestMessageId(client, 'melobot'), 0);
+  assert.equal(await primeTelegramInboxBoundary(client, 'melobot'), 777);
+  assert.equal(await latestMessageId(client, 'melobot'), 777);
+  assert.equal(client.historyCalls, 1);
+});
+
+test('Track state graph restores Track menu from More after Cover before Lyrics', async () => {
+  const raw = '🎵 Artist, Real Song';
+  const hq = '📥 کیفیت عالی';
+  const more = 'بیشتر...';
+  const cover = 'کاور';
+  const back = '⬅️';
+  const lyrics = 'متن آهنگ';
+  const trackMenu = fakeBotMessage('track menu', [hq, '📥 کیفیت معمولی', lyrics, more]);
+  const moreMenu = fakeBotMessage('اینجا امکانات بیشتری میتونی انتخاب کنی', [
+    back,
+    cover,
+    'بقیه مشخصات',
+  ]);
+
+  const client = new FakeTelegramClient({
+    'Artist Real Song': [[fakeBotMessage('results', [raw])]],
+    [raw]: [[trackMenu]],
+    [hq]: [[{
+      message: '',
+      media: {
+        document: {
+          mimeType: 'audio/mpeg',
+          attributes: [{ className: 'DocumentAttributeAudio', title: 'Real Song', performer: 'Artist' }],
+        },
+      },
+    }]],
+    [more]: [[moreMenu]],
+    [cover]: [[{ message: '', media: { photo: { id: 1 } } }]],
+    [back]: [[trackMenu]],
+    [lyrics]: [[{ message: 'line one\nline two' }]],
+  });
+
+  const searched = await searchMeloBotTyped(client, 'Artist Real Song');
+  const candidate = searched.tracks[0];
+
+  await downloadMeloBotTrackQuality(
+    client,
+    candidate,
+    'hq',
+    { timeoutMs: 900, menuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  const covered = await getMeloBotCover(
+    client,
+    candidate,
+    { timeoutMs: 1200, menuTimeoutMs: 400, submenuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  assert.equal(covered.available, true);
+
+  const lyricResult = await getMeloBotLyrics(
+    client,
+    candidate,
+    { timeoutMs: 1200, menuTimeoutMs: 400, submenuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  assert.equal(lyricResult.available, true);
+  assert.match(lyricResult.text, /line one/);
+  assert.deepEqual(
+    client.sent,
+    ['Artist Real Song', raw, hq, more, cover, back, lyrics]
+  );
+});
+
+test('featured Track resolver searches the stable base title before the verbose feat credit', async () => {
+  const row = '🎵 Sajadii, Khoone (feat. Shervin Hajipour)';
+  const client = new FakeTelegramClient({
+    'Sajadii Khoone': [[fakeBotMessage('results', [row])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Sajadii',
+      title: 'Khoone (Ft Shervin Hajipour)',
+      rawText: '🎵 Sajadii, Khoone (Ft Shervin Hajipour)',
+      sourceStateVersion: 1,
+    },
+    { timeoutMs: 1000 }
+  );
+
+  assert.equal(resolved.artist, 'Sajadii');
+  assert.equal(resolved.title, 'Khoone (feat. Shervin Hajipour)');
+  assert.equal(client.sent[0], 'Sajadii Khoone');
+});
+
+test('single-token zero-coverage source suggestions are filtered instead of cached as results', () => {
+  const wrong = [
+    { artist: 'Unrelated Artist', title: 'Something Else' },
+    { artist: 'Another', title: 'Different Song' },
+  ];
+  assert.equal(shouldUseSearchRelevanceFallback('بشقاشی', 0, wrong[0]), true);
+  assert.deepEqual(keepFullCoverageTracksWhenAvailable('بشقاشی', wrong), []);
+
+  const matching = [
+    { artist: 'Farhad', title: 'Ayneha' },
+    { artist: 'Another', title: 'Farhad Remix' },
+  ];
+  assert.equal(keepFullCoverageTracksWhenAvailable('farhad', matching).length, 2);
+});
+
+
+test('live Top artist context keeps its bulk button clickable without rebuilding Artist navigation', async () => {
+  const seedRaw = '🎵 Bulk Artist, Seed';
+  const artistButton = '🎤 خواننده';
+  const orderButton = 'نمایش به ترتیب پردانلودترین';
+  const bulkButton = '📥 دانلود همه (عالی)';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[fakeBotMessage('track', ['کیفیت عالی', 'کیفیت معمولی', artistButton])]],
+    [artistButton]: [[
+      fakeBotMessage('Bulk Artist', ['🎵 Bulk Artist, New One', orderButton])
+    ]],
+    [orderButton]: [[
+      fakeBotMessage('پربازدیدترین', [
+        '🎵 Bulk Artist, Top One',
+        '🎵 Bulk Artist, Top Two',
+        bulkButton,
+      ])
+    ]],
+    [bulkButton]: [[
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'Top One', performer: 'Bulk Artist' }],
+          },
+        },
+      },
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'Top Two', performer: 'Bulk Artist' }],
+          },
+        },
+      },
+    ]],
+  });
+
+  const seed = { ...parseTrackButton(seedRaw), source: 'melobot' };
+  const context = await openMeloBotArtist(client, seed, { timeoutMs: 1800 });
+  assert.equal(context.bulkHighButton, bulkButton);
+  assert.equal(context.sourceStateVersion, getMeloBotStateVersion());
+
+  const bulk = await downloadMeloBotTopTracks(client, context, { timeoutMs: 800 });
+  assert.equal(bulk.audioItems.length, 2);
+  assert.deepEqual(client.sent, [seedRaw, artistButton, orderButton, bulkButton]);
+});
+
+test('live Recent artist context keeps its bulk button clickable without a second navigation pass', async () => {
+  const seedRaw = '🎵 Recent Artist, Seed';
+  const artistButton = '🎤 خواننده';
+  const bulkButton = '📥 دانلود همه (عالی)';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[fakeBotMessage('track', ['کیفیت عالی', 'کیفیت معمولی', artistButton])]],
+    [artistButton]: [[
+      fakeBotMessage('Recent Artist', [
+        '🎵 Recent Artist, New One',
+        '🎵 Recent Artist, New Two',
+        bulkButton,
+      ])
+    ]],
+    [bulkButton]: [[
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'New One', performer: 'Recent Artist' }],
+          },
+        },
+      },
+      {
+        message: '',
+        media: {
+          document: {
+            mimeType: 'audio/mpeg',
+            attributes: [{ className: 'DocumentAttributeAudio', title: 'New Two', performer: 'Recent Artist' }],
+          },
+        },
+      },
+    ]],
+  });
+
+  const seed = { ...parseTrackButton(seedRaw), source: 'melobot' };
+  const resolved = await resolveMeloBotArtistTrackList(
+    client,
+    'Recent Artist',
+    'recent',
+    seed,
+    { timeoutMs: 1800 }
+  );
+  assert.equal(resolved.context.recentBulkHighButton, bulkButton);
+  assert.equal(resolved.context.sourceStateVersion, getMeloBotStateVersion());
+
+  const bulk = await downloadMeloBotRecentTracks(client, resolved.context, { timeoutMs: 800 });
+  assert.equal(bulk.audioItems.length, 2);
+  assert.deepEqual(client.sent, [seedRaw, artistButton, bulkButton]);
+});
+
+
+test('Artist identity matching fails closed on ambiguous single-name and collaboration pickers', () => {
+  const farhadOnlyWrong = [
+    fakeBotMessage('results', ['🗣 Farhad Ravanbakhsh']),
+  ];
+  assert.equal(
+    findArtistButtonFor(farhadOnlyWrong, 'Farhad'),
+    null,
+    'Farhad must not silently resolve to Farhad Ravanbakhsh'
+  );
+
+  const collaborationMembers = [
+    fakeBotMessage('choose artist', ['🗣 Bahram', '🗣 Ali Sorena']),
+  ];
+  assert.equal(
+    findArtistButtonFor(collaborationMembers, 'Ali Sorena & Bahram'),
+    null,
+    'a collaboration must not silently collapse to one member'
+  );
+
+  const exactComposite = [
+    fakeBotMessage('choose artist', ['🗣 Ali Sorena & Bahram']),
+  ];
+  assert.equal(
+    findArtistButtonFor(exactComposite, 'Ali Sorena & Bahram'),
+    '🗣 Ali Sorena & Bahram'
+  );
+});
+
+
+test('MTProto reconciliation ignores an unchanged boundary surface after timeout', async () => {
+  class UnchangedBoundaryClient {
+    constructor() {
+      this.handlers = [];
+      this.history = [];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() { return this.history; }
+  }
+
+  const client = new UnchangedBoundaryClient();
+  installTelegramInbox(client);
+  const original = {
+    id: 60,
+    senderId: 42n,
+    out: false,
+    message: 'old search results',
+    replyMarkup: { rows: [{ buttons: [{ text: '🎵 Old Artist, Old Song' }] }] },
+  };
+  client.handlers[0].handler({ message: original, chatId: 42n });
+
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  client.history = [{ ...original }];
+
+  const result = await collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 30,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    afterSequence,
+    stopWhen: message => Boolean(message?.replyMarkup),
+  });
+
+  assert.equal(result.hit, null);
+  assert.equal(result.messages.length, 0);
+});
+
+
+test('single-token Persian artist search preserves strong Latin transliteration consensus', () => {
+  const hichkas = [
+    { artist: 'Hichkas', title: 'Ye Rooze Khoob Miad' },
+    { artist: 'Hichkas', title: 'Jangale Asfalt' },
+    { artist: 'Hichkas', title: 'Ekhtelaf' },
+    { artist: 'Hichkas', title: 'Bache Haye Iran' },
+    { artist: 'Hichkas', title: 'Oon Mano Naga Kard' },
+  ];
+
+  assert.equal(
+    shouldUseSearchRelevanceFallback('هیچکس', 0, hichkas[0], hichkas),
+    false,
+    'a strong opposite-script artist consensus is valid source evidence'
+  );
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('هیچکس', hichkas).map(track => track.artist),
+    ['Hichkas', 'Hichkas', 'Hichkas', 'Hichkas', 'Hichkas']
+  );
+
+  const mixedNoise = [
+    { artist: 'Artist One', title: 'A' },
+    { artist: 'Artist Two', title: 'B' },
+    { artist: 'Artist Three', title: 'C' },
+    { artist: 'Artist Four', title: 'D' },
+    { artist: 'Artist Five', title: 'E' },
+  ];
+  assert.equal(
+    shouldUseSearchRelevanceFallback('بشقاشی', 0, mixedNoise[0], mixedNoise),
+    true
+  );
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('بشقاشی', mixedNoise),
+    []
+  );
+});
+
+
+test('Artist navigation rejects a generic search-results surface after the Artist button', async () => {
+  const seedRaw = '🎵 Farhad, Ayneha';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[
+      fakeBotMessage('track menu', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])
+    ]],
+    [artistButton]: [[
+      fakeBotMessage(
+        'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن',
+        [
+          '🎵 Farhad, Ayneha',
+          '🎵 Farhad Ravanbakhsh, Ayeneh',
+          '🔍 نتیجه در لیست نیست (جستجوی عمیق) 🔍',
+        ]
+      )
+    ]],
+  });
+
+  await assert.rejects(
+    () => openMeloBotArtist(
+      client,
+      { ...parseTrackButton(seedRaw), source: 'melobot' },
+      { timeoutMs: 500 }
+    ),
+    err => err?.code === 'MELOBOT_ARTIST_PAGE_TIMEOUT'
+  );
 });

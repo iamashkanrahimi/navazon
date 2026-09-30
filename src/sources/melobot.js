@@ -24,6 +24,7 @@ let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
 // This is deliberately NOT persisted: reply-keyboard buttons/raw text are
 // ephemeral source state, while artist/title are durable catalog identity.
 let liveTrackSurface = null;
+let liveMoreSurface = null;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -123,11 +124,25 @@ function trackLabel(candidate = {}) {
     || 'unknown track';
 }
 
+function sameTrackIdentity(left = {}, right = {}) {
+  const leftTitle = titleIdentity(left?.title || '');
+  const rightTitle = titleIdentity(right?.title || '');
+  if (!leftTitle || leftTitle !== rightTitle) return false;
+
+  const leftArtist = left?.artist || '';
+  const rightArtist = right?.artist || '';
+  if (leftArtist && rightArtist && !artistIdentityCompatible(leftArtist, rightArtist)) {
+    return false;
+  }
+  return true;
+}
+
 function rememberLiveTrackSurface(client, candidate = {}, messages = [], version = sourceStateVersion) {
   if (!client || !candidate?.title || !hasTrackActionMenu(messages)) {
     liveTrackSurface = null;
     return null;
   }
+  liveMoreSurface = null;
   liveTrackSurface = {
     client,
     candidate: { ...candidate },
@@ -137,20 +152,42 @@ function rememberLiveTrackSurface(client, candidate = {}, messages = [], version
   return liveTrackSurface;
 }
 
+function rememberLiveMoreSurface(
+  client,
+  candidate = {},
+  messages = [],
+  version = sourceStateVersion,
+  trackMenuMessages = []
+) {
+  if (!client || !candidate?.title || !(messages || []).some(isMoreMenuSurface)) {
+    liveMoreSurface = null;
+    return null;
+  }
+  liveTrackSurface = null;
+  liveMoreSurface = {
+    client,
+    candidate: { ...candidate },
+    messages: [...messages],
+    trackMenuMessages: [...(trackMenuMessages || [])],
+    version: Number(version || sourceStateVersion),
+  };
+  return liveMoreSurface;
+}
+
 function currentLiveTrackSurface(client, candidate = {}) {
   if (!liveTrackSurface || liveTrackSurface.client !== client) return null;
   if (Number(liveTrackSurface.version) !== Number(sourceStateVersion)) return null;
+  return sameTrackIdentity(candidate, liveTrackSurface.candidate)
+    ? liveTrackSurface
+    : null;
+}
 
-  const wantedTitle = titleIdentity(candidate?.title || '');
-  const liveTitle = titleIdentity(liveTrackSurface.candidate?.title || '');
-  if (!wantedTitle || wantedTitle !== liveTitle) return null;
-
-  const wantedArtist = candidate?.artist || '';
-  const liveArtist = liveTrackSurface.candidate?.artist || '';
-  if (wantedArtist && liveArtist && !artistIdentityCompatible(wantedArtist, liveArtist)) {
-    return null;
-  }
-  return liveTrackSurface;
+function currentLiveMoreSurface(client, candidate = {}) {
+  if (!liveMoreSurface || liveMoreSurface.client !== client) return null;
+  if (Number(liveMoreSurface.version) !== Number(sourceStateVersion)) return null;
+  return sameTrackIdentity(candidate, liveMoreSurface.candidate)
+    ? liveMoreSurface
+    : null;
 }
 
 function hasTrackActionMenu(messages = []) {
@@ -167,21 +204,37 @@ function normalize(value = '') {
   return normalizeText(value);
 }
 
+function artistIdentityParts(value = '') {
+  return clean(value)
+    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .map(normalize)
+    .filter(Boolean);
+}
+
 export function findArtistButtonFor(messages = [], artist = '') {
   const target = normalize(artist);
   const pickers = artistPickerItems(messages);
   const exact = pickers.find(item => normalize(item.name) === target);
   if (exact) return exact.rawText;
 
-  const parts = target
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
-    .map(normalize)
-    .filter(Boolean);
-  const compatible = pickers.find(item => {
-    const name = normalize(item.name);
-    return name && parts.some(part => part === name || part.includes(name) || name.includes(part));
-  });
-  if (compatible) return compatible.rawText;
+  const parts = artistIdentityParts(artist);
+  // A collaboration page must never silently choose one member just because
+  // the source exposed individual artist buttons. Exact composite credits or
+  // the generic legacy "خواننده" transition are safe; otherwise fail closed
+  // and let the caller surface an explicit choice later.
+  if (parts.length <= 1) {
+    const compatible = pickers.find(item => {
+      const name = normalize(item.name);
+      if (!name) return false;
+      const part = parts[0] || '';
+      if (part === name) return true;
+      const partTokens = part.split(' ').filter(Boolean);
+      const nameTokens = name.split(' ').filter(Boolean);
+      if (partTokens.length <= 1 || nameTokens.length <= 1) return false;
+      return part.includes(name) || name.includes(part);
+    });
+    if (compatible) return compatible.rawText;
+  }
 
   const legacy = findButton(messages, text =>
     /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
@@ -207,14 +260,17 @@ function artistIdentityCompatible(requested = '', actual = '') {
   // Split the original credit before normalization. normalizeText deliberately
   // removes punctuation such as "&", so splitting the normalized value loses
   // collaboration boundaries and makes reordered credits impossible to match.
-  const split = value => clean(value)
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
-    .map(normalize)
-    .filter(Boolean);
-  const requestedParts = split(requested);
-  const actualParts = split(actual);
-  const partMatches = (left, right) =>
-    left === right || left.includes(right) || right.includes(left);
+  const requestedParts = artistIdentityParts(requested);
+  const actualParts = artistIdentityParts(actual);
+  const partMatches = (left, right) => {
+    if (left === right) return true;
+    const leftTokens = left.split(' ').filter(Boolean);
+    const rightTokens = right.split(' ').filter(Boolean);
+    // Do not conflate short stage names/surnames with longer unrelated
+    // identities (Farhad vs Farhad Ravanbakhsh, Bahram vs Reza Bahram).
+    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
+    return left.includes(right) || right.includes(left);
+  };
 
   // A requested collaboration must not silently collapse to one of its
   // artists. This was the source of false resolutions for tracks such as
@@ -789,10 +845,11 @@ async function sendAndCollect(client, text, {
   const afterId = await latestMessageId(client, peer);
   const afterSequence = getTelegramInboxSequence(client);
 
-  // Any outbound command can move the shared MeloBot conversation away from a
-  // Track menu. Track-specific callers explicitly restore the snapshot after
-  // they verify the resulting surface.
+  // Any outbound command moves the one shared MeloBot conversation. Callers
+  // that know the resulting surface explicitly restore Track/More state after
+  // the target is verified.
   liveTrackSurface = null;
+  liveMoreSurface = null;
   const stateVersion = ++sourceStateVersion;
   await client.sendMessage(peer, { message: text });
   const result = await collectNewMessages(client, peer, afterId, {
@@ -1152,17 +1209,22 @@ async function findArtistSeed(
   const target = normalize(artist);
   const preferredArtist = normalize(preferredSeed?.artist || '');
 
-  // A seed already selected by the user is enough to reopen the live track
-  // menu. If its source state is stale, openTrackMenu will refresh that exact
-  // track once; doing an artist search here first only duplicates navigation.
+  // Reuse a preferred seed only while its source row/surface is genuinely
+  // current. A stale preferred seed used to force a slow resolve->click cycle
+  // for every Artist Top/Recent request; a fresh artist search is both faster
+  // and more reliable once the shared MeloBot state has moved elsewhere.
+  const preferredStillLive = Boolean(
+    currentLiveTrackSurface(client, preferredSeed || {})
+    || currentLiveMoreSurface(client, preferredSeed || {})
+  );
   if (
     preferredSeed?.rawText
     && preferredSeed?.source !== 'ahangify'
     && preferredArtist
+    && artistIdentityCompatible(artist, preferredSeed.artist)
     && (
-      preferredArtist === target
-      || preferredArtist.includes(target)
-      || target.includes(preferredArtist)
+      Number(preferredSeed.sourceStateVersion || -1) === Number(sourceStateVersion)
+      || preferredStillLive
     )
   ) {
     return preferredSeed;
@@ -1175,10 +1237,9 @@ async function findArtistSeed(
       maxRefinements: 3,
     });
     seed = results.find(track => normalize(track.artist) === target)
-      || results.find(track => {
-        const candidateArtist = normalize(track.artist);
-        return candidateArtist.includes(target) || target.includes(candidateArtist);
-      })
+      || results.find(track =>
+        artistIdentityCompatible(artist, track.artist || '')
+      )
       || null;
   } catch (err) {
     console.warn('[melobot artist seed]', artist, err.message);
@@ -1229,16 +1290,44 @@ export async function resolveMeloBotTrackCandidate(
 
   const title = normalize(candidate?.title || '');
   const artist = normalize(candidate?.artist || '');
+  const baseTitle = clean(candidate?.title || '')
+    .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
 
-  // Title-first resolution is both safer and faster for collaboration credits:
-  // the source may reorder "A & B" as "B & A", while we still verify artist
-  // compatibility before accepting the exact title.
-  const collaborationCredit = /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(
-    clean(candidate?.artist || '')
-  );
-  const queries = (candidate?.artistInferred || collaborationCredit)
-    ? [candidate?.title, primaryQuery]
-    : [primaryQuery, candidate?.title];
+  // Featured/collaboration spelling varies heavily on MeloBot. Search a
+  // durable base-title form first, then verify the exact title identity and
+  // artist compatibility before accepting a row.
+  const collaborationCredit = artistIdentityParts(candidate?.artist || '').length > 1;
+  const featuredTitle = baseTitle && normalize(baseTitle) !== normalize(candidate?.title || '');
+  let queries;
+  if (candidate?.artistInferred) {
+    // Title-only rows must first ask for the exact visible title so MeloBot can
+    // reveal the authoritative primary performer.
+    queries = [
+      candidate?.title,
+      baseTitle,
+      [candidate?.artist, baseTitle].filter(Boolean).join(' '),
+      primaryQuery,
+    ];
+  } else if (collaborationCredit) {
+    // Collaboration credits are commonly reordered by the source; title-first
+    // search plus strict artist-set verification is the stable resolver.
+    queries = [
+      baseTitle || candidate?.title,
+      candidate?.title,
+      primaryQuery,
+    ];
+  } else if (featuredTitle) {
+    queries = [
+      [candidate?.artist, baseTitle].filter(Boolean).join(' '),
+      baseTitle,
+      primaryQuery,
+      candidate?.title,
+    ];
+  } else {
+    queries = [primaryQuery, candidate?.title];
+  }
   const uniqueQueries = [...new Set(queries.map(clean).filter(Boolean))];
 
   let lastError = null;
@@ -1304,7 +1393,7 @@ async function openTrackMenuWithCandidate(
     directTimeoutMs = 3000,
     resolveTimeoutMs = 3500,
     menuTimeoutMs = 4000,
-    allowNonTrackSurface = false,
+    allowAlbumSurface = false,
   } = {}
 ) {
   const requested = candidate || {};
@@ -1326,6 +1415,42 @@ async function openTrackMenuWithCandidate(
     };
   }
 
+  // Cover/metadata can leave MeloBot on the More submenu. Return to the Track
+  // menu with the live Back control instead of throwing the whole context away
+  // and performing another search.
+  const liveMore = currentLiveMoreSurface(client, requested);
+  if (liveMore) {
+    const backButton = findButton(liveMore.messages, text => {
+      const value = clean(text);
+      return /^⬅️/u.test(value) || /بازگشت/u.test(value);
+    });
+    if (backButton) {
+      const back = await sendAndCollect(client, backButton, {
+        timeoutMs: Math.min(cap, 2200),
+        quietMs: 500,
+        stopWhen: message => hasTrackActionMenu([message]),
+        stopWhenBatch: messages => hasTrackActionMenu(messages),
+        waitForTarget: true,
+        reconcileOnTimeout: true,
+      });
+      if (hasTrackActionMenu(back.messages)) {
+        const restoredCandidate = {
+          ...requested,
+          sourceStateVersion: back.stateVersion,
+        };
+        rememberLiveTrackSurface(client, restoredCandidate, back.messages, back.stateVersion);
+        console.log(
+          `[melobot.track_menu] route=more_back track=${JSON.stringify(trackLabel(requested))}`
+        );
+        return {
+          messages: back.messages,
+          candidate: restoredCandidate,
+          route: 'more_back',
+        };
+      }
+    }
+  }
+
   const canClickCurrentSurface = Boolean(
     directText
     && Number(requested.sourceStateVersion || -1) === Number(sourceStateVersion)
@@ -1335,13 +1460,12 @@ async function openTrackMenuWithCandidate(
     const direct = await sendAndCollect(client, directText, {
       timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
       quietMs: 550,
-      stopWhen: m => replyButtons(m).some(text => {
-        const value = clean(text);
-        return (
-          (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
-          && !value.includes('دانلود همه')
-        );
-      }),
+      stopWhen: m =>
+        hasTrackActionMenu([m])
+        || inspectSelectedCandidateSurface([m], requested).kind === 'album',
+      stopWhenBatch: messages =>
+        hasTrackActionMenu(messages)
+        || inspectSelectedCandidateSurface(messages, requested).kind === 'album',
       waitForTarget: true,
       reconcileOnTimeout: true,
     });
@@ -1354,9 +1478,14 @@ async function openTrackMenuWithCandidate(
       console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
       return { messages: direct.messages, candidate: liveCandidate, route: 'direct_raw_text' };
     }
-    if (allowNonTrackSurface && direct.messages?.length) {
-      console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
-      return { messages: direct.messages, candidate: requested, route: 'direct_non_track' };
+    const directSurface = inspectSelectedCandidateSurface(direct.messages, requested);
+    if (allowAlbumSurface && directSurface.kind === 'album') {
+      console.log(`[melobot.track_menu] route=direct_album track=${JSON.stringify(trackLabel(requested))}`);
+      return {
+        messages: direct.messages,
+        candidate: { ...requested, sourceStateVersion: direct.stateVersion },
+        route: 'direct_album',
+      };
     }
     console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
   } else if (directText) {
@@ -1380,19 +1509,23 @@ async function openTrackMenuWithCandidate(
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
     timeoutMs: Math.min(cap, Math.max(2200, Number(menuTimeoutMs || 4000))),
     quietMs: 550,
-    stopWhen: m => replyButtons(m).some(text => {
-      const value = clean(text);
-      return (
-        (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
-        && !value.includes('دانلود همه')
-      );
-    }),
+    stopWhen: m =>
+      hasTrackActionMenu([m])
+      || inspectSelectedCandidateSurface([m], liveCandidate).kind === 'album',
+    stopWhenBatch: messages =>
+      hasTrackActionMenu(messages)
+      || inspectSelectedCandidateSurface(messages, liveCandidate).kind === 'album',
     waitForTarget: true,
     reconcileOnTimeout: true,
   });
   if (!hasTrackActionMenu(selected.messages)) {
-    if (allowNonTrackSurface && selected.messages?.length) {
-      return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_non_track' };
+    const selectedSurface = inspectSelectedCandidateSurface(selected.messages, liveCandidate);
+    if (allowAlbumSurface && selectedSurface.kind === 'album') {
+      return {
+        messages: selected.messages,
+        candidate: { ...liveCandidate, sourceStateVersion: selected.stateVersion },
+        route: 'resolved_album',
+      };
     }
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
@@ -1652,6 +1785,8 @@ export async function getMeloBotLyrics(
   const menuMessages = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
 
+  let actionSurface = 'track';
+  let actionSurfaceMessages = menuMessages;
   let lyricsButton = findButton(menuMessages, text => /متن\s*آهنگ/u.test(clean(text)));
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
@@ -1663,6 +1798,15 @@ export async function getMeloBotLyrics(
           timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
           capability: 'hasLyrics',
         }
+      );
+      actionSurface = 'more';
+      actionSurfaceMessages = moreMessages;
+      rememberLiveMoreSurface(
+        client,
+        liveCandidate,
+        moreMessages,
+        sourceStateVersion,
+        menuMessages
       );
       lyricsButton = findButton(
         moreMessages,
@@ -1702,6 +1846,27 @@ export async function getMeloBotLyrics(
     );
   }
 
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+  if (actionSurface === 'more') {
+    rememberLiveMoreSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion,
+      menuMessages
+    );
+  } else {
+    rememberLiveTrackSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion
+    );
+  }
+
   const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
     .test(raw);
   if (unavailable) {
@@ -1710,7 +1875,7 @@ export async function getMeloBotLyrics(
       text: '',
       rawText: raw,
       checked: true,
-      candidate: liveCandidate,
+      candidate: refreshedCandidate,
     };
   }
 
@@ -1730,7 +1895,7 @@ export async function getMeloBotLyrics(
     text,
     rawText: raw,
     checked: true,
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
   };
 }
 
@@ -1774,6 +1939,7 @@ export async function getMeloBotTrackMetadata(
   const trackMenu = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
 
+  let actionSurface = 'track';
   let detailsButton = findButton(
     trackMenu,
     text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
@@ -1790,6 +1956,14 @@ export async function getMeloBotTrackMetadata(
           timeoutMs: remaining(),
           capability: 'hasMetadata',
         }
+      );
+      actionSurface = 'more';
+      rememberLiveMoreSurface(
+        client,
+        liveCandidate,
+        surface,
+        sourceStateVersion,
+        trackMenu
       );
       detailsButton = findButton(
         surface,
@@ -1813,11 +1987,31 @@ export async function getMeloBotTrackMetadata(
     quietMs: 650,
   });
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+  if (actionSurface === 'more') {
+    rememberLiveMoreSurface(
+      client,
+      refreshedCandidate,
+      surface,
+      result.stateVersion,
+      trackMenu
+    );
+  } else {
+    rememberLiveTrackSurface(
+      client,
+      refreshedCandidate,
+      trackMenu,
+      result.stateVersion
+    );
+  }
   return {
     raw,
     ...parseReleaseDate(raw),
     ...parsePopularityValue(raw || liveCandidate.rawText || candidate.rawText || ''),
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
   };
 }
 
@@ -1847,6 +2041,8 @@ export async function getMeloBotCover(
     `[melobot.cover] stage=menu_received track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
 
+  let actionSurface = 'track';
+  let actionSurfaceMessages = trackMenu;
   let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
 
   if (!coverButton) {
@@ -1862,6 +2058,15 @@ export async function getMeloBotCover(
           timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
           capability: 'hasCover',
         }
+      );
+      actionSurface = 'more';
+      actionSurfaceMessages = moreMessages;
+      rememberLiveMoreSurface(
+        client,
+        liveCandidate,
+        moreMessages,
+        sourceStateVersion,
+        trackMenu
       );
       coverButton = findButton(moreMessages, text => /کاور/u.test(clean(text)));
     }
@@ -1905,6 +2110,27 @@ export async function getMeloBotCover(
     );
   }
 
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+  if (actionSurface === 'more') {
+    rememberLiveMoreSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion,
+      trackMenu
+    );
+  } else {
+    rememberLiveTrackSurface(
+      client,
+      refreshedCandidate,
+      actionSurfaceMessages,
+      result.stateVersion
+    );
+  }
+
   console.log(
     `[melobot.cover] stage=photo_received track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
@@ -1913,7 +2139,7 @@ export async function getMeloBotCover(
     available: true,
     checked: true,
     photoMessage: photo,
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
   };
 }
 
@@ -2162,6 +2388,26 @@ export async function inspectMeloBotTrack(client, candidate) {
   };
 }
 
+function isArtistNavigationSurface(message = {}, artist = '') {
+  const messages = [message];
+  const buttons = replyButtons(message);
+  if (!buttons.length) return false;
+
+  if (artistPickerItems(messages).length) return true;
+
+  const hasArtistControls = buttons.some(text => {
+    const value = clean(text);
+    return /دانلود\s*همه|ترتیب|پربازدید|جدید|تازه|آلبوم|البوم|بیشتر|more/iu.test(value);
+  });
+  if (hasArtistControls) return true;
+
+  const tracks = parseTracksFromMessages(messages, artist);
+  const looksLikeSearchResults = buttons.some(text =>
+    /نتیجه\s*در\s*لیست\s*نیست|جستجوی\s*عمیق|deep\s*search/iu.test(clean(text))
+  );
+  return tracks.length > 0 && !looksLikeSearchResults;
+}
+
 async function openMeloBotArtistBase(
   client,
   seedTrack,
@@ -2176,7 +2422,7 @@ async function openMeloBotArtistBase(
     seedTrack,
     {
       timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
-      allowNonTrackSurface: true,
+      allowAlbumSurface: true,
     }
   );
   let menuMessages = openedMenu.messages;
@@ -2204,7 +2450,7 @@ async function openMeloBotArtistBase(
         recoverySeed,
         {
           timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
-          allowNonTrackSurface: true,
+          allowAlbumSurface: true,
         }
       );
       menuMessages = openedMenu.messages;
@@ -2226,16 +2472,38 @@ async function openMeloBotArtistBase(
 
   let preOpenedArtistPage = null;
   if (!artistButton && allowArtistSearchFallback && !remaining.expired()) {
-    // MeloBot search surfaces often expose the Artist as an icon-labeled
-    // button (for example "🗣 Ali Yasini") even when the Track menu does not.
-    const artistSearch = await sendAndCollect(client, effectiveSeed.artist, {
-      timeoutMs: Math.min(2500, remaining()),
-      quietMs: 650,
-      stopWhen: message => Boolean(
-        findArtistButtonFor([message], effectiveSeed.artist)
-      ),
-    });
-    artistButton = findArtistButtonFor(artistSearch.messages, effectiveSeed.artist);
+    // If the current Track surface has no Artist control, obtain a fresh seed
+    // row for the requested artist and open that Track explicitly. Treating a
+    // generic search-results surface as an Artist page caused the Farhad/Javad
+    // bulk failures seen in production.
+    try {
+      const freshTracks = await searchMeloBot(client, effectiveSeed.artist, {
+        timeoutMs: Math.min(2500, remaining()),
+        maxRefinements: 2,
+      });
+      const freshSeed = freshTracks.find(track =>
+        artistIdentityCompatible(effectiveSeed.artist, track.artist || '')
+      ) || null;
+
+      if (freshSeed && !remaining.expired()) {
+        openedMenu = await openTrackMenuWithCandidate(
+          client,
+          freshSeed,
+          {
+            timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+            allowAlbumSurface: true,
+          }
+        );
+        menuMessages = openedMenu.messages;
+        effectiveSeed = openedMenu.candidate || freshSeed;
+        artistButton = findArtistButtonFor(
+          menuMessages,
+          effectiveSeed.artist || seedTrack?.artist || ''
+        );
+      }
+    } catch (err) {
+      console.warn('[melobot artist fresh seed fallback]', effectiveSeed.artist, err.message);
+    }
   }
 
   if (!artistButton && !preOpenedArtistPage) {
@@ -2257,8 +2525,23 @@ async function openMeloBotArtistBase(
     return sendAndCollect(client, artistButton, {
       timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       quietMs: 650,
+      stopWhen: message => isArtistNavigationSurface(message, effectiveSeed.artist),
+      waitForTarget: true,
+      reconcileOnTimeout: true,
     });
   })();
+
+  if (
+    !preOpenedArtistPage
+    && !artistPage.messages?.some(message =>
+      isArtistNavigationSurface(message, effectiveSeed.artist)
+    )
+  ) {
+    throw meloError(
+      'MELOBOT_ARTIST_PAGE_TIMEOUT',
+      `MeloBot Artist page did not reach a confirmed surface: ${effectiveSeed.artist}`
+    );
+  }
 
   // Collaborative tracks can open an intermediate artist picker.
   const pickerButtons = artistPickerItems(artistPage.messages);
@@ -2268,11 +2551,18 @@ async function openMeloBotArtistBase(
 
   if (pickerButtons.length) {
     const requested = normalize(effectiveSeed.artist);
-    const requestedParts = requested.split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu).filter(Boolean);
+    const requestedParts = artistIdentityParts(effectiveSeed.artist);
 
     const chosen = pickerButtons.find(item => normalize(item.name) === requested)
       || pickerButtons.find(item => requestedParts.includes(normalize(item.name)))
-      || pickerButtons.find(item => requested.includes(normalize(item.name)));
+      || (
+        requestedParts.length === 1
+          ? pickerButtons.find(item => {
+              const name = normalize(item.name);
+              return requestedParts[0].includes(name) || name.includes(requestedParts[0]);
+            })
+          : null
+      );
 
     if (!chosen) {
       throw meloError(
@@ -2287,7 +2577,18 @@ async function openMeloBotArtistBase(
     artistPage = await sendAndCollect(client, chosen.rawText, {
       timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
       quietMs: 750,
+      stopWhen: message => isArtistNavigationSurface(message, chosen.name),
+      waitForTarget: true,
+      reconcileOnTimeout: true,
     });
+    if (!artistPage.messages?.some(message =>
+      isArtistNavigationSurface(message, chosen.name)
+    )) {
+      throw meloError(
+        'MELOBOT_ARTIST_PAGE_TIMEOUT',
+        `MeloBot Artist picker did not open a confirmed Artist page: ${chosen.name}`
+      );
+    }
   }
 
   const allButtons = buttonsFromMessages(artistPage.messages);
@@ -2435,6 +2736,7 @@ export async function openMeloBotArtist(
   let topTracks = [];
   let bulkHighButton = null;
   let bulkNormalButton = null;
+  let artistSourceStateVersion = base.sourceStateVersion;
 
   // The base artist page is the current source surface until we press a sort
   // control. Keep a separate live-surface snapshot so a later Albums click can
@@ -2487,6 +2789,7 @@ export async function openMeloBotArtist(
       }
 
       topTracks = parseTracksFromMessages(ordered.messages, base.artist);
+      artistSourceStateVersion = ordered.stateVersion;
       bulkHighButton = findButton(ordered.messages, text =>
         /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
       );
@@ -2530,8 +2833,13 @@ export async function openMeloBotArtist(
 
       if (exactTracks.length) {
         topTracks = exactTracks;
-        // The recovery search changed MeloBot state, so invalidate any live
-        // controls captured from the previous artist surface.
+        // The recovery search changed MeloBot state, so every reply-keyboard
+        // control captured from the previous Artist page is stale. Keep the
+        // recovered list as catalog identity only; a later bulk request must
+        // either use cache or deliberately rebuild a live Artist page.
+        bulkHighButton = null;
+        bulkNormalButton = null;
+        artistSourceStateVersion = sourceStateVersion;
         liveAlbumButton = null;
         liveAlbumList = [];
         liveAlbumListingConfirmed = false;
@@ -2556,6 +2864,7 @@ export async function openMeloBotArtist(
     topTracks,
     bulkHighButton,
     bulkNormalButton,
+    sourceStateVersion: artistSourceStateVersion,
     liveAlbumButton,
     liveAlbumList,
     liveAlbumListingConfirmed,
@@ -2638,6 +2947,7 @@ export async function resolveMeloBotArtistTrackList(
   let tracks = (base.recentTracks || []).slice(0, 10);
   let recentBulkHighButton = base.recentBulkHighButton || null;
   let recentBulkNormalButton = base.recentBulkNormalButton || null;
+  let recentSourceStateVersion = base.sourceStateVersion;
   let route = tracks.length ? 'artist_base_recent' : 'artist_sort_recent';
 
   if (!tracks.length && base.orderButton && !remaining.expired()) {
@@ -2653,6 +2963,7 @@ export async function resolveMeloBotArtistTrackList(
 
       if (directTracks.length && orderLooksRecent) {
         tracks = directTracks.slice(0, 10);
+        recentSourceStateVersion = sorted.stateVersion;
         recentBulkHighButton = findButton(sorted.messages, text =>
           /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
         );
@@ -2675,6 +2986,7 @@ export async function resolveMeloBotArtistTrackList(
               .some(text => Boolean(parseTrackButton(text, base.artist))),
           });
           tracks = parseTracksFromMessages(recentPage.messages, base.artist).slice(0, 10);
+          recentSourceStateVersion = recentPage.stateVersion;
           recentBulkHighButton = findButton(recentPage.messages, text =>
             /دانلود همه/u.test(clean(text)) && /عالی/u.test(clean(text))
           );
@@ -2703,6 +3015,7 @@ export async function resolveMeloBotArtistTrackList(
       recentTracks: tracks,
       recentBulkHighButton,
       recentBulkNormalButton,
+      sourceStateVersion: recentSourceStateVersion,
     },
     route,
   };

@@ -183,13 +183,77 @@ export function scoreTrackQueryMatch(query = '', track = {}) {
   };
 }
 
+
+function scriptFamily(value = '') {
+  const text = cleanText(value);
+  const hasPersian = /[\u0600-\u06ff]/u.test(text);
+  const hasLatin = /[a-z]/iu.test(text);
+  if (hasPersian && !hasLatin) return 'persian';
+  if (hasLatin && !hasPersian) return 'latin';
+  return 'mixed';
+}
+
+export function crossScriptArtistConsensus(query = '', tracks = []) {
+  const meaningful = meaningfulSearchTokens(query);
+  if (meaningful.length !== 1 || !(tracks || []).length) return null;
+
+  const queryScript = scriptFamily(query);
+  if (queryScript === 'mixed') return null;
+
+  const counts = new Map();
+  const labels = new Map();
+  for (const track of tracks || []) {
+    const artist = cleanText(track?.artist || '');
+    const key = normalizeText(artist);
+    if (!key) continue;
+
+    const artistScript = scriptFamily(artist);
+    if (
+      artistScript === 'mixed'
+      || artistScript === queryScript
+    ) continue;
+
+    counts.set(key, (counts.get(key) || 0) + 1);
+    labels.set(key, artist);
+  }
+
+  let bestKey = '';
+  let bestCount = 0;
+  for (const [key, count] of counts.entries()) {
+    if (count > bestCount) {
+      bestKey = key;
+      bestCount = count;
+    }
+  }
+
+  const threshold = Math.max(2, Math.ceil((tracks || []).length * 0.8));
+  if (!bestKey || bestCount < threshold) return null;
+
+  return {
+    artist: labels.get(bestKey) || bestKey,
+    artistKey: bestKey,
+    count: bestCount,
+    total: (tracks || []).length,
+  };
+}
+
 export function shouldUseSearchRelevanceFallback(
   query = '',
   bestCoverage = 0,
-  bestTrack = null
+  bestTrack = null,
+  tracks = []
 ) {
   const meaningful = meaningfulSearchTokens(query);
-  if (meaningful.length < 2) return false;
+  if (!meaningful.length) return false;
+
+  // A one-token nonsense/typo query used to accept whatever five MeloBot rows
+  // happened to be visible and then cache them. Zero lexical coverage is
+  // never sufficient, even for a single-token query.
+  if (meaningful.length === 1) {
+    if (Number(bestCoverage || 0) >= 1) return false;
+    return !crossScriptArtistConsensus(query, tracks);
+  }
+
   if (Number(bestCoverage || 0) < meaningful.length) return true;
   return unrequestedTrackVariantWords(query, bestTrack || {}).length > 0;
 }
@@ -210,9 +274,30 @@ export function rankTracksForQuery(query = '', tracks = []) {
 
 export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   const tokens = meaningfulSearchTokens(query);
-  if (tokens.length < 2 || !(tracks || []).length) return tracks || [];
+  if (!tokens.length || !(tracks || []).length) return tracks || [];
 
   const ranked = rankTracksForQuery(query, tracks);
+
+  // For a single meaningful token, returning zero-coverage source suggestions
+  // is actively misleading and poisons the search cache. Require an actual
+  // lexical match.
+  if (tokens.length === 1) {
+    const covered = ranked
+      .filter(item => item.coverage >= 1)
+      .map(item => item.track);
+    if (covered.length) return covered;
+
+    // Persian artist queries often come back transliterated by MeloBot
+    // (مثلاً «هیچکس» -> Hichkas). Preserve that case only when the source
+    // strongly agrees on one opposite-script artist; arbitrary mixed
+    // zero-coverage suggestions are still discarded.
+    const consensus = crossScriptArtistConsensus(query, tracks);
+    if (!consensus) return [];
+    return ranked
+      .filter(item => normalizeText(item.track?.artist || '') === consensus.artistKey)
+      .map(item => item.track);
+  }
+
   const full = ranked.filter(item => item.total > 0 && item.coverage === item.total);
   return (full.length ? full : ranked).map(item => item.track);
 }

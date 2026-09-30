@@ -969,9 +969,25 @@ export async function tryDeliverBulkFromCacheLocal(
 }
 
 function structuralNativeBulkFailure(err) {
-  return /bulk HQ button was not found|artist button not found|no usable .* tracks/i.test(
+  return /bulk HQ button was not found|artist button not found|no usable .* tracks|navigation budget exhausted|did not deliver audio/i.test(
     err?.message || ''
   );
+}
+
+function shouldUseIndividualBulk(tracks = []) {
+  const count = (tracks || []).length;
+  return count > 0 && count <= 3;
+}
+
+async function finishMissingBulkIndividually(session, missingTracks = [], label = 'bulk missing') {
+  if (!(missingTracks || []).length) {
+    return { sent: 0, missing: 0, quality: 'hq' };
+  }
+  return deliverBulkIndividuallyHq(session, missingTracks, {
+    sourceTimeoutMs: 4200,
+    totalBudgetMs: 14_000,
+    label,
+  });
 }
 
 async function deliverBulkIndividuallyHq(session, tracks, {
@@ -1645,6 +1661,10 @@ export const sourceQueue = new SerialQueue(async job => {
                     resolved.context?.recentBulkNormalButton
                     || session.artistContext.recentBulkNormalButton
                     || null,
+                  sourceStateVersion:
+                    resolved.context?.sourceStateVersion
+                    ?? session.artistContext.sourceStateVersion
+                    ?? null,
                 };
               } else {
                 session.artistContext = {
@@ -1870,6 +1890,14 @@ export const sourceQueue = new SerialQueue(async job => {
             session.artistContext.recentTracks = cached.canonicalTracks;
             await syncArtistContext(session.artistContext);
           }
+        } else if (shouldUseIndividualBulk(requestedTracks)) {
+          const individual = await deliverBulkIndividuallyHq(session, requestedTracks, {
+            sourceTimeoutMs: 4200,
+            totalBudgetMs: 12_000,
+            label: 'recent individual',
+          });
+          sent = individual.sent;
+          missing = individual.missing;
         } else {
           const seed = session.artistSeed || session.options.find(x =>
             x.source === 'melobot' &&
@@ -1947,17 +1975,26 @@ export const sourceQueue = new SerialQueue(async job => {
             session.artistContext.recentTracks = delivered.canonicalTracks;
             await syncArtistContext(session.artistContext);
           }
+          if (delivered.missingTracks?.length) {
+            const individual = await finishMissingBulkIndividually(
+              session,
+              delivered.missingTracks,
+              'recent missing'
+            );
+            sent += individual.sent;
+            missing = individual.missing;
+          }
 
         }
       } catch (err) {
         console.warn('[native bulk recent failed]', err.message);
-        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        const fallback = await finishMissingBulkIndividually(
+          session,
+          requestedTracks,
+          'recent fallback'
+        );
         sent = fallback.sent;
         missing = fallback.missing;
-        if (fallback.canonicalTracks?.length) {
-          session.artistContext.recentTracks = fallback.canonicalTracks;
-          await syncArtistContext(session.artistContext);
-        }
         const fallbackMessage = bulkFallbackMessage('recent', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -1965,7 +2002,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0) {
         const notice = bulkFallbackMessage('recent', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2026,6 +2063,14 @@ export const sourceQueue = new SerialQueue(async job => {
             session.artistContext.tracks = cached.canonicalTracks;
             await syncArtistContext(session.artistContext);
           }
+        } else if (shouldUseIndividualBulk(requestedTracks)) {
+          const individual = await deliverBulkIndividuallyHq(session, requestedTracks, {
+            sourceTimeoutMs: 4200,
+            totalBudgetMs: 12_000,
+            label: 'top individual',
+          });
+          sent = individual.sent;
+          missing = individual.missing;
         } else {
           const seed = session.artistSeed || session.options.find(x =>
             x.source === 'melobot' &&
@@ -2096,18 +2141,26 @@ export const sourceQueue = new SerialQueue(async job => {
             session.artistContext.tracks = delivered.canonicalTracks;
             await syncArtistContext(session.artistContext);
           }
+          if (delivered.missingTracks?.length) {
+            const individual = await finishMissingBulkIndividually(
+              session,
+              delivered.missingTracks,
+              'top missing'
+            );
+            sent += individual.sent;
+            missing = individual.missing;
+          }
 
         }
       } catch (err) {
         console.warn('[native bulk top failed]', err.message);
-        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        const fallback = await finishMissingBulkIndividually(
+          session,
+          requestedTracks,
+          'top fallback'
+        );
         sent = fallback.sent;
         missing = fallback.missing;
-        if (fallback.canonicalTracks?.length) {
-          session.artistContext.topTracks = fallback.canonicalTracks;
-          session.artistContext.tracks = fallback.canonicalTracks;
-          await syncArtistContext(session.artistContext);
-        }
         const fallbackMessage = bulkFallbackMessage('top', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -2115,7 +2168,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0) {
         const notice = bulkFallbackMessage('top', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2155,6 +2208,14 @@ export const sourceQueue = new SerialQueue(async job => {
             );
             if (repairedOwner) session.currentAlbum.artist = repairedOwner;
           }
+        } else if (shouldUseIndividualBulk(requestedTracks)) {
+          const individual = await deliverBulkIndividuallyHq(session, requestedTracks, {
+            sourceTimeoutMs: 4200,
+            totalBudgetMs: 12_000,
+            label: 'album individual',
+          });
+          sent = individual.sent;
+          missing = individual.missing;
         } else {
           const artist = session.currentAlbum?.artist
             || session.artistContext?.artist
@@ -2269,25 +2330,26 @@ export const sourceQueue = new SerialQueue(async job => {
             );
             if (repairedOwner) session.currentAlbum.artist = repairedOwner;
           }
+          if (delivered.missingTracks?.length) {
+            const individual = await finishMissingBulkIndividually(
+              session,
+              delivered.missingTracks,
+              'album missing'
+            );
+            sent += individual.sent;
+            missing = individual.missing;
+          }
 
         }
       } catch (err) {
         console.warn('[native bulk album failed]', err.message);
-        const fallback = await deliverAvailableBulkCache(session, requestedTracks);
+        const fallback = await finishMissingBulkIndividually(
+          session,
+          requestedTracks,
+          'album fallback'
+        );
         sent = fallback.sent;
         missing = fallback.missing;
-        if (fallback.canonicalTracks?.length) {
-          session.currentAlbum.tracks = fallback.canonicalTracks;
-          const repairedOwner = await syncAlbumTracks(
-            session.currentAlbum?.artist
-              || session.artistContext?.artist
-              || session.albumOriginTrack?.artist
-              || session.currentTrack?.artist,
-            session.currentAlbum,
-            fallback.canonicalTracks
-          );
-          if (repairedOwner) session.currentAlbum.artist = repairedOwner;
-        }
         const fallbackMessage = bulkFallbackMessage('album', sent, missing);
         if (fallbackMessage) {
           await bot.sendMessage(session.chatId, fallbackMessage);
@@ -2295,7 +2357,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0 && sent > 0) {
+      if (!fallbackNotified && missing > 0) {
         const notice = bulkFallbackMessage('album', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
