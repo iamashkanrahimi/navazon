@@ -1,6 +1,7 @@
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { NewMessage, EditedMessage } from 'telegram/events/index.js';
+import telegramEvents from 'telegram/events/index.js';
+const { NewMessage, EditedMessage } = telegramEvents;
 import { config } from './config.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
