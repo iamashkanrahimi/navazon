@@ -1238,7 +1238,7 @@ async function openTrackMenuWithCandidate(
     }
     if (allowNonTrackSurface && direct.messages?.length) {
       console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
-      return { messages: direct.messages, candidate: requested, route: 'direct_non_track' };
+      return { messages: direct.messages, candidate: { ...requested, sourceStateVersion: direct.stateVersion }, route: 'direct_non_track' };
     }
     console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
   } else if (directText) {
@@ -1274,7 +1274,7 @@ async function openTrackMenuWithCandidate(
   });
   if (!hasTrackActionMenu(selected.messages)) {
     if (allowNonTrackSurface && selected.messages?.length) {
-      return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_non_track' };
+      return { messages: selected.messages, candidate: { ...liveCandidate, sourceStateVersion: selected.stateVersion }, route: 'resolved_non_track' };
     }
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
@@ -1282,7 +1282,7 @@ async function openTrackMenuWithCandidate(
     );
   }
   console.log(`[melobot.track_menu] route=resolved track=${JSON.stringify(trackLabel(liveCandidate))}`);
-  return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_search' };
+  return { messages: selected.messages, candidate: { ...liveCandidate, sourceStateVersion: selected.stateVersion }, route: 'resolved_search' };
 }
 
 async function openTrackMenu(client, candidate) {
