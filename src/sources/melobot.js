@@ -1535,10 +1535,12 @@ async function openTrackMenuWithCandidate(
       quietMs: 550,
       stopWhen: m =>
         hasTrackActionMenu([m])
-        || inspectSelectedCandidateSurface([m], requested).kind === 'album',
+        || inspectSelectedCandidateSurface([m], requested).kind === 'album'
+        || Boolean(exactNestedTrackButton([m], requested)),
       stopWhenBatch: messages =>
         hasTrackActionMenu(messages)
-        || inspectSelectedCandidateSurface(messages, requested).kind === 'album',
+        || inspectSelectedCandidateSurface(messages, requested).kind === 'album'
+        || Boolean(exactNestedTrackButton(messages, requested)),
       waitForTarget: true,
       reconcileOnTimeout: true,
     });
@@ -1604,10 +1606,12 @@ async function openTrackMenuWithCandidate(
     quietMs: 550,
     stopWhen: m =>
       hasTrackActionMenu([m])
-      || inspectSelectedCandidateSurface([m], liveCandidate).kind === 'album',
+      || inspectSelectedCandidateSurface([m], liveCandidate).kind === 'album'
+      || Boolean(exactNestedTrackButton([m], liveCandidate)),
     stopWhenBatch: messages =>
       hasTrackActionMenu(messages)
-      || inspectSelectedCandidateSurface(messages, liveCandidate).kind === 'album',
+      || inspectSelectedCandidateSurface(messages, liveCandidate).kind === 'album'
+      || Boolean(exactNestedTrackButton(messages, liveCandidate)),
     waitForTarget: true,
     reconcileOnTimeout: true,
   });
