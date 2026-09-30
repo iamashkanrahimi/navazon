@@ -42,3 +42,5 @@ jobs:
           name: spotify-artist-pilot-100-report
           path: archive-builder/out/spotify-artist-pilot
           retention-days: 30
+
+# pilot v2: direct embed track validation
