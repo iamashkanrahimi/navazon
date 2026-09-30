@@ -50,6 +50,7 @@ const {
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const {
   installTelegramInbox,
+  primeTelegramInboxBoundary,
   getTelegramInboxSequence,
   latestMessageId,
   collectNewMessages,
@@ -3578,4 +3579,176 @@ test('SerialQueue coalesces duplicate active and pending keys', async () => {
   }
 
   assert.deepEqual(order, ['first', 'other']);
+});
+
+
+test('MTProto reconciliation re-evaluates the target predicate after history recovery', async () => {
+  class ReconcileTargetClient {
+    constructor() {
+      this.handlers = [];
+      this.history = [];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() { return this.history; }
+  }
+
+  const client = new ReconcileTargetClient();
+  installTelegramInbox(client);
+  const original = {
+    id: 50,
+    senderId: 42n,
+    out: false,
+    message: 'old track menu',
+    replyMarkup: { rows: [{ buttons: [{ text: 'بیشتر...' }] }] },
+  };
+  client.handlers[0].handler({ message: original, chatId: 42n });
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  client.history = [{
+    ...original,
+    message: 'اینجا امکانات بیشتری میتونی انتخاب کنی',
+    replyMarkup: { rows: [{ buttons: [{ text: 'کاور' }] }] },
+  }];
+
+  const result = await collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 30,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    afterSequence,
+    stopWhen: message =>
+      (message?.replyMarkup?.rows || [])
+        .flatMap(row => row.buttons || [])
+        .some(button => button.text === 'کاور'),
+  });
+
+  assert.equal(result.hit?.replyMarkup?.rows?.[0]?.buttons?.[0]?.text, 'کاور');
+});
+
+test('MTProto startup boundary prevents pre-deploy history from becoming a new reply', async () => {
+  class PrimeClient {
+    constructor() {
+      this.handlers = [];
+      this.historyCalls = 0;
+      this.history = [{ id: 777, out: false, message: 'old reply' }];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() {
+      this.historyCalls += 1;
+      return this.history;
+    }
+  }
+
+  const client = new PrimeClient();
+  installTelegramInbox(client);
+  assert.equal(await latestMessageId(client, 'melobot'), 0);
+  assert.equal(await primeTelegramInboxBoundary(client, 'melobot'), 777);
+  assert.equal(await latestMessageId(client, 'melobot'), 777);
+  assert.equal(client.historyCalls, 1);
+});
+
+test('Track state graph restores Track menu from More after Cover before Lyrics', async () => {
+  const raw = '🎵 Artist, Real Song';
+  const hq = '📥 کیفیت عالی';
+  const more = 'بیشتر...';
+  const cover = 'کاور';
+  const back = '⬅️';
+  const lyrics = 'متن آهنگ';
+  const trackMenu = fakeBotMessage('track menu', [hq, '📥 کیفیت معمولی', lyrics, more]);
+  const moreMenu = fakeBotMessage('اینجا امکانات بیشتری میتونی انتخاب کنی', [
+    back,
+    cover,
+    'بقیه مشخصات',
+  ]);
+
+  const client = new FakeTelegramClient({
+    'Artist Real Song': [[fakeBotMessage('results', [raw])]],
+    [raw]: [[trackMenu]],
+    [hq]: [[{
+      message: '',
+      media: {
+        document: {
+          mimeType: 'audio/mpeg',
+          attributes: [{ className: 'DocumentAttributeAudio', title: 'Real Song', performer: 'Artist' }],
+        },
+      },
+    }]],
+    [more]: [[moreMenu]],
+    [cover]: [[{ message: '', media: { photo: { id: 1 } } }]],
+    [back]: [[trackMenu]],
+    [lyrics]: [[{ message: 'line one\nline two' }]],
+  });
+
+  const searched = await searchMeloBotTyped(client, 'Artist Real Song');
+  const candidate = searched.tracks[0];
+
+  await downloadMeloBotTrackQuality(
+    client,
+    candidate,
+    'hq',
+    { timeoutMs: 900, menuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  const covered = await getMeloBotCover(
+    client,
+    candidate,
+    { timeoutMs: 1200, menuTimeoutMs: 400, submenuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  assert.equal(covered.available, true);
+
+  const lyricResult = await getMeloBotLyrics(
+    client,
+    candidate,
+    { timeoutMs: 1200, menuTimeoutMs: 400, submenuTimeoutMs: 400, deliveryTimeoutMs: 400 }
+  );
+  assert.equal(lyricResult.available, true);
+  assert.match(lyricResult.text, /line one/);
+  assert.deepEqual(
+    client.sent,
+    ['Artist Real Song', raw, hq, more, cover, back, lyrics]
+  );
+});
+
+test('featured Track resolver searches the stable base title before the verbose feat credit', async () => {
+  const row = '🎵 Sajadii, Khoone (feat. Shervin Hajipour)';
+  const client = new FakeTelegramClient({
+    'Sajadii Khoone': [[fakeBotMessage('results', [row])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Sajadii',
+      title: 'Khoone (Ft Shervin Hajipour)',
+      rawText: '🎵 Sajadii, Khoone (Ft Shervin Hajipour)',
+      sourceStateVersion: 1,
+    },
+    { timeoutMs: 1000 }
+  );
+
+  assert.equal(resolved.artist, 'Sajadii');
+  assert.equal(resolved.title, 'Khoone (feat. Shervin Hajipour)');
+  assert.equal(client.sent[0], 'Sajadii Khoone');
+});
+
+test('single-token zero-coverage source suggestions are filtered instead of cached as results', () => {
+  const wrong = [
+    { artist: 'Unrelated Artist', title: 'Something Else' },
+    { artist: 'Another', title: 'Different Song' },
+  ];
+  assert.equal(shouldUseSearchRelevanceFallback('بشقاشی', 0, wrong[0]), true);
+  assert.deepEqual(keepFullCoverageTracksWhenAvailable('بشقاشی', wrong), []);
+
+  const matching = [
+    { artist: 'Farhad', title: 'Ayneha' },
+    { artist: 'Another', title: 'Farhad Remix' },
+  ];
+  assert.equal(keepFullCoverageTracksWhenAvailable('farhad', matching).length, 2);
 });
