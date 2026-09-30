@@ -14,23 +14,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Probe MusicBrainz Spotify relations
+      - name: Probe Wikidata Spotify IDs
         run: |
           python - <<'PY'
           import urllib.request,urllib.parse,json,time
           names=['Hamed Pahlan','Omid Ameri','Behzad Pax','Majid Akhshabi','Shayan Eshraghi']
-          ua='NavazonArchivePilot/0.1 (contact: iamashkanrahimi@gmail.com)'
+          ua='NavazonArchivePilot/0.1'
           def get(url):
             req=urllib.request.Request(url,headers={'User-Agent':ua,'Accept':'application/json'})
             with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
           for name in names:
-            q=urllib.parse.quote(f'artist:"{name}"')
-            data=get('https://musicbrainz.org/ws/2/artist/?query='+q+'&fmt=json&limit=5')
-            print('\nNAME',name,'found',len(data.get('artists',[])))
-            for a in data.get('artists',[])[:3]:
-              print(' cand',a.get('name'),a.get('id'),a.get('score'))
-              time.sleep(1.1)
-              d=get('https://musicbrainz.org/ws/2/artist/'+a['id']+'?inc=url-rels&fmt=json')
-              sp=[r.get('url',{}).get('resource') for r in d.get('relations',[]) if 'spotify.com/artist/' in (r.get('url',{}).get('resource') or '')]
-              print('  spotify',sp)
+            params=urllib.parse.urlencode({'action':'wbsearchentities','search':name,'language':'en','format':'json','limit':5})
+            data=get('https://www.wikidata.org/w/api.php?'+params)
+            print('\nNAME',name)
+            for item in data.get('search',[])[:5]:
+              qid=item['id']
+              ent=get('https://www.wikidata.org/wiki/Special:EntityData/'+qid+'.json')['entities'][qid]
+              vals=ent.get('claims',{}).get('P1902',[])
+              ids=[]
+              for c in vals:
+                try: ids.append(c['mainsnak']['datavalue']['value'])
+                except: pass
+              print(qid,item.get('label'),item.get('description'),'spotify',ids)
+              time.sleep(.15)
           PY
