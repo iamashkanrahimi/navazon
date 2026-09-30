@@ -3982,3 +3982,33 @@ test('single-token Persian artist search preserves strong Latin transliteration 
     []
   );
 });
+
+
+test('Artist navigation rejects a generic search-results surface after the Artist button', async () => {
+  const seedRaw = '🎵 Farhad, Ayneha';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    [seedRaw]: [[
+      fakeBotMessage('track menu', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])
+    ]],
+    [artistButton]: [[
+      fakeBotMessage(
+        'خب حالا یکی از این آهنگا یا خواننده ها رو انتخاب کن',
+        [
+          '🎵 Farhad, Ayneha',
+          '🎵 Farhad Ravanbakhsh, Ayeneh',
+          '🔍 نتیجه در لیست نیست (جستجوی عمیق) 🔍',
+        ]
+      )
+    ]],
+  });
+
+  await assert.rejects(
+    () => openMeloBotArtist(
+      client,
+      { ...parseTrackButton(seedRaw), source: 'melobot' },
+      { timeoutMs: 500 }
+    ),
+    err => err?.code === 'MELOBOT_ARTIST_PAGE_TIMEOUT'
+  );
+});
