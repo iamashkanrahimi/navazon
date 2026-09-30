@@ -3224,6 +3224,59 @@ test('MTProto inbox accepts edited menu events with an existing message id', asy
 });
 
 
+test('MTProto timeout reconciliation recovers a missed in-place keyboard edit', async () => {
+  class ReconcileClient {
+    constructor() {
+      this.handlers = [];
+      this.history = [];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() { return this.history; }
+  }
+
+  const client = new ReconcileClient();
+  installTelegramInbox(client);
+
+  const original = {
+    id: 10,
+    senderId: 42n,
+    out: false,
+    message: 'track menu',
+    replyMarkup: { rows: [{ buttons: [{ text: 'بیشتر...' }] }] },
+  };
+  // Seed the NewMessage inbox only. We intentionally do not emit the later
+  // edit, simulating a missed EditedMessage update.
+  client.handlers[0].handler({ message: original, chatId: 42n });
+
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  client.history = [{
+    ...original,
+    message: 'اینجا امکانات بیشتری میتونی انتخاب کنی',
+    replyMarkup: { rows: [{ buttons: [{ text: 'کاور' }] }] },
+  }];
+
+  const result = await collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 60,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    afterSequence,
+    stopWhen: message =>
+      (message?.replyMarkup?.rows || [])
+        .flatMap(row => row.buttons || [])
+        .some(button => button.text === 'کاور'),
+  });
+
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].id, 10);
+  assert.equal(result.messages[0].replyMarkup.rows[0].buttons[0].text, 'کاور');
+});
+
+
 test('search ranking penalizes an unrequested remix and requests relevance fallback', () => {
   const query = 'Xaniar Shabe Mahtab feat Ehaam';
   const tracks = [
