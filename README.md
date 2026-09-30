@@ -1,4 +1,4 @@
-# Navazon Cloud v1.6.2 — Source Adapter & Latency Repair
+# Navazon Cloud v1.6.3 — MeloBot State Machine Repair
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -291,3 +291,16 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Cross-artist album ownership is repaired when every canonical Track points to one different primary artist.
 - Background Artist-profile probes are bounded to 4.5 seconds and structural failures cool down earlier.
 - Source budgets no longer silently extend themselves after expiry.
+
+
+## MeloBot State Machine Repair v1.6.3
+
+- MeloBot reply-keyboard rows are treated as stateful controls. A stored Track row is clicked directly only when its source-state version still matches the live MeloBot surface.
+- Stale Track actions refresh the search surface, require a strict artist/title identity match, and never substitute the first unrelated result.
+- Artist navigation recognizes icon-labeled picker buttons such as `🗣 Ali Yasini` instead of requiring the Persian word `خواننده`.
+- MTProto inbox routing is based on the MeloBot chat id rather than sender id, so forwarded audio from another sender still reaches the waiting collector.
+- Both NewMessage and EditedMessage updates are collected; edited reply keyboards can now drive More/Cover/Lyrics and Artist state transitions.
+- Collectors carry an inbox event-sequence cursor so an edited existing message is accepted even when its Telegram message id predates the action.
+- Track menu, quality, cover and lyrics actions use a short settle delay between state transitions and log non-content media metadata for failed target deliveries.
+- The current source-state version is propagated after successful Track, quality, cover and lyrics actions to avoid unnecessary repeat searches.
+- All crawler tasks that touch MeloBot are held behind the long user-idle window, and background source probes use short budgets so cache warming cannot dominate foreground latency.
