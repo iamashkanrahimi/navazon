@@ -1526,20 +1526,18 @@ export async function getMeloBotLyrics(
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
-      await sleep(180);
-      await sleep(180);
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
-        quietMs: 900,
-      });
-      if (!more.messages?.length) {
-        throw meloError(
-          'MELOBOT_SUBMENU_TIMEOUT',
-          'MeloBot lyrics submenu returned no response.',
-          { capability: 'hasLyrics' }
-        );
-      }
-      lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        menuMessages,
+        {
+          timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
+          capability: 'hasLyrics',
+        }
+      );
+      lyricsButton = findButton(
+        moreMessages,
+        text => /متن\s*آهنگ/u.test(clean(text))
+      );
     }
   }
 
@@ -1655,11 +1653,14 @@ export async function getMeloBotTrackMetadata(
   if (!detailsButton) {
     const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 600,
-      });
-      surface = more.messages;
+      surface = await openMoreMenuFromSurface(
+        client,
+        trackMenu,
+        {
+          timeoutMs: remaining(),
+          capability: 'hasMetadata',
+        }
+      );
       detailsButton = findButton(
         surface,
         text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
@@ -1724,18 +1725,15 @@ export async function getMeloBotCover(
       console.log(
         `[melobot.cover] stage=more_found track=${JSON.stringify(trackLabel(liveCandidate))}`
       );
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
-        quietMs: 900,
-      });
-      if (!more.messages?.length) {
-        throw meloError(
-          'MELOBOT_SUBMENU_TIMEOUT',
-          'MeloBot cover submenu returned no response.',
-          { capability: 'hasCover' }
-        );
-      }
-      coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        trackMenu,
+        {
+          timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
+          capability: 'hasCover',
+        }
+      );
+      coverButton = findButton(moreMessages, text => /کاور/u.test(clean(text)));
     }
   }
 
@@ -1852,16 +1850,20 @@ export async function enrichMeloBotTrack(
 
   if (moreButton && !remaining.expired()) {
     try {
-      const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 550,
-      });
-      if (!more.messages?.length) {
+      const moreMessages = await openMoreMenuFromSurface(
+        client,
+        menuMessages,
+        {
+          timeoutMs: remaining(),
+          capability: 'track_enrich',
+        }
+      );
+      if (!moreMessages?.length) {
         result.errors.push('more: empty response');
       } else {
         secondaryMenuConfirmed = true;
-        extraMessages = more.messages;
-        const moreButtons = buttonsFromMessages(more.messages);
+        extraMessages = moreMessages;
+        const moreButtons = buttonsFromMessages(moreMessages);
         result.capabilities.hasCover ||= moreButtons.some(text => /کاور/u.test(clean(text)));
         result.capabilities.hasMetadata ||= moreButtons.some(text =>
           /بقیه\s*مشخصات|مشخصات/u.test(clean(text))
