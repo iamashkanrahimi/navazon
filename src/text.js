@@ -38,6 +38,17 @@ export function normalizeText(value = '') {
     .trim();
 }
 
+export function stableSourceTrackVariant(value = '') {
+  const cleaned = cleanText(value)
+    .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
+    .replace(
+      /\s+x\s+(?:<\s*)?[۰-۹٠-٩0-9]+(?:[.,][۰-۹٠-٩0-9]+)?\s*[kKmMgG]?(?:\s*[.…]+)?\s*$/u,
+      ''
+    )
+    .trim();
+  return normalizeText(cleaned);
+}
+
 export function hasCompositeArtistSeparators(value = '') {
   const artist = cleanText(value);
   if (!artist) return false;
