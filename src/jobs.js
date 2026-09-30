@@ -31,6 +31,7 @@ import {
 } from './sources/melobot.js';
 import { searchAhangify } from './sources/ahangify.js';
 import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
+import { renderArtistHomePage } from './artistProfile.js';
 import { executeDeepTask } from './deepCrawler.js';
 import {
   deepAlbumKey,
@@ -679,18 +680,17 @@ export async function tryOpenTrackArtistLocal(
   session.albumsEmptyConfirmed = false;
   session.busy = false;
 
-  await bot.editMessageText(
-    session.chatId,
+  await renderArtistHomePage(
+    bot,
+    sessionId,
+    session,
     messageId,
-    context.artist,
-    {
-      reply_markup: artistHomeKeyboard(
-        sessionId,
-        context,
-        session.isFollowing,
-        { backAction: 'trt' }
-      ),
-    }
+    artistHomeKeyboard(
+      sessionId,
+      context,
+      session.isFollowing,
+      { backAction: 'trt' }
+    )
   );
   console.log(
     `[fastpath.local] track_artist route=${route} total_ms=${Date.now() - startedAt}`
@@ -1416,18 +1416,17 @@ export const sourceQueue = new SerialQueue(async job => {
         session.albumsEmptyConfirmed = false;
         session.busy = false;
 
-        await bot.editMessageText(
-          session.chatId,
+        await renderArtistHomePage(
+          bot,
+          job.sessionId,
+          session,
           job.messageId,
-          session.artistContext.artist,
-          {
-            reply_markup: artistHomeKeyboard(
-              job.sessionId,
-              session.artistContext,
-              session.isFollowing,
-              { backAction: 'hfol' }
-            ),
-          }
+          artistHomeKeyboard(
+            job.sessionId,
+            session.artistContext,
+            session.isFollowing,
+            { backAction: 'hfol' }
+          )
         );
       } catch (err) {
         console.error('[home artist]', err.message);
@@ -1865,18 +1864,17 @@ export const sourceQueue = new SerialQueue(async job => {
         session.albums = null;
         session.albumsEmptyConfirmed = false;
         session.busy = false;
-        await bot.editMessageText(
-          session.chatId,
+        await renderArtistHomePage(
+          bot,
+          job.sessionId,
+          session,
           job.messageId,
-          session.artistContext.artist,
-          {
-            reply_markup: artistHomeKeyboard(
-              job.sessionId,
-              session.artistContext,
-              session.isFollowing,
-              { backAction: 'trt' }
-            ),
-          }
+          artistHomeKeyboard(
+            job.sessionId,
+            session.artistContext,
+            session.isFollowing,
+            { backAction: 'trt' }
+          )
         );
 
         console.log(
@@ -2651,18 +2649,17 @@ export const sourceQueue = new SerialQueue(async job => {
         session.albumsEmptyConfirmed = false;
         session.busy = false;
 
-        await bot.editMessageText(
-          session.chatId,
+        await renderArtistHomePage(
+          bot,
+          job.sessionId,
+          session,
           job.messageId,
-          session.artistContext.artist,
-          {
-            reply_markup: artistHomeKeyboard(
-              job.sessionId,
-              session.artistContext,
-              session.isFollowing,
-              { backAction: 'rs' }
-            ),
-          }
+          artistHomeKeyboard(
+            job.sessionId,
+            session.artistContext,
+            session.isFollowing,
+            { backAction: 'rs' }
+          )
         );
 
         console.log(
@@ -2738,9 +2735,18 @@ export const sourceQueue = new SerialQueue(async job => {
         session.isFollowing = await follows.isFollowing(session.userId,session.artistContext.artist);
         session.artistBack = 'rs';
         session.albums = null; session.albumsEmptyConfirmed = false; session.busy = false;
-        await bot.editMessageText(session.chatId,job.messageId,session.artistContext.artist,{
-          reply_markup: artistHomeKeyboard(job.sessionId,session.artistContext,session.isFollowing,{ backAction: session.artistBack || 'rs' }),
-        });
+        await renderArtistHomePage(
+          bot,
+          job.sessionId,
+          session,
+          job.messageId,
+          artistHomeKeyboard(
+            job.sessionId,
+            session.artistContext,
+            session.isFollowing,
+            { backAction: session.artistBack || 'rs' }
+          )
+        );
 
         console.log(
           `[perf.artist] artist=${JSON.stringify(session.artistContext.artist)} route=${artistRoute} `
