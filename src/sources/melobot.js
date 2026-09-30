@@ -1398,13 +1398,11 @@ function photoMessage(message) {
 }
 
 function isMoreMenuSurface(message = {}) {
-  const buttons = replyButtons(message);
-  if (buttons.some(text =>
+  // Do not stop on the explanatory text alone. MeloBot can send the text
+  // first and attach/edit the reply keyboard a moment later; the submenu is
+  // confirmed only after at least one actionable secondary control exists.
+  return replyButtons(message).some(text =>
     /کاور|بقیه\s*مشخصات|مشخصات|متن\s*آهنگ/u.test(clean(text))
-  )) return true;
-
-  return /اینجا\s+امکانات\s+بیشتری|امکانات\s+بیشتری/u.test(
-    messageText(message)
   );
 }
 
