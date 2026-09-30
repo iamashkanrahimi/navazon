@@ -1,6 +1,10 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
-import { cleanText, normalizeText } from './text.js';
+import {
+  artistCreditMatchesContext,
+  cleanText,
+  normalizeText,
+} from './text.js';
 
 function clean(value = '') {
   return cleanText(value);
@@ -365,7 +369,10 @@ export class DeepCatalog {
   async setArtistList(artist, listType, tracks = []) {
     const artistKey = deepNormalize(artist);
     if (!artistKey) return;
-    const durableTracks = (tracks || []).filter(track => !track?.artistInferred);
+    const durableTracks = (tracks || []).filter(track =>
+      !track?.artistInferred
+      && artistCreditMatchesContext(track?.artist || '', artist)
+    );
     if (!durableTracks.length) return;
 
     await db.query('DELETE FROM deep_artist_tracks WHERE artist_key = $1 AND list_type = $2', [artistKey, listType]);
@@ -756,7 +763,10 @@ export class DeepCatalog {
         artistInferred: Boolean(row.source_data?.artistInferred)
           || inferredArtistFromFeaturedTitle(row.artist, row.title),
       }))
-      .filter(track => !track.artistInferred);
+      .filter(track =>
+        !track.artistInferred
+        && artistCreditMatchesContext(track.artist || '', artist)
+      );
   }
 
   async deriveArtistList(artist, listType = 'top', limit = 10) {
