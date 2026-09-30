@@ -3144,3 +3144,22 @@ test('explicit Track resolver rejects unrelated search results', async () => {
     err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
   );
 });
+
+
+test('MTProto inbox routes forwarded media by chat id', async () => {
+  const client = new FakeEventTelegramClient();
+  installTelegramInbox(client);
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  const pending = collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 300, waitForTarget: true, afterSequence,
+    stopWhen: message => Boolean(message?.media?.document),
+  });
+  client.handlers[0]({ message: {
+    id: 99, senderId: 777n, out: false, message: '',
+    media: { document: { mimeType: 'audio/mpeg', attributes: [] } },
+  }, chatId: 42n });
+  const result = await pending;
+  assert.equal(result.messages.length, 1);
+  assert.ok(result.messages[0]?.media?.document);
+});
