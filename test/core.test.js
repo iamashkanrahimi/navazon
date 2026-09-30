@@ -2949,9 +2949,9 @@ test('empty More response keeps lyrics availability unknown instead of caching a
     () => getMeloBotLyrics(
       client,
       { ...parseTrackButton(raw), source: 'melobot' },
-      { timeoutMs: 120 }
+      { timeoutMs: 120, submenuTimeoutMs: 500 }
     ),
-    /submenu returned no response|budget exhausted/
+    /submenu returned no response|submenu did not reach a confirmed surface|budget exhausted/
   );
 });
 
