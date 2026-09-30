@@ -4184,3 +4184,69 @@ test('declared album listing can still be complete without pagination', () => {
   assert.equal(surface.albums.length, 1);
   assert.equal(surface.complete, true);
 });
+
+
+test('stale Artist seed recovers through one direct search row without repeating the Artist query', async () => {
+  const row = '🎵 Farhad, Ayneha';
+  const artistButton = '🎤 خواننده';
+  const client = new FakeTelegramClient({
+    Farhad: [[
+      fakeBotMessage(
+        'نتیجه جستجو',
+        [row, '🎵 Farhad Ravanbakhsh, Ayeneh', '🔍 نتیجه در لیست نیست (جستجوی عمیق) 🔍']
+      ),
+    ]],
+    [row]: [[fakeBotMessage('track menu', ['📥 کیفیت عالی', '📥 کیفیت معمولی', artistButton])]],
+    [artistButton]: [[
+      fakeBotMessage('Farhad', ['🎵 Farhad, Ayneha', '🎵 Farhad, Gole Yakh', '💿 آلبوم‌ها'])
+    ]],
+  });
+
+  const context = await openMeloBotArtistFastFresh(
+    client,
+    'Farhad',
+    {
+      ...parseTrackButton(row),
+      source: 'melobot',
+      sourceStateVersion: 1,
+    },
+    { timeoutMs: 1800 }
+  );
+
+  assert.equal(context.artist, 'Farhad');
+  assert.deepEqual(context.recentTracks.map(track => track.title), ['Ayneha', 'Gole Yakh']);
+  assert.deepEqual(client.sent, ['Farhad', row, artistButton]);
+});
+
+test('Track recovery follows one exact nested source row before declaring menu timeout', async () => {
+  const staleRow = '🎵 Farhad, Ayneha x 1M';
+  const freshRow = '🎵 Farhad, Ayneha x 1.1M';
+  const hq = '📥 کیفیت عالی';
+  const client = new FakeTelegramClient({
+    'Farhad Ayneha': [[fakeBotMessage('results', [freshRow])]],
+    [freshRow]: [[fakeBotMessage('track menu', [hq, '📥 کیفیت معمولی', 'بیشتر...'])]],
+    [hq]: [[{
+      message: '',
+      media: {
+        document: {
+          mimeType: 'audio/mpeg',
+          attributes: [{ className: 'DocumentAttributeAudio', title: 'Ayneha', performer: 'Farhad' }],
+        },
+      },
+    }]],
+  });
+
+  const result = await downloadMeloBotTrackQuality(
+    client,
+    {
+      ...parseTrackButton(staleRow),
+      source: 'melobot',
+      sourceStateVersion: 1,
+    },
+    'hq',
+    { timeoutMs: 1500, menuTimeoutMs: 500, deliveryTimeoutMs: 500 }
+  );
+
+  assert.ok(result.audioMessage);
+  assert.deepEqual(client.sent, ['Farhad Ayneha', freshRow, hq]);
+});
