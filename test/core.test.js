@@ -44,6 +44,7 @@ const {
   albumNavigationButton,
   describeMeloBotSurface,
   getMeloBotStateVersion,
+  findArtistButtonFor,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
 const {
