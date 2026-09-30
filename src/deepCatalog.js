@@ -745,7 +745,11 @@ export class DeepCatalog {
         AND at.list_version >= 1
       ORDER BY at.rank ASC NULLS LAST, at.observed_at DESC
       LIMIT $3
-    `, [artistKey, listType, Math.max(1, Number(limit || 10))]);
+    `, [
+      artistKey,
+      listType,
+      Math.min(60, Math.max(1, Number(limit || 10)) * 3),
+    ]);
 
     return result.rows
       .map(row => ({
@@ -766,7 +770,8 @@ export class DeepCatalog {
       .filter(track =>
         !track.artistInferred
         && artistCreditMatchesContext(track.artist || '', artist)
-      );
+      )
+      .slice(0, Math.max(1, Number(limit || 10)));
   }
 
   async deriveArtistList(artist, listType = 'top', limit = 10) {
