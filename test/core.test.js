@@ -3903,3 +3903,45 @@ test('Artist identity matching fails closed on ambiguous single-name and collabo
     '🗣 Ali Sorena & Bahram'
   );
 });
+
+
+test('MTProto reconciliation ignores an unchanged boundary surface after timeout', async () => {
+  class UnchangedBoundaryClient {
+    constructor() {
+      this.handlers = [];
+      this.history = [];
+    }
+    addEventHandler(handler, builder) {
+      this.handlers.push({ handler, builder });
+    }
+    async getInputEntity(peer) { return { peer }; }
+    async getPeerId(input) { return input.peer === 'melobot' ? '42' : '43'; }
+    async getMessages() { return this.history; }
+  }
+
+  const client = new UnchangedBoundaryClient();
+  installTelegramInbox(client);
+  const original = {
+    id: 60,
+    senderId: 42n,
+    out: false,
+    message: 'old search results',
+    replyMarkup: { rows: [{ buttons: [{ text: '🎵 Old Artist, Old Song' }] }] },
+  };
+  client.handlers[0].handler({ message: original, chatId: 42n });
+
+  const afterId = await latestMessageId(client, 'melobot');
+  const afterSequence = getTelegramInboxSequence(client);
+  client.history = [{ ...original }];
+
+  const result = await collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 30,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
+    afterSequence,
+    stopWhen: message => Boolean(message?.replyMarkup),
+  });
+
+  assert.equal(result.hit, null);
+  assert.equal(result.messages.length, 0);
+});
