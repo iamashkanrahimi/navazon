@@ -60,7 +60,6 @@ const {
   collectNewMessages,
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
-const { primarySearchQueries } = await import('../src/media.js');
 const { trackCacheKey } = await import('../src/cache.js');
 const {
   DeepCatalog,
@@ -96,6 +95,7 @@ const {
   shouldUseSearchRelevanceFallback,
   hasCompositeArtistSeparators,
   keepFullCoverageTracksWhenAvailable,
+  primarySearchQueries,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
