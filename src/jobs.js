@@ -117,11 +117,14 @@ function sourceJobPriority(job = {}) {
   return 100;
 }
 
-function hasPendingForegroundSourceWork() {
-  return sourceQueue.hasPending(item =>
-    !BACKGROUND_JOB_TYPES.has(item?.type)
-    && !BULK_JOB_TYPES.has(item?.type)
-  );
+function hasPendingForegroundSourceWork(userId = null) {
+  return sourceQueue.hasPending(item => {
+    if (BACKGROUND_JOB_TYPES.has(item?.type) || BULK_JOB_TYPES.has(item?.type)) {
+      return false;
+    }
+    if (userId === null || userId === undefined) return true;
+    return String(item?.userId || '') === String(userId);
+  });
 }
 
 function sourceJobKey(job = {}) {
@@ -969,6 +972,15 @@ export async function tryDeliverBulkFromCacheLocal(
 }
 
 function structuralNativeBulkFailure(err) {
+  if ([
+    'MELOBOT_TRACK_MENU_TIMEOUT',
+    'MELOBOT_TRACK_RESOLVE_FAILED',
+    'MELOBOT_ARTIST_PAGE_TIMEOUT',
+    'MELOBOT_ARTIST_RESOLVE_FAILED',
+    'MELOBOT_BULK_SURFACE_STALE',
+  ].includes(err?.code)) {
+    return true;
+  }
   return /bulk HQ button was not found|artist button not found|no usable .* tracks|navigation budget exhausted|did not deliver audio/i.test(
     err?.message || ''
   );
@@ -980,14 +992,52 @@ function shouldUseIndividualBulk(tracks = []) {
 }
 
 async function finishMissingBulkIndividually(session, missingTracks = [], label = 'bulk missing') {
-  if (!(missingTracks || []).length) {
+  const tracks = missingTracks || [];
+  if (!tracks.length) {
     return { sent: 0, missing: 0, quality: 'hq' };
   }
-  return deliverBulkIndividuallyHq(session, missingTracks, {
-    sourceTimeoutMs: 4200,
-    totalBudgetMs: 14_000,
+
+  // Individual recovery is excellent for a tiny remainder, but walking ten
+  // Track menus serially can monopolize the single MeloBot conversation for
+  // tens of seconds. Keep the fallback bounded; large failures return quickly
+  // and can be retried after the source surface is rebuilt.
+  if (tracks.length > 3) {
+    console.warn(`[${label}] skipped_individual count=${tracks.length}`);
+    return { sent: 0, missing: tracks.length, quality: 'hq' };
+  }
+
+  return deliverBulkIndividuallyHq(session, tracks, {
+    sourceTimeoutMs: 3600,
+    totalBudgetMs: 9_000,
     label,
   });
+}
+
+async function deliverFastBulkFallback(session, tracks = [], label = 'bulk fallback') {
+  const cached = await deliverAvailableBulkCache(session, tracks);
+  if (!cached.missing) {
+    return cached;
+  }
+
+  if ((cached.missingTracks || []).length <= 3 && !hasPendingForegroundSourceWork()) {
+    const individual = await finishMissingBulkIndividually(
+      session,
+      cached.missingTracks,
+      label
+    );
+    return {
+      ...cached,
+      sent: cached.sent + individual.sent,
+      missing: individual.missing,
+    };
+  }
+
+  if ((cached.missingTracks || []).length > 3) {
+    console.warn(
+      `[${label}] fast_exit missing=${cached.missingTracks.length}`
+    );
+  }
+  return cached;
 }
 
 async function deliverBulkIndividuallyHq(session, tracks, {
@@ -1081,6 +1131,7 @@ async function deliverAvailableBulkCache(session, tracks) {
   let sent = 0;
   let missing = 0;
   const canonicalTracks = [];
+  const missingTracks = [];
   for (const sourceTrack of sourceTracks) {
     const cachedHq = hqCache.get(deepTrackKey(sourceTrack));
     const canonical = cachedHq
@@ -1096,16 +1147,18 @@ async function deliverAvailableBulkCache(session, tracks) {
       assertDeliveryAllowed(track, session.userRegion || 'unknown');
       if (!cachedHq) {
         missing += 1;
+        missingTracks.push(track);
         continue;
       }
       await sendMedia(session.chatId, track, cachedHq, { cacheHit: true });
       sent += 1;
     } catch {
       missing += 1;
+      missingTracks.push(track);
     }
   }
 
-  return { sent, missing, quality: 'hq', canonicalTracks };
+  return { sent, missing, quality: 'hq', canonicalTracks, missingTracks };
 }
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
@@ -1927,7 +1980,9 @@ export const sourceQueue = new SerialQueue(async job => {
                 );
               }
               if (hasPendingForegroundSourceWork()) {
-                throw new Error('bulk deferred because foreground work is waiting');
+                const err = new Error('bulk deferred because foreground work is waiting');
+                err.code = 'BULK_DEFERRED_FOR_FOREGROUND';
+                throw err;
               }
               bulk = await downloadMeloBotRecentTracks(
                 tg,
@@ -1988,7 +2043,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       } catch (err) {
         console.warn('[native bulk recent failed]', err.message);
-        const fallback = await finishMissingBulkIndividually(
+        const fallback = await deliverFastBulkFallback(
           session,
           requestedTracks,
           'recent fallback'
@@ -2100,7 +2155,9 @@ export const sourceQueue = new SerialQueue(async job => {
                 );
               }
               if (hasPendingForegroundSourceWork()) {
-                throw new Error('bulk deferred because foreground work is waiting');
+                const err = new Error('bulk deferred because foreground work is waiting');
+                err.code = 'BULK_DEFERRED_FOR_FOREGROUND';
+                throw err;
               }
               bulk = await downloadMeloBotTopTracks(
                 tg,
@@ -2154,7 +2211,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       } catch (err) {
         console.warn('[native bulk top failed]', err.message);
-        const fallback = await finishMissingBulkIndividually(
+        const fallback = await deliverFastBulkFallback(
           session,
           requestedTracks,
           'top fallback'
@@ -2271,7 +2328,9 @@ export const sourceQueue = new SerialQueue(async job => {
               }
 
               if (hasPendingForegroundSourceWork()) {
-                throw new Error('bulk deferred because foreground work is waiting');
+                const err = new Error('bulk deferred because foreground work is waiting');
+                err.code = 'BULK_DEFERRED_FOR_FOREGROUND';
+                throw err;
               }
               bulk = await downloadMeloBotAlbumTracks(
                 tg,
@@ -2343,7 +2402,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       } catch (err) {
         console.warn('[native bulk album failed]', err.message);
-        const fallback = await finishMissingBulkIndividually(
+        const fallback = await deliverFastBulkFallback(
           session,
           requestedTracks,
           'album fallback'
