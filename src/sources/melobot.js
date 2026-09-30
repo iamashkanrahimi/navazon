@@ -1379,7 +1379,7 @@ export async function downloadMeloBotTrackQuality(
   return {
     source: 'melobot',
     quality,
-    candidate: liveCandidate,
+    candidate: { ...liveCandidate, sourceStateVersion: result.stateVersion },
     audioMessage: audio,
   };
 }
@@ -1540,7 +1540,7 @@ export async function getMeloBotLyrics(
     text,
     rawText: raw,
     checked: true,
-    candidate: liveCandidate,
+    candidate: { ...liveCandidate, sourceStateVersion: result.stateVersion },
   };
 }
 
