@@ -416,7 +416,7 @@ async function runTrackEnrich(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Track enrichment task has no live MeloBot track reference.');
 
-  const canonicalTrack = await canonicalTrackForPersistence(track, 4000);
+  const canonicalTrack = await canonicalTrackForPersistence(track, 2500);
   const bundle = await enrichMeloBotTrack(
     tg,
     canonicalTrack,
@@ -625,7 +625,7 @@ async function runArtistProfile(task) {
     tg,
     artist,
     seedTrack,
-    { timeoutMs: 4500 }
+    { timeoutMs: 3000 }
   );
   const recent = live.recentTracks || [];
   const top = live.topTracks || live.tracks || [];
@@ -696,7 +696,7 @@ async function runAlbumIndex(task) {
     tg,
     artist,
     seedTrack,
-    { allowEmpty: true }
+    { allowEmpty: true, timeoutMs: 3500 }
   );
   const albums = resolved.albums;
 
@@ -823,12 +823,16 @@ async function runTrackHq(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('HQ task has no live MeloBot track reference.');
 
-  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const liveTrack = await canonicalTrackForPersistence(track, 2500);
   const result = await downloadMeloBotTrackQuality(
     tg,
     liveTrack,
     'hq',
-    { timeoutMs: 12_000, menuTimeoutMs: 4000 }
+    {
+      timeoutMs: 4500,
+      menuTimeoutMs: 2500,
+      deliveryTimeoutMs: 3000,
+    }
   );
   const media = await captureForwardedMedia(result.audioMessage);
   await deepCatalog.setMedia(liveTrack, 'hq', media, { source: 'melobot' });
@@ -843,12 +847,16 @@ async function runTrackNormal(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Normal-quality task has no live MeloBot track reference.');
 
-  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const liveTrack = await canonicalTrackForPersistence(track, 2500);
   const result = await downloadMeloBotTrackQuality(
     tg,
     liveTrack,
     'normal',
-    { timeoutMs: 12_000, menuTimeoutMs: 4000 }
+    {
+      timeoutMs: 4500,
+      menuTimeoutMs: 2500,
+      deliveryTimeoutMs: 3000,
+    }
   );
   const media = await captureForwardedMedia(result.audioMessage);
   await deepCatalog.setMedia(liveTrack, 'normal', media, { source: 'melobot' });
@@ -860,11 +868,11 @@ async function runTrackMetadata(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Metadata task has no live MeloBot track reference.');
 
-  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const liveTrack = await canonicalTrackForPersistence(track, 2500);
   const metadata = await getMeloBotTrackMetadata(
     tg,
     liveTrack,
-    { timeoutMs: 7000 }
+    { timeoutMs: 4000 }
   );
   await deepCatalog.setMetadata(liveTrack, metadata);
   return {
@@ -878,11 +886,11 @@ async function runTrackCover(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Cover task has no live MeloBot track reference.');
 
-  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const liveTrack = await canonicalTrackForPersistence(track, 2500);
   const cover = await getMeloBotCover(
     tg,
     liveTrack,
-    { timeoutMs: 7000 }
+    { timeoutMs: 4000 }
   );
   if (!cover?.photoMessage) {
     return { track: `${liveTrack.artist} — ${liveTrack.title}`, cover: false };
@@ -898,11 +906,11 @@ async function runTrackLyrics(task) {
   const track = task.payload?.track;
   if (!track?.rawText) throw new Error('Lyrics task has no live MeloBot track reference.');
 
-  const liveTrack = await canonicalTrackForPersistence(track, 4000);
+  const liveTrack = await canonicalTrackForPersistence(track, 2500);
   const lyrics = await getMeloBotLyrics(
     tg,
     liveTrack,
-    { timeoutMs: 7000 }
+    { timeoutMs: 4000 }
   );
   if (lyrics.available && lyrics.text) {
     await deepCatalog.setLyrics(liveTrack, lyrics.text, 'melobot');
