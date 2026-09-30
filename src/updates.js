@@ -3,6 +3,7 @@ import { bot, bridge, follows, sessions } from './runtime.js';
 import {
   sourceQueue,
   showResults,
+  tryHandleCachedSearch,
   tryOpenTrackArtistLocal,
   tryOpenArtistListLocal,
   tryOpenAlbumsLocal,
@@ -612,5 +613,19 @@ export async function handleUpdate(update) {
     return;
   }
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
-  sourceQueue.push({ type: 'search', chatId, userId, query, statusMessageId: status.message_id });
+  const servedFromCache = await tryHandleCachedSearch(
+    chatId,
+    userId,
+    query,
+    status.message_id
+  ).catch(() => false);
+  if (!servedFromCache) {
+    sourceQueue.push({
+      type: 'search',
+      chatId,
+      userId,
+      query,
+      statusMessageId: status.message_id,
+    });
+  }
 }
