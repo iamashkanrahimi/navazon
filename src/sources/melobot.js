@@ -151,7 +151,7 @@ export function findArtistButtonFor(messages = [], artist = '') {
   );
   if (legacy) return legacy;
 
-  return pickers.length === 1 ? pickers[0].rawText : null;
+  return !target && pickers.length === 1 ? pickers[0].rawText : null;
 }
 
 function titleIdentity(value = '') {
@@ -2060,8 +2060,14 @@ async function openMeloBotArtistBase(
 
     const chosen = pickerButtons.find(item => normalize(item.name) === requested)
       || pickerButtons.find(item => requestedParts.includes(normalize(item.name)))
-      || pickerButtons.find(item => requested.includes(normalize(item.name)))
-      || pickerButtons[0];
+      || pickerButtons.find(item => requested.includes(normalize(item.name)));
+
+    if (!chosen) {
+      throw meloError(
+        'MELOBOT_ARTIST_RESOLVE_FAILED',
+        `MeloBot Artist picker did not contain the requested artist: ${effectiveSeed.artist}`
+      );
+    }
 
     selectedArtist = chosen.name;
 
@@ -2762,10 +2768,15 @@ function artistPickerItems(messages = []) {
 
 function chooseArtistPicker(items = [], requested = '') {
   const target = normalize(requested);
-  return items.find(item => normalize(item.name) === target)
-    || items.find(item => normalize(item.name).includes(target) || target.includes(normalize(item.name)))
-    || items[0]
-    || null;
+  const exact = items.find(item => normalize(item.name) === target);
+  if (exact) return exact;
+  if (target) {
+    return items.find(item => {
+      const name = normalize(item.name);
+      return name && (name.includes(target) || target.includes(name));
+    }) || null;
+  }
+  return items[0] || null;
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
