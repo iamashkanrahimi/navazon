@@ -3352,7 +3352,39 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
     directTimeoutMs = 6000,
   } = {}
 ) {
+  let primaryError = null;
   let directError = null;
+  const seedLooksTrusted = Boolean(
+    preferredSeed?.rawText
+    && preferredSeed?.artist
+    && !preferredSeed?.artistInferred
+    && normalize(preferredSeed.artist) === normalize(artist)
+  );
+
+  // A concrete source-backed Track is a safer way to establish Artist state
+  // than typing a bare Artist name into MeloBot's stateful reply-keyboard flow.
+  if (seedLooksTrusted) {
+    try {
+      const primary = await resolveMeloBotArtistAlbums(
+        client,
+        artist,
+        preferredSeed,
+        {
+          allowEmpty,
+          maxAlbums,
+          skipDirectFallback: true,
+          timeoutMs: Math.min(4500, Math.max(3000, Number(directTimeoutMs || 4500))),
+        }
+      );
+      return {
+        ...primary,
+        source: `seed_first:${primary.source || 'primary'}`,
+      };
+    } catch (err) {
+      primaryError = err;
+      console.warn('[melobot album seed-first]', artist, err.message);
+    }
+  }
 
   try {
     const direct = await openMeloBotAlbumListingDirect(
@@ -3388,26 +3420,30 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
     console.warn('[melobot album direct-first]', artist, err.message);
   }
 
-  try {
-    const primary = await resolveMeloBotArtistAlbums(
-      client,
-      artist,
-      preferredSeed,
-      {
-        allowEmpty,
-        maxAlbums,
-        skipDirectFallback: true,
-      }
-    );
-    return {
-      ...primary,
-      source: `primary_after_direct:${primary.source || 'unknown'}`,
-    };
-  } catch (primaryError) {
-    throw new Error(
-      `MeloBot direct-first album resolution failed. direct=${directError?.message || 'unknown'}; primary=${primaryError.message}`
-    );
+  if (!seedLooksTrusted) {
+    try {
+      const primary = await resolveMeloBotArtistAlbums(
+        client,
+        artist,
+        preferredSeed,
+        {
+          allowEmpty,
+          maxAlbums,
+          skipDirectFallback: true,
+        }
+      );
+      return {
+        ...primary,
+        source: `primary_after_direct:${primary.source || 'unknown'}`,
+      };
+    } catch (err) {
+      primaryError = err;
+    }
   }
+
+  throw new Error(
+    `MeloBot album resolution failed. seed=${primaryError?.message || 'not_used'}; direct=${directError?.message || 'unknown'}`
+  );
 }
 
 export async function resolveMeloBotArtistAlbums(
