@@ -18,6 +18,13 @@ import {
 // counter from wall-clock time so a process restart cannot accidentally reuse
 // an old token and treat a stale MeloBot reply-keyboard row as still clickable.
 let sourceStateVersion = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+
+// The MTProto account is a single stateful MeloBot conversation shared by all
+// Navazon users. Keep the currently-open Track menu only in process memory.
+// This is deliberately NOT persisted: reply-keyboard buttons/raw text are
+// ephemeral source state, while artist/title are durable catalog identity.
+let liveTrackSurface = null;
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const ALBUM_PRIMARY_CIRCUIT_MS = 10 * 60 * 1000;
@@ -116,6 +123,35 @@ function trackLabel(candidate = {}) {
     || 'unknown track';
 }
 
+function rememberLiveTrackSurface(candidate = {}, messages = [], version = sourceStateVersion) {
+  if (!candidate?.title || !hasTrackActionMenu(messages)) {
+    liveTrackSurface = null;
+    return null;
+  }
+  liveTrackSurface = {
+    candidate: { ...candidate },
+    messages: [...messages],
+    version: Number(version || sourceStateVersion),
+  };
+  return liveTrackSurface;
+}
+
+function currentLiveTrackSurface(candidate = {}) {
+  if (!liveTrackSurface) return null;
+  if (Number(liveTrackSurface.version) !== Number(sourceStateVersion)) return null;
+
+  const wantedTitle = titleIdentity(candidate?.title || '');
+  const liveTitle = titleIdentity(liveTrackSurface.candidate?.title || '');
+  if (!wantedTitle || wantedTitle !== liveTitle) return null;
+
+  const wantedArtist = candidate?.artist || '';
+  const liveArtist = liveTrackSurface.candidate?.artist || '';
+  if (wantedArtist && liveArtist && !artistIdentityCompatible(wantedArtist, liveArtist)) {
+    return null;
+  }
+  return liveTrackSurface;
+}
+
 function hasTrackActionMenu(messages = []) {
   return buttonsFromMessages(messages).some(text => {
     const value = clean(text);
@@ -165,16 +201,29 @@ function artistIdentityCompatible(requested = '', actual = '') {
   const a = normalize(requested);
   const b = normalize(actual);
   if (!a || !b) return false;
-  if (a === b || a.includes(b) || b.includes(a)) return true;
+  if (a === b) return true;
 
   const split = value => value
     .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
     .map(normalize)
     .filter(Boolean);
-  return split(a).some(left =>
-    split(b).some(right =>
-      left === right || left.includes(right) || right.includes(left)
-    )
+  const requestedParts = split(a);
+  const actualParts = split(b);
+  const partMatches = (left, right) =>
+    left === right || left.includes(right) || right.includes(left);
+
+  // A requested collaboration must not silently collapse to one of its
+  // artists. This was the source of false resolutions for tracks such as
+  // "Ali Sorena & Bahram". A single requested primary artist may still match
+  // a source credit that includes extra featured artists.
+  if (requestedParts.length > 1) {
+    return requestedParts.every(left =>
+      actualParts.some(right => partMatches(left, right))
+    );
+  }
+
+  return requestedParts.some(left =>
+    actualParts.some(right => partMatches(left, right))
   );
 }
 
@@ -735,6 +784,11 @@ async function sendAndCollect(client, text, {
   const peer = config.melobotUsername;
   const afterId = await latestMessageId(client, peer);
   const afterSequence = getTelegramInboxSequence(client);
+
+  // Any outbound command can move the shared MeloBot conversation away from a
+  // Track menu. Track-specific callers explicitly restore the snapshot after
+  // they verify the resulting surface.
+  liveTrackSurface = null;
   const stateVersion = ++sourceStateVersion;
   await client.sendMessage(peer, { message: text });
   const result = await collectNewMessages(client, peer, afterId, {
@@ -1047,6 +1101,14 @@ export async function probeMeloBotCandidateSurface(
   });
   const inspected = inspectSelectedCandidateSurface(selected.messages, candidate);
 
+  if (inspected.kind === 'track') {
+    rememberLiveTrackSurface(
+      { ...candidate, sourceStateVersion: selected.stateVersion },
+      selected.messages,
+      selected.stateVersion
+    );
+  }
+
   if (inspected.kind === 'album') {
     return {
       ...inspected,
@@ -1162,16 +1224,28 @@ export async function resolveMeloBotTrackCandidate(
 
   const title = normalize(candidate?.title || '');
   const artist = normalize(candidate?.artist || '');
-  const queries = candidate?.artistInferred && candidate?.title
-    ? [candidate.title, primaryQuery]
-    : [primaryQuery, candidate?.title].filter(Boolean);
+
+  // Title-first resolution is both safer and faster for collaboration credits:
+  // the source may reorder "A & B" as "B & A", while we still verify artist
+  // compatibility before accepting the exact title.
+  const queries = [
+    candidate?.title,
+    primaryQuery,
+  ].filter(Boolean);
+  const uniqueQueries = [...new Set(queries.map(clean).filter(Boolean))];
 
   let lastError = null;
-  for (const query of [...new Set(queries.map(clean).filter(Boolean))]) {
+  for (let index = 0; index < uniqueQueries.length; index += 1) {
     if (remaining.expired()) break;
+    const query = uniqueQueries[index];
+    const attemptsLeft = uniqueQueries.length - index;
+    const left = remaining();
+    const queryBudget = attemptsLeft > 1
+      ? Math.max(450, Math.min(2400, left - 800))
+      : left;
     try {
       const results = await searchMeloBot(client, query, {
-        timeoutMs: remaining(),
+        timeoutMs: queryBudget,
         maxRefinements: 2,
       });
 
@@ -1229,6 +1303,22 @@ async function openTrackMenuWithCandidate(
   const requested = candidate || {};
   const directText = clean(requested.rawText || '');
   const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
+
+  const liveSurface = currentLiveTrackSurface(requested);
+  if (liveSurface) {
+    console.log(
+      `[melobot.track_menu] route=live_surface track=${JSON.stringify(trackLabel(requested))}`
+    );
+    return {
+      messages: liveSurface.messages,
+      candidate: {
+        ...requested,
+        sourceStateVersion: liveSurface.version,
+      },
+      route: 'live_track_surface',
+    };
+  }
+
   const canClickCurrentSurface = Boolean(
     directText
     && Number(requested.sourceStateVersion || -1) === Number(sourceStateVersion)
@@ -1249,8 +1339,13 @@ async function openTrackMenuWithCandidate(
       reconcileOnTimeout: true,
     });
     if (hasTrackActionMenu(direct.messages)) {
+      const liveCandidate = {
+        ...requested,
+        sourceStateVersion: direct.stateVersion,
+      };
+      rememberLiveTrackSurface(liveCandidate, direct.messages, direct.stateVersion);
       console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
-      return { messages: direct.messages, candidate: requested, route: 'direct_raw_text' };
+      return { messages: direct.messages, candidate: liveCandidate, route: 'direct_raw_text' };
     }
     if (allowNonTrackSurface && direct.messages?.length) {
       console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
@@ -1297,8 +1392,13 @@ async function openTrackMenuWithCandidate(
       `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)}`
     );
   }
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: selected.stateVersion,
+  };
+  rememberLiveTrackSurface(refreshedCandidate, selected.messages, selected.stateVersion);
   console.log(`[melobot.track_menu] route=resolved track=${JSON.stringify(trackLabel(liveCandidate))}`);
-  return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_search' };
+  return { messages: selected.messages, candidate: refreshedCandidate, route: 'resolved_search' };
 }
 
 async function openTrackMenu(client, candidate) {
@@ -1389,13 +1489,24 @@ export async function downloadMeloBotTrackQuality(
     );
   }
 
+  const refreshedCandidate = {
+    ...liveCandidate,
+    sourceStateVersion: result.stateVersion,
+  };
+
+  // MeloBot keeps the selected Track context after sending an audio file. Keep
+  // the verified Track-menu snapshot hot so an immediate Normal/HQ follow-up
+  // does not perform another search. Any unrelated source command invalidates
+  // this snapshot in sendAndCollect().
+  rememberLiveTrackSurface(refreshedCandidate, menuMessages, result.stateVersion);
+
   console.log(
     `[melobot.quality] stage=audio_received quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
   );
   return {
     source: 'melobot',
     quality,
-    candidate: liveCandidate,
+    candidate: refreshedCandidate,
     audioMessage: audio,
   };
 }
@@ -2711,13 +2822,18 @@ export async function downloadMeloBotBulkTracks(client, {
 } = {}) {
   if (!button) throw new Error(`MeloBot ${label} bulk button not found.`);
 
-  const download = await sendAndCollect(client, button, {
-    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0
-      ? timeoutMs
-      : Math.min(
-          Math.max(Number(config.downloadTimeoutMs || 30000), 1000),
-          30000
+  const adaptiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : Math.min(
+        Math.max(
+          Number(config.downloadTimeoutMs || 30000),
+          expectedCount > 0 ? 2200 + expectedCount * 550 : 5000
         ),
+        30000
+      );
+
+  const download = await sendAndCollect(client, button, {
+    timeoutMs: adaptiveTimeoutMs,
     quietMs: expectedCount > 0 ? 650 : 900,
     stopWhenBatch: expectedCount > 0
       ? messages => messages.filter(isAudioMessage).length >= expectedCount
