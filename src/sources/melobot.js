@@ -130,6 +130,78 @@ function normalize(value = '') {
   return normalizeText(value);
 }
 
+function artistPickerItems(messages = []) {
+  return buttonsFromMessages(messages)
+    .filter(text => /^[🗣🎤🎙]/u.test(clean(text)))
+    .map(rawText => ({
+      rawText,
+      name: clean(rawText).replace(/^[🗣🎤🎙]+\s*/u, '').trim(),
+    }))
+    .filter(item => item.name && !/خواننده|پیشنهاد/u.test(item.name));
+}
+
+function findArtistButtonFor(messages = [], artist = '') {
+  const target = normalize(artist);
+  const pickers = artistPickerItems(messages);
+  const exact = pickers.find(item => normalize(item.name) === target);
+  if (exact) return exact.rawText;
+
+  const parts = target
+    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
+    .map(normalize)
+    .filter(Boolean);
+  const compatible = pickers.find(item => {
+    const name = normalize(item.name);
+    return name && parts.some(part => part === name || part.includes(name) || name.includes(part));
+  });
+  if (compatible) return compatible.rawText;
+
+  const legacy = findButton(messages, text =>
+    /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+  );
+  if (legacy) return legacy;
+
+  return pickers.length === 1 ? pickers[0].rawText : null;
+}
+
+function titleIdentity(value = '') {
+  return normalize(value)
+    .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
+}
+
+function artistIdentityCompatible(requested = '', actual = '') {
+  const a = normalize(requested);
+  const b = normalize(actual);
+  if (!a || !b) return false;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+
+  const split = value => value
+    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?)\s*/iu)
+    .map(normalize)
+    .filter(Boolean);
+  return split(a).some(left =>
+    split(b).some(right =>
+      left === right || left.includes(right) || right.includes(left)
+    )
+  );
+}
+
+function describeTargetMessage(message = {}) {
+  const doc = message?.media?.document;
+  const photo = message?.media?.photo;
+  return {
+    id: Number(message?.id || 0),
+    chatId: String(message?.__navazonChatId || ''),
+    senderId: String(message?.senderId || ''),
+    edited: Boolean(message?.__navazonEdited),
+    media: doc ? 'document' : photo ? 'photo' : message?.media ? 'other' : 'none',
+    mime: doc?.mimeType || '',
+    audioAttr: Boolean((doc?.attributes || []).some(a => a?.className === 'DocumentAttributeAudio')),
+  };
+}
+
 function toAsciiDigits(value = '') {
   const fa = '۰۱۲۳۴۵۶۷۸۹';
   const ar = '٠١٢٣٤٥٦٧٨٩';
