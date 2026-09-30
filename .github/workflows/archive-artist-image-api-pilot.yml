@@ -1,0 +1,41 @@
+name: Radio Javan Artist Image API Pilot
+
+on:
+  push:
+    branches:
+      - archive-builder-cloud
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  pilot:
+    if: contains(github.event.head_commit.message, '[artist-image-api-pilot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: archive-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download current complete Phase 2 dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: rj-phase2-complete
+          path: archive-builder/runtime/complete
+          run-id: 36709399015
+          github-token: ${{ github.token }}
+      - name: Check pilot
+        run: node --check src/artist-image-api-pilot.js
+      - name: Run direct Artist API image pilot
+        run: node src/artist-image-api-pilot.js ./runtime/complete/artists/rj-artists.jsonl.gz ./out/image-api-pilot
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rj-artist-image-api-pilot
+          path: archive-builder/out/image-api-pilot
+          retention-days: 30
