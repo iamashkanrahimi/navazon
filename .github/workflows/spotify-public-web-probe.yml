@@ -14,18 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Probe search engine discovery
+      - name: Probe public Spotify artist page
         run: |
           set -euo pipefail
           python - <<'PY'
-          import urllib.parse, urllib.request, re, html
-          q='site:open.spotify.com/artist "Ali Yasini"'
-          url='https://html.duckduckgo.com/html/?q='+urllib.parse.quote(q)
-          req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+          import urllib.request,re,html
+          url='https://open.spotify.com/artist/4WPjbuFjnb2CaknMPZgr1Y'
+          req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/153 Safari/537.36','Accept-Language':'en-US,en;q=0.9'})
           with urllib.request.urlopen(req,timeout=30) as r:
             data=r.read().decode('utf-8','replace')
             print('status',r.status,'bytes',len(data))
-            print(data[:3000])
-            links=re.findall(r'class="result__a"[^>]+href="([^"]+)"',data)
-            print('links',links[:10])
+            for pat in [r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"',r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"']:
+              m=re.search(pat,data,re.I)
+              print('meta',html.unescape(m.group(1)) if m else None)
+            for needle in ['Hamed Pahlan','Dokhtare Mashreghi','Leyla','Dynamite','Aroosi','Amene','spotify:track']:
+              print(needle, data.find(needle), data.count(needle))
           PY
