@@ -218,11 +218,23 @@ export function findArtistButtonFor(messages = [], artist = '') {
   if (exact) return exact.rawText;
 
   const parts = artistIdentityParts(artist);
-  const compatible = pickers.find(item => {
-    const name = normalize(item.name);
-    return name && parts.some(part => part === name || part.includes(name) || name.includes(part));
-  });
-  if (compatible) return compatible.rawText;
+  // A collaboration page must never silently choose one member just because
+  // the source exposed individual artist buttons. Exact composite credits or
+  // the generic legacy "خواننده" transition are safe; otherwise fail closed
+  // and let the caller surface an explicit choice later.
+  if (parts.length <= 1) {
+    const compatible = pickers.find(item => {
+      const name = normalize(item.name);
+      if (!name) return false;
+      const part = parts[0] || '';
+      if (part === name) return true;
+      const partTokens = part.split(' ').filter(Boolean);
+      const nameTokens = name.split(' ').filter(Boolean);
+      if (partTokens.length <= 1 || nameTokens.length <= 1) return false;
+      return part.includes(name) || name.includes(part);
+    });
+    if (compatible) return compatible.rawText;
+  }
 
   const legacy = findButton(messages, text =>
     /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
@@ -250,8 +262,15 @@ function artistIdentityCompatible(requested = '', actual = '') {
   // collaboration boundaries and makes reordered credits impossible to match.
   const requestedParts = artistIdentityParts(requested);
   const actualParts = artistIdentityParts(actual);
-  const partMatches = (left, right) =>
-    left === right || left.includes(right) || right.includes(left);
+  const partMatches = (left, right) => {
+    if (left === right) return true;
+    const leftTokens = left.split(' ').filter(Boolean);
+    const rightTokens = right.split(' ').filter(Boolean);
+    // Do not conflate short stage names/surnames with longer unrelated
+    // identities (Farhad vs Farhad Ravanbakhsh, Bahram vs Reza Bahram).
+    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
+    return left.includes(right) || right.includes(left);
+  };
 
   // A requested collaboration must not silently collapse to one of its
   // artists. This was the source of false resolutions for tracks such as
