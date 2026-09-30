@@ -14,13 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check Spotify credentials availability
-        env:
-          CID: ${{ secrets.SPOTIFY_CLIENT_ID }}
-          CSEC: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+      - name: Probe Spotify oEmbed
         run: |
           python - <<'PY'
-          import os
-          print("client_id_configured", bool(os.getenv("CID")))
-          print("client_secret_configured", bool(os.getenv("CSEC")))
+          import urllib.request,urllib.parse,json
+          artist='https://open.spotify.com/artist/4WPjbuFjnb2CaknMPZgr1Y'
+          url='https://open.spotify.com/oembed?url='+urllib.parse.quote(artist,safe='')
+          req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+          with urllib.request.urlopen(req,timeout=30) as r:
+            data=json.load(r)
+            print(json.dumps(data,ensure_ascii=False,indent=2))
           PY
