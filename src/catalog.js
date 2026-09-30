@@ -1,6 +1,11 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
-import { cleanText, normalizeText, stableSourceTrackVariant } from './text.js';
+import {
+  artistCreditMatchesContext,
+  cleanText,
+  normalizeText,
+  stableSourceTrackVariant,
+} from './text.js';
 
 function clean(value = '') {
   return cleanText(value);
@@ -215,13 +220,23 @@ export class CatalogStore {
       Number(node.topTracksVersion || 0) >= 1
       && Array.isArray(node.topTracks)
     )
-      ? node.topTracks.map(markLegacyInferredArtist).filter(track => !track.artistInferred)
+      ? node.topTracks
+          .map(markLegacyInferredArtist)
+          .filter(track =>
+            !track.artistInferred
+            && artistCreditMatchesContext(track.artist || '', node.name || name)
+          )
       : [];
     const recentTracks = (
       Number(node.recentTracksVersion || 0) >= 1
       && Array.isArray(node.recentTracks)
     )
-      ? node.recentTracks.map(markLegacyInferredArtist).filter(track => !track.artistInferred)
+      ? node.recentTracks
+          .map(markLegacyInferredArtist)
+          .filter(track =>
+            !track.artistInferred
+            && artistCreditMatchesContext(track.artist || '', node.name || name)
+          )
       : [];
 
     if (!topTracks.length && !recentTracks.length) return null;
@@ -360,8 +375,14 @@ export class CatalogStore {
     const { key, node } = await this.readArtist(name);
     if (!node) return false;
 
-    topTracks = (topTracks || []).filter(track => !track?.artistInferred);
-    recentTracks = (recentTracks || []).filter(track => !track?.artistInferred);
+    topTracks = (topTracks || []).filter(track =>
+      !track?.artistInferred
+      && artistCreditMatchesContext(track?.artist || '', name)
+    );
+    recentTracks = (recentTracks || []).filter(track =>
+      !track?.artistInferred
+      && artistCreditMatchesContext(track?.artist || '', name)
+    );
 
     const hasTop = Array.isArray(topTracks) && topTracks.length > 0;
     const hasRecent = Array.isArray(recentTracks) && recentTracks.length > 0;
