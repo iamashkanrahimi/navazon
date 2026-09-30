@@ -287,7 +287,9 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
     || (isMeloBot && capabilities.hasHq !== false)
   ) {
     qualityRow.push({
-      text: track?.source === 'ahangify' ? '📥 بهترین کیفیت موجود' : '📥 کیفیت عالی',
+      // Keep quality selection out of the product UI. Navazon serves the best
+      // available primary download path behind one clear action.
+      text: '📥 دانلود آهنگ',
       callback_data: `tqh:${sessionId}`,
     });
   }
