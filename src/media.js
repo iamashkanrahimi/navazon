@@ -9,6 +9,7 @@ import {
   meaningfulSearchTokens,
   shouldUseSearchRelevanceFallback,
   primarySearchQueries,
+  acceptsShortenedPrimarySearch,
 } from './text.js';
 import {
   searchMeloBot,
@@ -330,7 +331,7 @@ export async function searchPrimaryTyped(
             remaining()
           ),
         });
-        typed = await classifyMeloBotTypedSearchExact(
+        const candidateTyped = await classifyMeloBotTypedSearchExact(
           tg,
           sourceQuery,
           raw,
@@ -338,6 +339,23 @@ export async function searchPrimaryTyped(
             probeTimeoutMs: Math.min(2200, remaining()),
           }
         );
+
+        // Keep a shortened feat query only when its Track rows still cover the
+        // user's full intent. Otherwise try the original wording before
+        // settling for the shorter fallback.
+        if (
+          sourceQuery !== query
+          && !acceptsShortenedPrimarySearch(
+            query,
+            sourceQuery,
+            candidateTyped.tracks || []
+          )
+        ) {
+          typed ||= candidateTyped;
+          continue;
+        }
+
+        typed = candidateTyped;
         if (typed.tracks?.length || typed.albums?.length) break;
       } catch (err) {
         lastMeloError = err;
