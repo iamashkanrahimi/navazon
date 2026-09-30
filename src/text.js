@@ -202,6 +202,25 @@ export function scoreTrackQueryMatch(query = '', track = {}) {
   };
 }
 
+export function acceptsShortenedPrimarySearch(
+  originalQuery = '',
+  sourceQuery = '',
+  tracks = []
+) {
+  if (normalizeText(originalQuery) === normalizeText(sourceQuery)) return true;
+
+  const meaningful = meaningfulSearchTokens(originalQuery);
+  if (!meaningful.length) return true;
+
+  const bestCoverage = (tracks || []).reduce(
+    (best, track) =>
+      Math.max(best, scoreTrackQueryMatch(originalQuery, track).coverage),
+    0
+  );
+  return bestCoverage >= meaningful.length;
+}
+
+
 
 function scriptFamily(value = '') {
   const text = cleanText(value);
