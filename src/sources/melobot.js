@@ -1836,8 +1836,8 @@ export async function enrichMeloBotTrack(
       hasLyrics: menuButtons.some(text => /متن\s*آهنگ/u.test(clean(text))),
       hasCover: menuButtons.some(text => /کاور/u.test(clean(text))),
       hasMetadata: menuButtons.some(text => /بقیه\s*مشخصات|مشخصات/u.test(clean(text))),
-      hasArtistPage: menuButtons.some(text =>
-        /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
+      hasArtistPage: Boolean(
+        findArtistButtonFor(menuMessages, liveCandidate.artist || candidate?.artist || '')
       ),
     },
     errors: [],
