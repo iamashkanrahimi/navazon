@@ -1,4 +1,4 @@
-# Navazon Cloud v1.6.1 — Catalog & Cache Repair
+# Navazon Cloud v1.6.2 — Source Adapter & Latency Repair
 
 Cloud-ready Navazon Telegram music bot.
 
@@ -275,3 +275,19 @@ The playlist menu is intentionally curated instead of mirroring every MeloBot pl
 - Track info is local-first and instant; missing metadata is left to background enrichment.
 - Artist loading copy now says `در حال باز کردن صفحه‌ی خواننده…`.
 - Production repair migrates polluted media/cache rows to clean identities and clears stale polluted metadata/tasks without discarding Telegram file IDs.
+
+
+## Source Adapter & Latency Repair v1.6.2
+
+- Reusable MeloBot track rows are sent directly before any fresh search, so stale source-state tokens no longer force unnecessary re-resolution.
+- Track menu acquisition and final media delivery use independent time budgets.
+- Target-aware MTProto collectors no longer finish after a 650ms quiet gap while waiting for audio/photo.
+- A final source-history reconciliation runs at target timeout to recover replies missed by the event inbox.
+- Quality, cover and lyrics failures now distinguish confirmed missing controls from transient delivery failures.
+- Transient source failures no longer hide Track-page actions or claim the content is unavailable.
+- Cover and lyrics flows have stage telemetry for menu/button/target delivery.
+- Cache-only bulk delivery canonicalizes inferred Album tracks from verified Telegram audio metadata before deciding to touch MeloBot.
+- Cache-only/fallback bulk delivery repairs Artist and Album relations immediately.
+- Cross-artist album ownership is repaired when every canonical Track points to one different primary artist.
+- Background Artist-profile probes are bounded to 4.5 seconds and structural failures cool down earlier.
+- Source budgets no longer silently extend themselves after expiry.

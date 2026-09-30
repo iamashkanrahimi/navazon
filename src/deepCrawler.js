@@ -621,7 +621,12 @@ async function runArtistProfile(task) {
     return { artist, skipped: 'composite_artist_credit' };
   }
 
-  const live = await openMeloBotArtistFresh(tg, artist, seedTrack);
+  const live = await openMeloBotArtistFresh(
+    tg,
+    artist,
+    seedTrack,
+    { timeoutMs: 4500 }
+  );
   const recent = live.recentTracks || [];
   const top = live.topTracks || live.tracks || [];
 
@@ -943,7 +948,7 @@ export async function executeDeepTask(task) {
     console.log(`[deep crawler] done ${task.kind}`, summary);
     return summary;
   } catch (err) {
-    const noPointRetrying = /button not found|no live MeloBot track reference|Expected photo cover/i.test(err.message || '');
+    const noPointRetrying = /button not found|no live MeloBot track reference|Expected photo cover|artist page returned no usable tracks/i.test(err.message || '');
     await deepCatalog.failTask(task.id, err.message, {
       retryDelayMs: noPointRetrying ? 24 * 60 * 60 * 1000 : config.discoveryRetryDelayMs,
       maxAttempts: noPointRetrying ? 2 : 4,

@@ -21,7 +21,6 @@ function hasCanonicalTrackIdentity(track = {}) {
 }
 
 const CAPABILITY_TTL_MS = 60 * 60 * 1000;
-const CAPABILITY_FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
 
 function freshCapabilitySnapshot(details = {}) {
   const checkedAt = Date.parse(details?.metadata?.capabilitiesCheckedAt || '');
@@ -94,20 +93,11 @@ export async function prepareTrackPage(track) {
     ? { media: {}, metadata: {} }
     : await deepCatalog.getTrackDetails(track);
   const snapshot = freshCapabilitySnapshot(details);
-  const recentFailures = track?.artistInferred
-    ? {}
-    : await deepCatalog.getRecentCapabilityFailures(
-        track,
-        CAPABILITY_FAILURE_COOLDOWN_MS
-      );
 
-  // Cached media/content is authoritative. Source capability snapshots are
-  // trusted for only one hour; recent transient failures suppress the matching
-  // button for 15 minutes without turning that failure into durable absence.
-  const unavailable = {
-    ...(track?.capabilityUnavailable || {}),
-    ...Object.fromEntries(Object.keys(recentFailures).map(key => [key, true])),
-  };
+  // Transient delivery failures are diagnostic only and never hide an action.
+  // Only a capability absence confirmed on the current live source surface may
+  // suppress its button for this session.
+  const unavailable = track?.capabilityUnavailable || {};
   const hasStoredInfo = Boolean(
     details?.release_date || details?.release_date_raw || details?.duration_seconds ||
     details?.popularity_count || details?.popularity_text || details?.albumInfo
@@ -209,6 +199,32 @@ async function sendAudioMedia(chatId, track, media) {
   });
 }
 
+export async function trySendCachedTrackQuality(
+  chatId,
+  track,
+  quality,
+  userRegion = 'unknown'
+) {
+  assertDeliveryAllowed(track, userRegion);
+  const details = await safeTrackDetails(track);
+  const media = details?.media?.[quality] || null;
+  if (!media) return false;
+
+  await sendAudioMedia(chatId, track, media);
+  if (hasCanonicalTrackIdentity(track)) {
+    try {
+      await Promise.all([
+        cache.recordServe(track, { cacheHit: true }),
+        deepCatalog.clearCapabilityFailure(
+          track,
+          quality === 'hq' ? 'hasHq' : 'hasNormal'
+        ),
+      ]);
+    } catch {}
+  }
+  return true;
+}
+
 export async function sendTrackQuality(
   chatId,
   track,
@@ -232,7 +248,11 @@ export async function sendTrackQuality(
           tg,
           track,
           quality,
-          { timeoutMs: sourceTimeoutMs }
+          {
+            timeoutMs: Math.max(4000, Number(sourceTimeoutMs || 0)),
+            menuTimeoutMs: 4000,
+            deliveryTimeoutMs: 7000,
+          }
         );
         track = adoptCanonicalCandidate(track, result.candidate);
         media = await captureForwardedMedia(result.audioMessage);
@@ -244,16 +264,26 @@ export async function sendTrackQuality(
         }
       } catch (err) {
         const capability = quality === 'hq' ? 'hasHq' : 'hasNormal';
-        track.capabilityUnavailable = {
-          ...(track.capabilityUnavailable || {}),
-          [capability]: true,
-        };
+        const confirmedAbsent = err?.code === 'MELOBOT_CAPABILITY_ABSENT';
+        if (confirmedAbsent) {
+          track.capabilityUnavailable = {
+            ...(track.capabilityUnavailable || {}),
+            [capability]: true,
+          };
+        }
         if (hasCanonicalTrackIdentity(track)) {
           try {
-            await Promise.all([
-              deepCatalog.clearCapability(track, capability),
-              deepCatalog.markCapabilityFailure(track, capability, err.message),
-            ]);
+            const writes = [
+              deepCatalog.markCapabilityFailure(
+                track,
+                capability,
+                `${err?.code || 'SOURCE_ERROR'}: ${err.message}`
+              ),
+            ];
+            if (confirmedAbsent) {
+              writes.push(deepCatalog.clearCapability(track, capability));
+            }
+            await Promise.all(writes);
           } catch {}
         }
         throw err;
@@ -331,7 +361,12 @@ export async function sendTrackLyrics(chatId, track) {
 
   if (!lyrics && track?.source === 'melobot' && track?.rawText) {
     try {
-      const result = await getMeloBotLyrics(tg, track, { timeoutMs: 6000 });
+      const result = await getMeloBotLyrics(tg, track, {
+        timeoutMs: 6500,
+        menuTimeoutMs: 4000,
+        submenuTimeoutMs: 3000,
+        deliveryTimeoutMs: 6500,
+      });
       track = adoptCanonicalCandidate(track, result.candidate);
       if (result.available && result.text) {
         lyrics = result.text;
@@ -342,21 +377,26 @@ export async function sendTrackLyrics(chatId, track) {
           ]);
         }
       } else if (result.checked === true) {
+        track.capabilityUnavailable = {
+          ...(track.capabilityUnavailable || {}),
+          hasLyrics: true,
+        };
         if (hasCanonicalTrackIdentity(track)) {
           await Promise.all([
             deepCatalog.markNoLyrics(track, 'melobot'),
             deepCatalog.clearCapabilityFailure(track, 'hasLyrics'),
+            deepCatalog.clearCapability(track, 'hasLyrics'),
           ]);
         }
       }
     } catch (err) {
-      track.capabilityUnavailable = {
-        ...(track.capabilityUnavailable || {}),
-        hasLyrics: true,
-      };
       if (hasCanonicalTrackIdentity(track)) {
         try {
-          await deepCatalog.markCapabilityFailure(track, 'hasLyrics', err.message);
+          await deepCatalog.markCapabilityFailure(
+            track,
+            'hasLyrics',
+            `${err?.code || 'SOURCE_ERROR'}: ${err.message}`
+          );
         } catch {}
       }
       throw err;
@@ -386,7 +426,12 @@ export async function sendTrackCover(chatId, track) {
 
   if (!media && track?.source === 'melobot' && track?.rawText) {
     try {
-      const cover = await getMeloBotCover(tg, track, { timeoutMs: 6000 });
+      const cover = await getMeloBotCover(tg, track, {
+        timeoutMs: 6500,
+        menuTimeoutMs: 4000,
+        submenuTimeoutMs: 3000,
+        deliveryTimeoutMs: 6500,
+      });
       track = adoptCanonicalCandidate(track, cover?.candidate);
       if (cover?.photoMessage) {
         media = await captureForwardedMedia(cover.photoMessage);
@@ -396,18 +441,26 @@ export async function sendTrackCover(chatId, track) {
             deepCatalog.clearCapabilityFailure(track, 'hasCover'),
           ]);
         }
-      }
-      if (!media?.fileId && hasCanonicalTrackIdentity(track)) {
-        await deepCatalog.markCapabilityFailure(track, 'hasCover', 'cover unavailable');
+      } else if (cover?.checked === true && cover?.available === false) {
+        track.capabilityUnavailable = {
+          ...(track.capabilityUnavailable || {}),
+          hasCover: true,
+        };
+        if (hasCanonicalTrackIdentity(track)) {
+          await Promise.all([
+            deepCatalog.clearCapability(track, 'hasCover'),
+            deepCatalog.clearCapabilityFailure(track, 'hasCover'),
+          ]);
+        }
       }
     } catch (err) {
-      track.capabilityUnavailable = {
-        ...(track.capabilityUnavailable || {}),
-        hasCover: true,
-      };
       if (hasCanonicalTrackIdentity(track)) {
         try {
-          await deepCatalog.markCapabilityFailure(track, 'hasCover', err.message);
+          await deepCatalog.markCapabilityFailure(
+            track,
+            'hasCover',
+            `${err?.code || 'SOURCE_ERROR'}: ${err.message}`
+          );
         } catch {}
       }
       throw err;
@@ -415,11 +468,13 @@ export async function sendTrackCover(chatId, track) {
   }
 
   if (!media?.fileId) {
-    track.capabilityUnavailable = {
-      ...(track.capabilityUnavailable || {}),
-      hasCover: true,
-    };
-    await bot.sendMessage(chatId, 'کاور این آهنگ موجود نیست.');
+    const confirmedAbsent = Boolean(track?.capabilityUnavailable?.hasCover);
+    await bot.sendMessage(
+      chatId,
+      confirmedAbsent
+        ? 'MeloBot برای این آهنگ دکمه‌ی کاور نشان نداد.'
+        : 'هنوز کاوری برای این آهنگ در کش نداریم.'
+    );
     return false;
   }
 

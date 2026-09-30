@@ -94,9 +94,34 @@ function clean(value = '') {
 function sourceBudget(timeoutMs, fallbackMs = config.searchTimeoutMs) {
   const total = Math.max(800, Number(timeoutMs || fallbackMs));
   const deadline = Date.now() + total;
-  const remaining = () => Math.max(450, deadline - Date.now());
+  // Never silently grant another 450ms after the budget has expired. Callers
+  // that forget to check expired() get a near-immediate final probe instead.
+  const remaining = () => Math.max(25, deadline - Date.now());
   remaining.expired = () => Date.now() >= deadline;
   return remaining;
+}
+
+function meloError(code, message, details = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, details);
+  return err;
+}
+
+function trackLabel(candidate = {}) {
+  return [candidate.artist, candidate.title].filter(Boolean).join(' — ')
+    || candidate.rawText
+    || 'unknown track';
+}
+
+function hasTrackActionMenu(messages = []) {
+  return buttonsFromMessages(messages).some(text => {
+    const value = clean(text);
+    return (
+      (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+      && !value.includes('دانلود همه')
+    );
+  });
 }
 
 function normalize(value = '') {
@@ -620,6 +645,8 @@ async function sendAndCollect(client, text, {
   quietMs = 650,
   stopWhen,
   stopWhenBatch,
+  waitForTarget = false,
+  reconcileOnTimeout = false,
   onMessage,
 } = {}) {
   const peer = config.melobotUsername;
@@ -631,6 +658,8 @@ async function sendAndCollect(client, text, {
     quietMs,
     stopWhen,
     stopWhenBatch,
+    waitForTarget,
+    reconcileOnTimeout,
     onMessage,
   });
   return { ...result, stateVersion };
@@ -1087,25 +1116,79 @@ export async function resolveMeloBotTrackCandidate(
 async function openTrackMenuWithCandidate(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    directTimeoutMs = 3000,
+    resolveTimeoutMs = 3500,
+    menuTimeoutMs = 4000,
+    allowNonTrackSurface = false,
+  } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs);
+  const requested = candidate || {};
+  const directText = clean(requested.rawText || '');
+  const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
+
+  if (directText) {
+    const direct = await sendAndCollect(client, directText, {
+      timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
+      quietMs: 550,
+      stopWhen: m => replyButtons(m).some(text => {
+        const value = clean(text);
+        return (
+          (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+          && !value.includes('دانلود همه')
+        );
+      }),
+      waitForTarget: true,
+      reconcileOnTimeout: true,
+    });
+    if (hasTrackActionMenu(direct.messages)) {
+      console.log(`[melobot.track_menu] route=direct track=${JSON.stringify(trackLabel(requested))}`);
+      return { messages: direct.messages, candidate: requested, route: 'direct_raw_text' };
+    }
+    if (allowNonTrackSurface && direct.messages?.length) {
+      console.log(`[melobot.track_menu] route=direct_non_track track=${JSON.stringify(trackLabel(requested))}`);
+      return { messages: direct.messages, candidate: requested, route: 'direct_non_track' };
+    }
+    console.log(`[melobot.track_menu] route=direct_miss track=${JSON.stringify(trackLabel(requested))}`);
+  }
+
   const liveCandidate = await resolveMeloBotTrackCandidate(
     client,
-    candidate,
-    { timeoutMs: remaining() }
+    requested,
+    {
+      timeoutMs: Math.min(cap, Math.max(2000, Number(resolveTimeoutMs || 3500))),
+      forceIdentity: Boolean(requested.artistInferred),
+    }
   );
-  if (!liveCandidate?.rawText) throw new Error('MeloBot live track button was not found.');
+  if (!liveCandidate?.rawText) {
+    throw meloError('MELOBOT_TRACK_RESOLVE_FAILED', 'MeloBot live track button was not found.');
+  }
 
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: remaining(),
+    timeoutMs: Math.min(cap, Math.max(2200, Number(menuTimeoutMs || 4000))),
     quietMs: 550,
-    stopWhen: m => replyButtons(m).some(text =>
-      (text.includes('کیفیت عالی') || text.includes('کیفیت معمولی'))
-      && !text.includes('دانلود همه')
-    ),
+    stopWhen: m => replyButtons(m).some(text => {
+      const value = clean(text);
+      return (
+        (value.includes('کیفیت عالی') || value.includes('کیفیت معمولی'))
+        && !value.includes('دانلود همه')
+      );
+    }),
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
-  return { messages: selected.messages, candidate: liveCandidate };
+  if (!hasTrackActionMenu(selected.messages)) {
+    if (allowNonTrackSurface && selected.messages?.length) {
+      return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_non_track' };
+    }
+    throw meloError(
+      'MELOBOT_TRACK_MENU_TIMEOUT',
+      `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)}`
+    );
+  }
+  console.log(`[melobot.track_menu] route=resolved track=${JSON.stringify(trackLabel(liveCandidate))}`);
+  return { messages: selected.messages, candidate: liveCandidate, route: 'resolved_search' };
 }
 
 async function openTrackMenu(client, candidate) {
@@ -1140,14 +1223,19 @@ export async function downloadMeloBotTrackQuality(
   quality = 'hq',
   {
     timeoutMs = config.downloadTimeoutMs,
-    menuTimeoutMs = Math.min(config.searchTimeoutMs, 6000),
+    menuTimeoutMs = 4000,
+    deliveryTimeoutMs = 7000,
   } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs, config.downloadTimeoutMs);
   const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: Math.min(menuTimeoutMs, remaining()) }
+    {
+      timeoutMs: Math.max(3000, Number(timeoutMs || config.downloadTimeoutMs)),
+      directTimeoutMs: Math.min(3000, menuTimeoutMs),
+      resolveTimeoutMs: Math.min(3500, menuTimeoutMs),
+      menuTimeoutMs,
+    }
   );
   const menuMessages = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
@@ -1159,24 +1247,37 @@ export async function downloadMeloBotTrackQuality(
   });
 
   if (!button) {
-    throw new Error(`MeloBot ${quality} quality button not found.`);
-  }
-  if (remaining.expired()) {
-    throw new Error(`MeloBot ${quality} quality request exceeded its source budget.`);
+    throw meloError(
+      'MELOBOT_CAPABILITY_ABSENT',
+      `MeloBot ${quality} quality button not found.`,
+      { capability: quality === 'hq' ? 'hasHq' : 'hasNormal' }
+    );
   }
 
+  console.log(
+    `[melobot.quality] stage=button_found quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   const result = await sendAndCollect(client, button, {
-    timeoutMs: remaining(),
+    timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 7000)),
     quietMs: 650,
     stopWhen: isAudioMessage,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
 
   const audio = result.messages.find(isAudioMessage);
   if (!audio) {
     const response = result.messages.map(messageText).filter(Boolean).join('\n');
-    throw new Error(`MeloBot did not deliver ${quality} audio. ${response.slice(0, 350)}`);
+    throw meloError(
+      'MELOBOT_DELIVERY_TIMEOUT',
+      `MeloBot did not deliver ${quality} audio after the quality button was confirmed. ${response.slice(0, 350)}`,
+      { capability: quality === 'hq' ? 'hasHq' : 'hasNormal' }
+    );
   }
 
+  console.log(
+    `[melobot.quality] stage=audio_received quality=${quality} track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   return {
     source: 'melobot',
     quality,
@@ -1241,13 +1342,22 @@ export function sanitizeMeloBotLyricsText(raw = '', candidate = {}) {
 export async function getMeloBotLyrics(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    menuTimeoutMs = 4000,
+    submenuTimeoutMs = 3000,
+    deliveryTimeoutMs = 6500,
+  } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs);
   const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: remaining() }
+    {
+      timeoutMs: Math.max(3000, Number(timeoutMs || config.searchTimeoutMs)),
+      directTimeoutMs: Math.min(3000, menuTimeoutMs),
+      resolveTimeoutMs: Math.min(3500, menuTimeoutMs),
+      menuTimeoutMs,
+    }
   );
   const menuMessages = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
@@ -1256,32 +1366,46 @@ export async function getMeloBotLyrics(
   if (!lyricsButton) {
     const moreButton = findButton(menuMessages, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
-      if (remaining.expired()) {
-        throw new Error('MeloBot lyrics submenu budget exhausted.');
-      }
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 600,
+        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
+        quietMs: 900,
       });
       if (!more.messages?.length) {
-        throw new Error('MeloBot lyrics submenu returned no response.');
+        throw meloError(
+          'MELOBOT_SUBMENU_TIMEOUT',
+          'MeloBot lyrics submenu returned no response.',
+          { capability: 'hasLyrics' }
+        );
       }
       lyricsButton = findButton(more.messages, text => /متن\s*آهنگ/u.test(clean(text)));
     }
   }
 
   if (!lyricsButton) {
+    console.log(
+      `[melobot.lyrics] stage=button_absent track=${JSON.stringify(trackLabel(liveCandidate))}`
+    );
     return { available: false, text: '', checked: true, candidate: liveCandidate };
   }
 
+  console.log(
+    `[melobot.lyrics] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   const result = await sendAndCollect(client, lyricsButton, {
-    timeoutMs: remaining(),
-    quietMs: 650,
+    timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 6500)),
+    quietMs: 900,
+    stopWhen: m => Boolean(messageText(m)),
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
 
   const raw = result.messages.map(messageText).filter(Boolean).join('\n\n').trim();
   if (!raw) {
-    throw new Error('MeloBot lyrics response was empty.');
+    throw meloError(
+      'MELOBOT_DELIVERY_TIMEOUT',
+      `MeloBot lyrics response was empty after the button was confirmed for: ${trackLabel(liveCandidate)}`,
+      { capability: 'hasLyrics' }
+    );
   }
 
   const unavailable = /(?:متن|lyrics?).*(?:موجود نیست|وجود ندارد|ندارد|not available|unavailable)/iu
@@ -1298,8 +1422,15 @@ export async function getMeloBotLyrics(
 
   const text = sanitizeMeloBotLyricsText(raw, liveCandidate);
   if (!text) {
-    throw new Error('MeloBot lyrics response contained no usable lyrics.');
+    throw meloError(
+      'MELOBOT_RESPONSE_UNUSABLE',
+      'MeloBot lyrics response contained no usable lyrics.',
+      { capability: 'hasLyrics' }
+    );
   }
+  console.log(
+    `[melobot.lyrics] stage=text_received track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   return {
     available: true,
     text,
@@ -1396,42 +1527,96 @@ export async function getMeloBotTrackMetadata(
 export async function getMeloBotCover(
   client,
   candidate,
-  { timeoutMs = config.searchTimeoutMs } = {}
+  {
+    timeoutMs = config.searchTimeoutMs,
+    menuTimeoutMs = 4000,
+    submenuTimeoutMs = 3000,
+    deliveryTimeoutMs = 6500,
+  } = {}
 ) {
-  const remaining = sourceBudget(timeoutMs);
   const openedMenu = await openTrackMenuWithCandidate(
     client,
     candidate,
-    { timeoutMs: remaining() }
+    {
+      timeoutMs: Math.max(3000, Number(timeoutMs || config.searchTimeoutMs)),
+      directTimeoutMs: Math.min(3000, menuTimeoutMs),
+      resolveTimeoutMs: Math.min(3500, menuTimeoutMs),
+      menuTimeoutMs,
+    }
   );
   const trackMenu = openedMenu.messages;
   const liveCandidate = openedMenu.candidate || candidate;
+  console.log(
+    `[melobot.cover] stage=menu_received track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
 
   let coverButton = findButton(trackMenu, text => /کاور/u.test(clean(text)));
 
   if (!coverButton) {
     const moreButton = findButton(trackMenu, text => /بیشتر/u.test(clean(text)));
     if (moreButton) {
+      console.log(
+        `[melobot.cover] stage=more_found track=${JSON.stringify(trackLabel(liveCandidate))}`
+      );
       const more = await sendAndCollect(client, moreButton, {
-        timeoutMs: remaining(),
-        quietMs: 600,
+        timeoutMs: Math.max(500, Number(submenuTimeoutMs || 3000)),
+        quietMs: 900,
       });
+      if (!more.messages?.length) {
+        throw meloError(
+          'MELOBOT_SUBMENU_TIMEOUT',
+          'MeloBot cover submenu returned no response.',
+          { capability: 'hasCover' }
+        );
+      }
       coverButton = findButton(more.messages, text => /کاور/u.test(clean(text)));
     }
   }
 
-  if (!coverButton) return null;
+  if (!coverButton) {
+    console.log(
+      `[melobot.cover] stage=button_absent track=${JSON.stringify(trackLabel(liveCandidate))}`
+    );
+    return {
+      source: 'melobot',
+      available: false,
+      checked: true,
+      reason: 'button_absent',
+      candidate: liveCandidate,
+      photoMessage: null,
+    };
+  }
 
+  console.log(
+    `[melobot.cover] stage=button_found track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
   const result = await sendAndCollect(client, coverButton, {
-    timeoutMs: remaining(),
+    timeoutMs: Math.max(500, Number(deliveryTimeoutMs || 6500)),
     quietMs: 650,
     stopWhen: photoMessage,
+    waitForTarget: true,
+    reconcileOnTimeout: true,
   });
 
   const photo = result.messages.find(photoMessage);
-  return photo
-    ? { source: 'melobot', photoMessage: photo, candidate: liveCandidate }
-    : null;
+  if (!photo) {
+    throw meloError(
+      'MELOBOT_DELIVERY_TIMEOUT',
+      `MeloBot cover button was confirmed but no photo arrived for: ${trackLabel(liveCandidate)}`,
+      { capability: 'hasCover' }
+    );
+  }
+
+  console.log(
+    `[melobot.cover] stage=photo_received track=${JSON.stringify(trackLabel(liveCandidate))}`
+  );
+  return {
+    source: 'melobot',
+    available: true,
+    checked: true,
+    photoMessage: photo,
+    candidate: liveCandidate,
+  };
 }
 
 export async function enrichMeloBotTrack(
@@ -1679,7 +1864,10 @@ async function openMeloBotArtistBase(
   let openedMenu = await openTrackMenuWithCandidate(
     client,
     seedTrack,
-    { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
+    {
+      timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+      allowNonTrackSurface: true,
+    }
   );
   let menuMessages = openedMenu.messages;
   let effectiveSeed = openedMenu.candidate || seedTrack;
@@ -1703,7 +1891,10 @@ async function openMeloBotArtistBase(
       openedMenu = await openTrackMenuWithCandidate(
         client,
         recoverySeed,
-        { timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()) }
+        {
+          timeoutMs: Math.min(ARTIST_NAV_TIMEOUT_MS, remaining()),
+          allowNonTrackSurface: true,
+        }
       );
       menuMessages = openedMenu.messages;
       effectiveSeed = openedMenu.candidate || recoverySeed;
@@ -3161,7 +3352,39 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
     directTimeoutMs = 6000,
   } = {}
 ) {
+  let primaryError = null;
   let directError = null;
+  const seedLooksTrusted = Boolean(
+    preferredSeed?.rawText
+    && preferredSeed?.artist
+    && !preferredSeed?.artistInferred
+    && normalize(preferredSeed.artist) === normalize(artist)
+  );
+
+  // A concrete source-backed Track is a safer way to establish Artist state
+  // than typing a bare Artist name into MeloBot's stateful reply-keyboard flow.
+  if (seedLooksTrusted) {
+    try {
+      const primary = await resolveMeloBotArtistAlbums(
+        client,
+        artist,
+        preferredSeed,
+        {
+          allowEmpty,
+          maxAlbums,
+          skipDirectFallback: true,
+          timeoutMs: Math.min(4500, Math.max(3000, Number(directTimeoutMs || 4500))),
+        }
+      );
+      return {
+        ...primary,
+        source: `seed_first:${primary.source || 'primary'}`,
+      };
+    } catch (err) {
+      primaryError = err;
+      console.warn('[melobot album seed-first]', artist, err.message);
+    }
+  }
 
   try {
     const direct = await openMeloBotAlbumListingDirect(
@@ -3197,26 +3420,30 @@ export async function resolveMeloBotArtistAlbumsDirectFirst(
     console.warn('[melobot album direct-first]', artist, err.message);
   }
 
-  try {
-    const primary = await resolveMeloBotArtistAlbums(
-      client,
-      artist,
-      preferredSeed,
-      {
-        allowEmpty,
-        maxAlbums,
-        skipDirectFallback: true,
-      }
-    );
-    return {
-      ...primary,
-      source: `primary_after_direct:${primary.source || 'unknown'}`,
-    };
-  } catch (primaryError) {
-    throw new Error(
-      `MeloBot direct-first album resolution failed. direct=${directError?.message || 'unknown'}; primary=${primaryError.message}`
-    );
+  if (!seedLooksTrusted) {
+    try {
+      const primary = await resolveMeloBotArtistAlbums(
+        client,
+        artist,
+        preferredSeed,
+        {
+          allowEmpty,
+          maxAlbums,
+          skipDirectFallback: true,
+        }
+      );
+      return {
+        ...primary,
+        source: `primary_after_direct:${primary.source || 'unknown'}`,
+      };
+    } catch (err) {
+      primaryError = err;
+    }
   }
+
+  throw new Error(
+    `MeloBot album resolution failed. seed=${primaryError?.message || 'not_used'}; direct=${directError?.message || 'unknown'}`
+  );
 }
 
 export async function resolveMeloBotArtistAlbums(

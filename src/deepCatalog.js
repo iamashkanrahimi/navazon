@@ -389,6 +389,16 @@ export class DeepCatalog {
     return albumKey;
   }
 
+  async deleteAlbum(artist, albumTitle) {
+    const albumKey = deepAlbumKey(artist, albumTitle);
+    if (!albumKey || albumKey === '|') return false;
+    const result = await db.query(
+      'DELETE FROM deep_albums WHERE album_key = $1',
+      [albumKey]
+    );
+    return result.rowCount > 0;
+  }
+
   async setAlbumTracks(artist, album, tracks = []) {
     const albumKey = await this.upsertAlbum(artist, album);
     if (!albumKey) return;

@@ -10,7 +10,11 @@ import {
 } from './ui.js';
 import { noteUserActivity } from './state.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
-import { renderTrackPage } from './trackActions.js';
+import {
+  getTrackInfoText,
+  renderTrackPage,
+  trySendCachedTrackQuality,
+} from './trackActions.js';
 
 const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
@@ -350,7 +354,29 @@ export async function handleUpdate(update) {
               : 'در حال دریافت کیفیت عالی…')
           : 'در حال دریافت کیفیت معمولی…';
         await bot.editMessageText(session.chatId,messageId,statusText);
-        sourceQueue.push({ type: 'track_quality', sessionId, quality, messageId });
+        let servedFromCache = false;
+        try {
+          servedFromCache = await trySendCachedTrackQuality(
+            session.chatId,
+            session.currentTrack,
+            quality,
+            session.userRegion || 'unknown'
+          );
+        } catch (err) {
+          if (err?.code === 'REGION_RESTRICTED_IRAN_ONLY') {
+            await bot.sendMessage(
+              session.chatId,
+              'این محتوا فقط برای کاربران داخل ایران در دسترسه.'
+            );
+            await openTrackPageLocal(sessionId, session, messageId);
+            servedFromCache = true;
+          }
+        }
+        if (servedFromCache) {
+          if (session.busy) await openTrackPageLocal(sessionId, session, messageId);
+        } else {
+          sourceQueue.push({ type: 'track_quality', sessionId, quality, messageId });
+        }
       } else if (action === 'tly') {
         if (!session.currentTrack) return;
         session.busy = true;
@@ -365,7 +391,14 @@ export async function handleUpdate(update) {
         if (!session.currentTrack) return;
         session.busy = true;
         await bot.editMessageText(session.chatId,messageId,'در حال دریافت مشخصات…');
-        sourceQueue.push({ type: 'track_info', sessionId, messageId });
+        try {
+          const text = await getTrackInfoText(session.currentTrack);
+          await bot.sendMessage(session.chatId, text);
+        } catch (err) {
+          console.error('[track info local]', err.message);
+          await bot.sendMessage(session.chatId, 'مشخصات بیشتری برای این آهنگ ثبت نشده.');
+        }
+        await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tar') {
         if (!session.currentTrack) return;
         session.busy = true;

@@ -825,6 +825,116 @@ test('event-driven MTProto inbox receives replies without GetHistory polling', a
   assert.equal(client.historyCalls, 0);
 });
 
+test('target-aware MTProto collection does not stop on a short quiet gap before media', async () => {
+  const client = new FakeEventTelegramClient();
+  installTelegramInbox(client);
+
+  const afterId = await latestMessageId(client, 'melobot');
+  const pending = collectNewMessages(client, 'melobot', afterId, {
+    timeoutMs: 300,
+    quietMs: 20,
+    waitForTarget: true,
+    stopWhen: message => Boolean(message?.media?.document),
+  });
+
+  client.emit(42, 'در حال آماده سازی');
+  await new Promise(resolve => setTimeout(resolve, 45));
+  client.emit(42, '', {
+    media: {
+      document: {
+        mimeType: 'audio/mpeg',
+        attributes: [],
+      },
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.messages.length, 2);
+  assert.ok(result.messages.some(message => message?.media?.document));
+  assert.equal(client.historyCalls, 0);
+});
+
+test('stale Track state uses reusable rawText directly before any search for normal quality', async () => {
+  const raw = '🎵 Reza Bahram, Yar';
+  const normal = '📥 کیفیت معمولی';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('خب حالا میخوای با این آهنگ چه کنی ؟', [
+      '📥 کیفیت عالی',
+      normal,
+      'بیشتر...',
+    ])]],
+    [normal]: [[{
+      message: '',
+      media: {
+        document: {
+          mimeType: 'audio/mpeg',
+          attributes: [],
+        },
+      },
+    }]],
+  });
+
+  const result = await downloadMeloBotTrackQuality(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Reza Bahram',
+      title: 'Yar',
+      rawText: raw,
+      sourceStateVersion: 1,
+    },
+    'normal',
+    {
+      timeoutMs: 900,
+      menuTimeoutMs: 400,
+      deliveryTimeoutMs: 400,
+    }
+  );
+
+  assert.equal(result.quality, 'normal');
+  assert.deepEqual(client.sent, [raw, normal]);
+  assert.ok(result.audioMessage?.media?.document);
+});
+
+test('cover delivery follows More and waits for the actual photo target', async () => {
+  const raw = '🎵 Navid, Rah Mire';
+  const more = 'بیشتر...';
+  const cover = 'کاور';
+  const client = new FakeTelegramClient({
+    [raw]: [[fakeBotMessage('track menu', [
+      '📥 کیفیت عالی',
+      '📥 کیفیت معمولی',
+      more,
+    ])]],
+    [more]: [[fakeBotMessage('more menu', [cover, 'متن آهنگ'])]],
+    [cover]: [[{
+      message: '',
+      media: { photo: { id: 'photo-1' } },
+    }]],
+  });
+
+  const result = await getMeloBotCover(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Navid',
+      title: 'Rah Mire',
+      rawText: raw,
+      sourceStateVersion: 1,
+    },
+    {
+      timeoutMs: 900,
+      menuTimeoutMs: 400,
+      submenuTimeoutMs: 400,
+      deliveryTimeoutMs: 400,
+    }
+  );
+
+  assert.equal(result.available, true);
+  assert.deepEqual(client.sent, [raw, more, cover]);
+  assert.ok(result.photoMessage?.media?.photo);
+});
+
 test('priority serial queue lets interactive work jump ahead of queued background work', async () => {
   const order = [];
   let releaseActive;
@@ -2301,7 +2411,7 @@ test('derived Artist lists exclude rows without the ranking evidence they claim'
   assert.match(calls[1].sql, /popularity_count IS NOT NULL/i);
 });
 
-test('quality download shares one bounded source budget across menu and media', async () => {
+test('quality download gives confirmed media delivery its own bounded stage', async () => {
   const raw = '🎵 Artist, Slow Quality';
   const client = new FakeTelegramClient({
     [raw]: [[fakeBotMessage('track', ['کیفیت عالی'])]],
@@ -2314,9 +2424,13 @@ test('quality download shares one bounded source budget across menu and media', 
       client,
       { ...parseTrackButton(raw), source: 'melobot' },
       'hq',
-      { timeoutMs: 60, menuTimeoutMs: 60 }
+      {
+        timeoutMs: 600,
+        menuTimeoutMs: 300,
+        deliveryTimeoutMs: 120,
+      }
     ),
-    /did not deliver|source budget/
+    err => err?.code === 'MELOBOT_DELIVERY_TIMEOUT'
   );
   assert.ok(Date.now() - startedAt < 1500);
 });

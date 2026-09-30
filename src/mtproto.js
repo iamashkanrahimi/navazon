@@ -85,6 +85,8 @@ async function collectFromInbox(client, peer, afterId, {
   stopWhen,
   stopWhenBatch,
   quietMs = 900,
+  waitForTarget = false,
+  reconcileOnTimeout = false,
   onMessage,
 } = {}) {
   const state = inboxes.get(client);
@@ -115,6 +117,7 @@ async function collectFromInbox(client, peer, afterId, {
     };
 
     const scheduleQuiet = () => {
+      if (waitForTarget) return;
       if (!seen.size || !(quietMs >= 0)) return;
       if (quietTimer) clearTimeout(quietTimer);
       quietTimer = setTimeout(() => finish(), Math.max(0, quietMs));
@@ -148,7 +151,21 @@ async function collectFromInbox(client, peer, afterId, {
     };
 
     totalTimer = setTimeout(
-      () => finish(),
+      async () => {
+        if (reconcileOnTimeout) {
+          try {
+            const batch = await client.getMessages(peer, { limit: 100 });
+            for (const message of batch || []) {
+              if (message?.out) continue;
+              if (Number(message?.id || 0) <= Number(afterId || 0)) continue;
+              seen.set(message.id, message);
+            }
+          } catch (err) {
+            console.warn('[mtproto reconcile]', err.message);
+          }
+        }
+        finish();
+      },
       Math.max(1, Number(timeoutMs || config.searchTimeoutMs || 18000))
     );
 
@@ -174,7 +191,8 @@ async function collectByPolling(client, peer, afterId, {
   stopWhen,
   stopWhenBatch,
   quietMs = 900,
-  pollMs = 450,
+  pollMs = 300,
+  waitForTarget = false,
   onMessage,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -197,7 +215,7 @@ async function collectByPolling(client, peer, afterId, {
     const result = evaluateCollector(seen, { stopWhen, stopWhenBatch });
     if (result.done) return { messages: result.messages, hit: result.hit };
 
-    if (result.messages.length && Date.now() - lastNewAt >= quietMs) {
+    if (!waitForTarget && result.messages.length && Date.now() - lastNewAt >= quietMs) {
       return { messages: result.messages, hit: null };
     }
     await sleep(pollMs);
