@@ -1,0 +1,14 @@
+name: Navazon Media Cache Keep Awake
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Keep Render awake while media cache runs
+        run: curl --fail --silent --show-error --max-time 30 https://navazon-l8q9.onrender.com/health >/dev/null

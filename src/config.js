@@ -28,6 +28,14 @@ export const config = {
   crawlerToken: required('CRAWLER_TOKEN'),
   adminToken: required('ADMIN_TOKEN'),
 
+  archiveDatabaseUrl: (process.env.ARCHIVE_DATABASE_URL || '').trim(),
+  archiveImportBaseUrl: (process.env.ARCHIVE_IMPORT_BASE_URL || '').replace(/\/$/, ''),
+  archiveImportOnce: boolEnv('ARCHIVE_IMPORT_ONCE', false),
+
+  mediaCacheEnabled: boolEnv('MEDIA_CACHE_ENABLED', false),
+  mediaCacheChatId: (process.env.MEDIA_CACHE_CHAT_ID || '').trim(),
+  mediaCacheDelayMs: Math.max(2000, Number(process.env.MEDIA_CACHE_DELAY_MS || 2000)),
+
   melobotUsername: (process.env.MELOBOT_USERNAME || 'melobot').replace(/^@/, ''),
   ahangifyUsername: (process.env.AHANGIFY_USERNAME || 'ahangifybot').replace(/^@/, ''),
   brandCaption: process.env.BRAND_CAPTION || `@${required('BOT_USERNAME').replace(/^@/, '')}`,
