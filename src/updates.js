@@ -608,10 +608,6 @@ export async function handleUpdate(update) {
     await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
     return;
   }
-  if (sourceQueue.size() >= MAX_SOURCE_QUEUE) {
-    await bot.sendMessage(chatId,'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.');
-    return;
-  }
   const status = await bot.sendMessage(chatId,'جست‌وجو…');
   const servedFromCache = await tryHandleCachedSearch(
     chatId,
@@ -620,6 +616,14 @@ export async function handleUpdate(update) {
     status.message_id
   ).catch(() => false);
   if (!servedFromCache) {
+    if (sourceQueue.size() >= MAX_SOURCE_QUEUE) {
+      await bot.editMessageText(
+        chatId,
+        status.message_id,
+        'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.'
+      );
+      return;
+    }
     sourceQueue.push({
       type: 'search',
       chatId,
