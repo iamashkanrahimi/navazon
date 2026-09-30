@@ -848,79 +848,84 @@ export async function tryDeliverBulkFromCacheLocal(
   const cached = await deliverBulkFromCacheIfComplete(session, tracks);
   if (!cached.complete) return false;
 
-  if (kind === 'top') {
-    session.artistContext.topTracks = cached.canonicalTracks;
-    session.artistContext.tracks = cached.canonicalTracks;
-    await syncArtistContext(session.artistContext);
-    session.busy = false;
-    await bot.editMessageText(
-      session.chatId,
-      messageId,
-      `${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,
-      {
-        reply_markup: artistSongsKeyboard(
-          sessionId,
-          cached.canonicalTracks,
-          { mode: 'top' }
-        ),
-      }
-    );
-  } else if (kind === 'recent') {
-    session.artistContext.recentTracks = cached.canonicalTracks;
-    await syncArtistContext(session.artistContext);
-    session.busy = false;
-    await bot.editMessageText(
-      session.chatId,
-      messageId,
-      `${session.artistContext.artist}\n🆕 جدیدترین آثار`,
-      {
-        reply_markup: artistSongsKeyboard(
-          sessionId,
-          cached.canonicalTracks,
-          { mode: 'recent' }
-        ),
-      }
-    );
-  } else {
-    session.currentAlbum.tracks = cached.canonicalTracks;
-    const repairedOwner = await syncAlbumTracks(
-      session.currentAlbum?.artist
-        || session.artistContext?.artist
-        || session.albumOriginTrack?.artist
-        || session.currentTrack?.artist,
-      session.currentAlbum,
-      cached.canonicalTracks
-    );
-    if (repairedOwner) session.currentAlbum.artist = repairedOwner;
-    session.busy = false;
+  // From this point all requested media has already been delivered. Never
+  // return false because a follow-up catalog write or UI edit failed; doing so
+  // would enqueue a live MeloBot bulk and duplicate files the user just got.
+  session.busy = false;
+  try {
+    if (kind === 'top') {
+      session.artistContext.topTracks = cached.canonicalTracks;
+      session.artistContext.tracks = cached.canonicalTracks;
+      await syncArtistContext(session.artistContext);
+      await bot.editMessageText(
+        session.chatId,
+        messageId,
+        `${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,
+        {
+          reply_markup: artistSongsKeyboard(
+            sessionId,
+            cached.canonicalTracks,
+            { mode: 'top' }
+          ),
+        }
+      );
+    } else if (kind === 'recent') {
+      session.artistContext.recentTracks = cached.canonicalTracks;
+      await syncArtistContext(session.artistContext);
+      await bot.editMessageText(
+        session.chatId,
+        messageId,
+        `${session.artistContext.artist}\n🆕 جدیدترین آثار`,
+        {
+          reply_markup: artistSongsKeyboard(
+            sessionId,
+            cached.canonicalTracks,
+            { mode: 'recent' }
+          ),
+        }
+      );
+    } else {
+      session.currentAlbum.tracks = cached.canonicalTracks;
+      const repairedOwner = await syncAlbumTracks(
+        session.currentAlbum?.artist
+          || session.artistContext?.artist
+          || session.albumOriginTrack?.artist
+          || session.currentTrack?.artist,
+        session.currentAlbum,
+        cached.canonicalTracks
+      );
+      if (repairedOwner) session.currentAlbum.artist = repairedOwner;
 
-    const album = session.currentAlbum;
-    const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
-    const keyboard = session.currentAlbumView === 'track'
-      ? trackAlbumKeyboard(
-          sessionId,
-          album,
-          album?.tracks || [],
-          session.albumTrackPage || 0
-        )
-      : albumTracksKeyboard(
-          sessionId,
-          album?.tracks || [],
-          session.albumsPage || 0,
-          session.albumTrackPage || 0,
-          {
-            backAction: session.currentAlbumView === 'search'
-              ? 'results'
-              : 'albums',
-          }
-        );
+      const album = session.currentAlbum;
+      const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
+      const keyboard = session.currentAlbumView === 'track'
+        ? trackAlbumKeyboard(
+            sessionId,
+            album,
+            album?.tracks || [],
+            session.albumTrackPage || 0
+          )
+        : albumTracksKeyboard(
+            sessionId,
+            album?.tracks || [],
+            session.albumsPage || 0,
+            session.albumTrackPage || 0,
+            {
+              backAction: session.currentAlbumView === 'search'
+                ? 'results'
+                : 'albums',
+            }
+          );
 
-    await bot.editMessageText(
-      session.chatId,
-      messageId,
-      title,
-      { reply_markup: keyboard }
-    );
+      await bot.editMessageText(
+        session.chatId,
+        messageId,
+        title,
+        { reply_markup: keyboard }
+      );
+    }
+  } catch (err) {
+    console.warn('[fastpath.local bulk postprocess]', kind, err.message);
   }
 
   console.log(
