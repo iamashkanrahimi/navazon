@@ -1472,6 +1472,9 @@ async function openTrackMenuWithCandidate(
   const requested = candidate || {};
   const directText = clean(requested.rawText || '');
   const cap = Math.max(1800, Number(timeoutMs || config.searchTimeoutMs));
+  const remaining = sourceBudget(cap, cap);
+  const stepTimeout = requestedMs =>
+    Math.max(25, Math.min(Math.max(25, Number(requestedMs || 0)), remaining()));
 
   const liveSurface = currentLiveTrackSurface(client, requested);
   if (liveSurface) {
@@ -1499,7 +1502,7 @@ async function openTrackMenuWithCandidate(
     });
     if (backButton) {
       const back = await sendAndCollect(client, backButton, {
-        timeoutMs: Math.min(cap, 2200),
+        timeoutMs: stepTimeout(2200),
         quietMs: 500,
         stopWhen: message => hasTrackActionMenu([message]),
         stopWhenBatch: messages => hasTrackActionMenu(messages),
@@ -1531,7 +1534,7 @@ async function openTrackMenuWithCandidate(
 
   if (canClickCurrentSurface) {
     const direct = await sendAndCollect(client, directText, {
-      timeoutMs: Math.min(cap, Math.max(1800, Number(directTimeoutMs || 3000))),
+      timeoutMs: stepTimeout(Math.max(1800, Number(directTimeoutMs || 3000))),
       quietMs: 550,
       stopWhen: m =>
         hasTrackActionMenu([m])
@@ -1569,7 +1572,7 @@ async function openTrackMenuWithCandidate(
       requested,
       {
         clickedText: directText,
-        timeoutMs: Math.min(1600, cap),
+        timeoutMs: stepTimeout(1600),
         allowAlbumSurface,
       }
     );
@@ -1589,11 +1592,18 @@ async function openTrackMenuWithCandidate(
     );
   }
 
+  if (remaining.expired()) {
+    throw meloError(
+      'MELOBOT_TRACK_MENU_TIMEOUT',
+      `MeloBot track recovery budget exhausted for: ${trackLabel(requested)}`
+    );
+  }
+
   const liveCandidate = await resolveMeloBotTrackCandidate(
     client,
     requested,
     {
-      timeoutMs: Math.min(cap, Math.max(2000, Number(resolveTimeoutMs || 3500))),
+      timeoutMs: stepTimeout(Math.max(2000, Number(resolveTimeoutMs || 3500))),
       forceIdentity: Boolean(requested.artistInferred),
     }
   );
@@ -1601,8 +1611,15 @@ async function openTrackMenuWithCandidate(
     throw meloError('MELOBOT_TRACK_RESOLVE_FAILED', 'MeloBot live track button was not found.');
   }
 
+  if (remaining.expired()) {
+    throw meloError(
+      'MELOBOT_TRACK_MENU_TIMEOUT',
+      `MeloBot track-menu budget exhausted for: ${trackLabel(liveCandidate)}`
+    );
+  }
+
   const selected = await sendAndCollect(client, liveCandidate.rawText, {
-    timeoutMs: Math.min(cap, Math.max(2200, Number(menuTimeoutMs || 4000))),
+    timeoutMs: stepTimeout(Math.max(2200, Number(menuTimeoutMs || 4000))),
     quietMs: 550,
     stopWhen: m =>
       hasTrackActionMenu([m])
@@ -1631,7 +1648,7 @@ async function openTrackMenuWithCandidate(
       liveCandidate,
       {
         clickedText: liveCandidate.rawText,
-        timeoutMs: Math.min(1700, cap),
+        timeoutMs: stepTimeout(1700),
         allowAlbumSurface,
       }
     );
