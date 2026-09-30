@@ -191,6 +191,11 @@ const server = http.createServer(async (req,res) => {
 
 server.listen(config.port,'0.0.0.0',async () => {
   console.log(`Navazon Cloud listening on 0.0.0.0:${config.port}`);
+  crawlerScheduler.start();
+  console.log(
+    `Internal crawler scheduler started: every ${Math.round(config.discoverySchedulerMs / 1000)}s`
+  );
+
   if (!config.publicBaseUrl) {
     console.warn('RENDER_EXTERNAL_URL/PUBLIC_BASE_URL missing; Telegram webhook not changed.');
     return;
@@ -199,17 +204,8 @@ server.listen(config.port,'0.0.0.0',async () => {
     const webhookUrl = `${config.publicBaseUrl}/telegram/webhook`;
     await bot.setWebhook(webhookUrl,config.webhookSecret);
     console.log(`Telegram webhook ready: ${webhookUrl}`);
-    crawlerScheduler.start();
-    console.log(
-      `Internal crawler scheduler started: every ${Math.round(config.discoverySchedulerMs / 1000)}s`
-    );
-
   } catch (err) {
     console.error('[setWebhook]',err.message);
-    crawlerScheduler.start();
-    console.log(
-      `Internal crawler scheduler started without webhook update: every ${Math.round(config.discoverySchedulerMs / 1000)}s`
-    );
   }
 });
 
