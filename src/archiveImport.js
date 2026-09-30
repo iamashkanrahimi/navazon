@@ -8,6 +8,11 @@ function assertImportConfig() {
   if (!config.archiveImportBaseUrl) throw new Error('ARCHIVE_IMPORT_BASE_URL missing');
 }
 
+function withVersion(url, token) {
+  const sep = String(url).includes('?') ? '&' : '?';
+  return `${url}${sep}v=${encodeURIComponent(String(token || Date.now()))}`;
+}
+
 async function fetchJson(url, attempts = 4) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -50,7 +55,8 @@ async function fetchVerifiedGzip(url, expectedHash, attempts = 4) {
 }
 
 async function* readGzipJsonl(url, expectedHash) {
-  let compressed = await fetchVerifiedGzip(url, expectedHash);
+  const requestUrl = withVersion(url, expectedHash || Date.now());
+  let compressed = await fetchVerifiedGzip(requestUrl, expectedHash);
   const payload = gunzipSync(compressed);
   compressed = null;
 
@@ -281,7 +287,7 @@ async function importArchiveOnce() {
   assertImportConfig();
   const db = getArchiveDb();
   const base = config.archiveImportBaseUrl;
-  const manifest = await fetchJson(`${base}/manifest.json`);
+  const manifest = await fetchJson(withVersion(`${base}/manifest.json`, Date.now()));
 
   const prior = await db.query(`SELECT value FROM archive_meta WHERE key='v5_import_complete'`);
   const priorHashes = prior.rows[0]?.value?.manifest?.hashes || prior.rows[0]?.value?.hashes || {};
