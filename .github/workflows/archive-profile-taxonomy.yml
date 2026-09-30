@@ -1,0 +1,74 @@
+name: Artist Profile Taxonomy Candidate
+
+on:
+  push:
+    branches:
+      - fix/artist-profile-taxonomy
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: contains(github.event.head_commit.message, '[artist-profile-taxonomy]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate scripts
+        run: |
+          node --check archive-builder/src/normalize-artist-profile-taxonomy.js
+          node --check archive-builder/src/freeze-v5.js
+      - name: Normalize published V5 artist taxonomy
+        run: >-
+          node archive-builder/src/normalize-artist-profile-taxonomy.js
+          --input ./archive-builder/data/v5
+          --out ./archive-builder/out/v5-profile-taxonomy
+      - name: Strict QA
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import zlib from 'node:zlib';
+          import readline from 'node:readline';
+
+          async function readGz(file){
+            const rows=[];
+            const rl=readline.createInterface({input:fs.createReadStream(file).pipe(zlib.createGunzip()),crlfDelay:Infinity});
+            for await(const line of rl) if(line.trim()) rows.push(JSON.parse(line));
+            return rows;
+          }
+
+          const root='./archive-builder/out/v5-profile-taxonomy';
+          const manifest=JSON.parse(fs.readFileSync(root+'/manifest.json','utf8'));
+          const summary=JSON.parse(fs.readFileSync(root+'/artist-profile-taxonomy-summary.json','utf8'));
+          const artists=await readGz(root+'/rj-artists.jsonl.gz');
+          const media=await readGz(root+'/media-images.jsonl.gz');
+
+          const profiles=artists.filter(a=>a.image_kind==='artist_profile');
+          const nonProfiles=artists.filter(a=>a.image_kind!=='artist_profile');
+          if(artists.length!==9263) throw new Error('artist count mismatch');
+          if(profiles.length!==1060) throw new Error('profile count mismatch');
+          if(nonProfiles.length!==8203) throw new Error('non-profile count mismatch');
+          if(summary.newly_normalized_radiojavan_profiles!==920) throw new Error('expected 920 newly normalized Radio Javan profiles');
+
+          const byUrl=new Map(media.map(m=>[m.source_url,m]));
+          for(const a of profiles){
+            if(!byUrl.get(a.image_url)?.usage_types?.includes('artist_image')) throw new Error('profile missing artist_image usage '+a.canonical_url);
+          }
+          for(const a of nonProfiles){
+            const u=byUrl.get(a.image_url)?.usage_types||[];
+            if(!u.includes('artist_artwork')) throw new Error('non-profile missing artist_artwork usage '+a.canonical_url);
+          }
+
+          if(manifest.counts.artist_profiles!==1060) throw new Error('manifest profile count mismatch');
+          if(manifest.counts.artist_artwork_only!==8203) throw new Error('manifest artwork count mismatch');
+          console.log(JSON.stringify({summary,manifest_counts:manifest.counts},null,2));
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rj-v5-profile-taxonomy-candidate
+          path: archive-builder/out/v5-profile-taxonomy
+          retention-days: 90
