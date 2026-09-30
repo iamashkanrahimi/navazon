@@ -3597,7 +3597,10 @@ export async function resolveMeloBotArtistAlbums(
       const artistContext = await openMeloBotArtistBase(
         client,
         seed,
-        { timeoutMs: remaining() }
+        {
+          timeoutMs: remaining(),
+          allowArtistSearchFallback: false,
+        }
       );
 
       // MeloBot uses a stateful reply keyboard. Resolve albums immediately from
