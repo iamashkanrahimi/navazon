@@ -174,16 +174,67 @@ async function syncAlbumIndex(artist, albums = [], {
 }
 
 async function syncAlbumTracks(artist, album, tracks = []) {
-  if (!artist || !album?.title || !tracks.length) return;
+  if (!artist || !album?.title || !tracks.length) return artist || null;
+
+  const explicitTracks = tracks.filter(track =>
+    track?.artist
+    && !track?.artistInferred
+  );
+  const explicitArtists = new Map();
+  for (const track of explicitTracks) {
+    const key = normalize(track.artist);
+    if (!key) continue;
+    const current = explicitArtists.get(key) || { name: track.artist, count: 0 };
+    current.count += 1;
+    explicitArtists.set(key, current);
+  }
+
+  let effectiveArtist = artist;
+  if (
+    explicitTracks.length === tracks.length
+    && explicitArtists.size === 1
+  ) {
+    const only = [...explicitArtists.values()][0];
+    if (normalize(only.name) !== normalize(artist)) {
+      effectiveArtist = only.name;
+      console.warn(
+        '[album owner repair]',
+        `${artist} — ${album.title}`,
+        '=>',
+        effectiveArtist
+      );
+
+      await Promise.allSettled([
+        catalog.removeAlbum(artist, album.title),
+        deepCatalog.deleteAlbum(artist, album.title),
+      ]);
+
+      await catalog.ensureArtist(effectiveArtist, {
+        seedTrack: tracks[0],
+        discoveredFrom: 'album-owner-repair',
+      });
+      await Promise.allSettled([
+        catalog.mergeAlbums(effectiveArtist, [album]),
+        deepCatalog.upsertAlbum(effectiveArtist, album),
+      ]);
+    }
+  }
+
   const results = await Promise.allSettled([
-    catalog.recordAlbumTracks(artist, album, tracks),
-    deepCatalog.setAlbumTracks(artist, album, tracks),
+    catalog.recordAlbumTracks(effectiveArtist, album, tracks),
+    deepCatalog.setAlbumTracks(effectiveArtist, album, tracks),
   ]);
   for (const result of results) {
     if (result.status === 'rejected') {
-      console.warn('[album track sync]', artist, album.title, result.reason?.message || result.reason);
+      console.warn(
+        '[album track sync]',
+        effectiveArtist,
+        album.title,
+        result.reason?.message || result.reason
+      );
     }
   }
+  return effectiveArtist;
 }
 
 async function resolveArtistAlbumsDirect(artist, { maxAlbums = 30 } = {}) {
