@@ -1281,14 +1281,34 @@ export async function resolveMeloBotTrackCandidate(
   // artist compatibility before accepting a row.
   const collaborationCredit = artistIdentityParts(candidate?.artist || '').length > 1;
   const featuredTitle = baseTitle && normalize(baseTitle) !== normalize(candidate?.title || '');
-  const queries = (candidate?.artistInferred || collaborationCredit || featuredTitle)
-    ? [
-        [candidate?.artist, baseTitle].filter(Boolean).join(' '),
-        baseTitle,
-        primaryQuery,
-        candidate?.title,
-      ]
-    : [primaryQuery, candidate?.title];
+  let queries;
+  if (candidate?.artistInferred) {
+    // Title-only rows must first ask for the exact visible title so MeloBot can
+    // reveal the authoritative primary performer.
+    queries = [
+      candidate?.title,
+      baseTitle,
+      [candidate?.artist, baseTitle].filter(Boolean).join(' '),
+      primaryQuery,
+    ];
+  } else if (collaborationCredit) {
+    // Collaboration credits are commonly reordered by the source; title-first
+    // search plus strict artist-set verification is the stable resolver.
+    queries = [
+      baseTitle || candidate?.title,
+      candidate?.title,
+      primaryQuery,
+    ];
+  } else if (featuredTitle) {
+    queries = [
+      [candidate?.artist, baseTitle].filter(Boolean).join(' '),
+      baseTitle,
+      primaryQuery,
+      candidate?.title,
+    ];
+  } else {
+    queries = [primaryQuery, candidate?.title];
+  }
   const uniqueQueries = [...new Set(queries.map(clean).filter(Boolean))];
 
   let lastError = null;
