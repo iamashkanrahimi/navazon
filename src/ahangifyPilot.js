@@ -120,15 +120,34 @@ function coreTitle(value = '') {
 
 function metadataMatches(media, target) {
   const targetCredits = creditParts(target.artist);
-  const mediaCredits = media?.performer ? creditParts(media.performer) : [];
-  const artistOk = !media?.performer
+  const rawTitle = clean(media?.title || '');
+  const parsedTitle = rawTitle ? splitCandidateLabel(rawTitle) : { artist: '', title: '' };
+
+  const titleCandidates = [
+    rawTitle,
+    parsedTitle.title,
+  ].filter(Boolean);
+  const titleOk = !titleCandidates.length
     ? null
-    : targetCredits.length <= 1
-      ? mediaCredits.includes(targetCredits[0])
-      : mediaCredits.some(part => targetCredits.includes(part));
+    : titleCandidates.some(value => coreTitle(value) === coreTitle(target.title));
+
+  const artistEvidence = [
+    clean(media?.performer || ''),
+    clean(parsedTitle.artist || ''),
+  ].filter(Boolean);
+  let artistOk = null;
+  if (artistEvidence.length) {
+    artistOk = artistEvidence.some(value => {
+      const mediaCredits = creditParts(value);
+      if (!mediaCredits.length || !targetCredits.length) return false;
+      return targetCredits.length <= 1
+        ? mediaCredits.includes(targetCredits[0])
+        : mediaCredits.some(part => targetCredits.includes(part));
+    });
+  }
 
   const checks = {
-    title: media?.title ? coreTitle(media.title) === coreTitle(target.title) : null,
+    title: titleOk,
     artist: artistOk,
     duration: media?.duration && target.expectedDuration
       ? Math.abs(Number(media.duration) - Number(target.expectedDuration)) <= 12
@@ -139,7 +158,15 @@ function metadataMatches(media, target) {
     .filter(([, value]) => value === false)
     .map(([key]) => key);
 
-  return { ok: contradictions.length === 0, checks, contradictions };
+  // A correctly-selected /dl_* command is already bound to an exact
+  // Ahangify search result. Bridge metadata is secondary correlation evidence:
+  // reject only when duration contradicts, or when both textual fields
+  // positively contradict the target.
+  const durationContradiction = checks.duration === false;
+  const textContradictions = [checks.title, checks.artist].filter(value => value === false).length;
+  const ok = !durationContradiction && textContradictions < 2;
+
+  return { ok, checks, contradictions };
 }
 
 async function ensureSchema() {
@@ -320,10 +347,26 @@ export async function seedAhangifyBestPilot(sourceQueue) {
   return { enabled: true, version: PILOT_VERSION, queued };
 }
 
-async function capturePilotMedia(audioMessage, target, timeoutMs = 10000) {
+async function capturePilotMedia(audioMessage, target, timeoutMs = 15000) {
   if (!audioMessage?.id) throw new Error('Ahangify audio message missing id');
   const wait = bridge.expectMediaMatching(
-    media => metadataMatches(media, target).ok,
+    media => {
+      const verification = metadataMatches(media, target);
+      if (!verification.ok) {
+        console.warn('[ahangify pilot bridge mismatch]', JSON.stringify({
+          target,
+          received: {
+            kind: media?.kind || null,
+            title: media?.title || null,
+            performer: media?.performer || null,
+            duration: media?.duration || null,
+            fileSize: media?.fileSize || null,
+          },
+          checks: verification.checks,
+        }));
+      }
+      return verification.ok;
+    },
     timeoutMs
   );
   await forwardHiddenToOurBot(tg, config.ahangifyUsername, audioMessage.id);
@@ -447,7 +490,7 @@ export async function runAhangifyBestPilotJob(job) {
           chosen.candidate,
           { timeoutMs: 9000 }
         );
-        const media = await capturePilotMedia(download.audioMessage, target, 10000);
+        const media = await capturePilotMedia(download.audioMessage, target, 15000);
         const verification = metadataMatches(media, target);
         if (!verification.ok) {
           lastError = new Error(
