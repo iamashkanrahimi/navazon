@@ -8,6 +8,35 @@ import { normalizeText } from './text.js';
 const ARCHIVE_VERSION = 'archive-v1';
 let pumpTimer = null;
 let pumpBusy = false;
+let floodPauseUntilMs = 0;
+
+function parseFloodWaitSeconds(errorOrMessage) {
+  const message = String(errorOrMessage?.message || errorOrMessage || '');
+  const human = message.match(/A wait of\s+(\d+)\s+seconds?\s+is required/i);
+  if (human) return Number(human[1]) || 0;
+  const rpc = message.match(/FLOOD_WAIT[_\s-]?(\d+)/i);
+  if (rpc) return Number(rpc[1]) || 0;
+  return 0;
+}
+
+function floodPauseRemainingMs() {
+  return Math.max(0, floodPauseUntilMs - Date.now());
+}
+
+function applyFloodPause(seconds) {
+  const waitSeconds = Math.max(1, Number(seconds || 0));
+  const marginSeconds = 5;
+  const nextUntil = Date.now() + (waitSeconds + marginSeconds) * 1000;
+  if (nextUntil > floodPauseUntilMs) floodPauseUntilMs = nextUntil;
+  const remainingSeconds = Math.ceil(floodPauseRemainingMs() / 1000);
+  console.warn('[ahangify archive cooldown]', JSON.stringify({
+    flood_wait_seconds: waitSeconds,
+    margin_seconds: marginSeconds,
+    resume_in_seconds: remainingSeconds,
+    resume_at: new Date(floodPauseUntilMs).toISOString(),
+  }));
+  return remainingSeconds;
+}
 
 function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -302,6 +331,15 @@ async function seedAllTracks() {
 
 export async function enqueueAhangifyArchiveBatch(sourceQueue, limit = config.ahangifyArchiveBatchSize) {
   if (!config.ahangifyArchiveEnabled) return { enabled: false, queued: 0 };
+  const pausedMs = floodPauseRemainingMs();
+  if (pausedMs > 0) {
+    return {
+      enabled: true,
+      queued: 0,
+      paused: true,
+      resume_in_seconds: Math.ceil(pausedMs / 1000),
+    };
+  }
   await ensureSchema();
 
   const { rows } = await db.query(`
@@ -374,6 +412,15 @@ async function logProgress() {
 export async function runAhangifyArchiveJob(job) {
   const sourceUrl = clean(job?.sourceUrl);
   if (!sourceUrl) throw new Error('Ahangify archive job missing source URL');
+
+  const pausedMs = floodPauseRemainingMs();
+  if (pausedMs > 0) {
+    return {
+      status: 'paused',
+      sourceUrl,
+      resume_in_seconds: Math.ceil(pausedMs / 1000),
+    };
+  }
 
   await ensureSchema();
   const claimed = await db.query(`
@@ -515,6 +562,7 @@ export async function runAhangifyArchiveJob(job) {
           fileId: media.fileId,
         };
       } catch (err) {
+        if (parseFloodWaitSeconds(err) > 0) throw err;
         lastError = err;
       }
     }
@@ -523,6 +571,30 @@ export async function runAhangifyArchiveJob(job) {
   } catch (err) {
     const attempts = Number(row.attempts || 0);
     const message = String(err?.message || err);
+    const floodWaitSeconds = parseFloodWaitSeconds(message);
+
+    if (floodWaitSeconds > 0) {
+      const resumeInSeconds = applyFloodPause(floodWaitSeconds);
+      await db.query(`
+        UPDATE ahangify_archive_media
+           SET status='retry',
+               attempts=GREATEST(attempts - 1, 0),
+               last_error=$2,
+               next_attempt_at=NOW() + ($3 * INTERVAL '1 second'),
+               completed_at=NULL,
+               updated_at=NOW()
+         WHERE source_url=$1
+      `, [sourceUrl, message.slice(0, 1000), resumeInSeconds]);
+
+      return {
+        status: 'flood_wait',
+        artist: row.artist,
+        title: row.title,
+        resume_in_seconds: resumeInSeconds,
+        error: message,
+      };
+    }
+
     const terminalNoMatch = /Ahangify search returned no usable result/i.test(message)
       && /(هیچ نتیجه|کپی.?رایت|copyright|no usable result)/i.test(message);
     const retry = !terminalNoMatch && attempts < config.ahangifyArchiveMaxAttempts;
@@ -573,6 +645,11 @@ export async function getAhangifyArchiveSummary() {
   return {
     version: ARCHIVE_VERSION,
     enabled: config.ahangifyArchiveEnabled,
+    flood_pause_active: floodPauseRemainingMs() > 0,
+    flood_pause_remaining_seconds: Math.ceil(floodPauseRemainingMs() / 1000),
+    flood_pause_until: floodPauseRemainingMs() > 0
+      ? new Date(floodPauseUntilMs).toISOString()
+      : null,
     ...rows[0],
   };
 }
