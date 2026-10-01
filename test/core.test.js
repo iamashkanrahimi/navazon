@@ -52,7 +52,6 @@ const {
   findArtistButtonFor,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
-const { mediaIdentityMatchesTrack } = await import('../src/media.js');
 const {
   installTelegramInbox,
   primeTelegramInboxBoundary,
@@ -118,6 +117,7 @@ const {
   artistCreditMatchesContext,
   artistCreditCompatible,
   titleCreditsArtist,
+  trackMediaIdentityMatches,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -4900,14 +4900,14 @@ test('bulk matcher preserves legitimate featured-Artist rows', () => {
 
 test('media identity validation blocks cross-Artist audio before cache or delivery', () => {
   assert.equal(
-    mediaIdentityMatchesTrack(
+    trackMediaIdentityMatches(
       { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
       { performer: 'Mehrdad Asemani', title: 'Maryam' }
     ),
     false
   );
   assert.equal(
-    mediaIdentityMatchesTrack(
+    trackMediaIdentityMatches(
       { artist: 'T-Dey', title: 'Khalesaneh (feat. T-Dey)', artistInferred: true },
       { performer: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' }
     ),
