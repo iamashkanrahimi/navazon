@@ -23,6 +23,7 @@ import {
   renderArtistHomePage,
   clearArtistProfilePhoto,
   replaceArtistProfileCardWithText,
+  isRetiredArtistProfileMessage,
 } from './artistProfile.js';
 import {
   getTrackInfoText,
@@ -162,7 +163,12 @@ async function sendHome(chatId, userId) {
 }
 
 function validSession(callback, session) {
-  return session && session.expiresAt > Date.now() && callback.from?.id === session.userId;
+  return Boolean(
+    session
+    && session.expiresAt > Date.now()
+    && callback.from?.id === session.userId
+    && !isRetiredArtistProfileMessage(session, callback.message?.message_id)
+  );
 }
 
 export async function handleUpdate(update) {
