@@ -320,7 +320,7 @@ export async function seedAhangifyBestPilot(sourceQueue) {
   return { enabled: true, version: PILOT_VERSION, queued };
 }
 
-async function capturePilotMedia(audioMessage, target, timeoutMs = 10000) {
+async function capturePilotMedia(audioMessage, target, timeoutMs = 20000) {
   if (!audioMessage?.id) throw new Error('Ahangify audio message missing id');
   const wait = bridge.expectMediaMatching(
     media => metadataMatches(media, target).ok,
@@ -447,7 +447,7 @@ export async function runAhangifyBestPilotJob(job) {
           chosen.candidate,
           { timeoutMs: 9000 }
         );
-        const media = await capturePilotMedia(download.audioMessage, target, 10000);
+        const media = await capturePilotMedia(download.audioMessage, target, 20000);
         const verification = metadataMatches(media, target);
         if (!verification.ok) {
           lastError = new Error(
