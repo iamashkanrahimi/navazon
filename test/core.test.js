@@ -120,6 +120,7 @@ const {
   titleCreditsArtist,
   trackMediaIdentityMatches,
   trackBelongsToArtistContext,
+  trackTitleIdentityCompatible,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -5444,6 +5445,103 @@ test('setTrackAlias itself refuses same-title cross-Artist poisoning before DB a
       () => catalog.setTrackAlias(
         { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
         { artist: 'Mehrdad Asemani', title: 'Maryam', source: 'melobot' },
+        { source: 'melobot', evidence: 'telegram_audio_metadata' }
+      ),
+      err => err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH'
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('Track title identity never collapses Original, Remix, Live, Acoustic or Unplugged variants', () => {
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song (Remix)'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Live'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Acoustic'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Unplugged'), false);
+  assert.equal(trackTitleIdentityCompatible('Song Remix', 'Song Remix (feat. Artist B)'), true);
+  assert.equal(trackTitleIdentityCompatible('Song (feat. Artist B)', 'Song'), true);
+});
+
+test('cross-script media keeps equivalent remix intent but rejects Original to Remix', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'رضا بهرام', title: 'یار ریمیکس' },
+      { performer: 'Reza Bahram', title: 'Yar Remix' }
+    ),
+    true
+  );
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'رضا بهرام', title: 'یار' },
+      { performer: 'Reza Bahram', title: 'Yar Remix' }
+    ),
+    false
+  );
+});
+
+test('bulk matcher refuses same-Artist audio when only the wrong Track variant is available', () => {
+  const matches = matchBulkAudioToTracks(
+    [{ artist: 'Ali Sorena', title: 'Maryam' }],
+    [{ performer: 'Ali Sorena', title: 'Maryam Remix' }]
+  );
+  assert.deepEqual(matches, []);
+});
+
+test('FileCache refuses a same-Artist wrong-variant legacy file_id', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|',
+          track: {
+            artist: 'Ali Sorena',
+            title: 'Maryam',
+            source: 'melobot',
+          },
+          media: {
+            fileId: 'wrong-remix-file',
+            performer: 'Ali Sorena',
+            title: 'Maryam Remix',
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in FileCache variant regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('setTrackAlias refuses same-Artist Original to Remix alias poisoning', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Variant mismatch must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await assert.rejects(
+      () => catalog.setTrackAlias(
+        { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+        { artist: 'Ali Sorena', title: 'Maryam Remix', source: 'melobot' },
         { source: 'melobot', evidence: 'telegram_audio_metadata' }
       ),
       err => err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH'
