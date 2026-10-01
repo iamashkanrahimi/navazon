@@ -3,6 +3,7 @@ import { applyPolicyDefaults } from './policy.js';
 import {
   artistCreditMatchesContext,
   artistCreditCompatible,
+  trackBelongsToArtistContext,
   cleanText,
   normalizeText,
 } from './text.js';
@@ -470,7 +471,10 @@ export class DeepCatalog {
     if (!albumKey) return;
 
     const sourceTracks = tracks || [];
-    const durableTracks = sourceTracks.filter(track => !track?.artistInferred);
+    const durableTracks = sourceTracks.filter(track =>
+      !track?.artistInferred
+      && trackBelongsToArtistContext(track, artist)
+    );
 
     await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
     await db.query(`
@@ -913,7 +917,7 @@ export class DeepCatalog {
   async getAlbumTracksByKey(albumKey) {
     if (!albumKey) return [];
     const result = await db.query(`
-      SELECT t.*, dat.position
+      SELECT t.*, dat.position, da.artist AS album_artist
       FROM deep_album_tracks dat
       JOIN deep_tracks t ON t.track_key = dat.track_key
       JOIN deep_albums da ON da.album_key = dat.album_key
@@ -921,7 +925,7 @@ export class DeepCatalog {
         AND da.metadata @> '{"trackListVersion":1}'::jsonb
       ORDER BY dat.position ASC NULLS LAST
     `, [albumKey]);
-    return result.rows.map(row => ({
+    const tracks = result.rows.map(row => ({
       artist: row.artist,
       title: row.title,
       album: row.album || undefined,
@@ -933,7 +937,18 @@ export class DeepCatalog {
       ...(row.source_data || {}),
       source: row.source_data?.source || 'melobot',
       rawText: row.source_data?.rawText || undefined,
+      _albumArtist: row.album_artist,
     }));
+
+    if (
+      tracks.some(track =>
+        !trackBelongsToArtistContext(track, track._albumArtist || '')
+      )
+    ) {
+      return [];
+    }
+
+    return tracks.map(({ _albumArtist, ...track }) => track);
   }
 
   async completeTaskByKey(taskKey, summary = {}) {
