@@ -71,6 +71,7 @@ const { db } = await import('../src/db.js');
 const {
   resultsKeyboard,
   artistHomeKeyboard,
+  artistSongsKeyboard,
   albumTracksKeyboard,
   noAlbumsKeyboard,
   albumsErrorKeyboard,
@@ -83,6 +84,10 @@ const {
   BUSY_SESSION_TTL_MS,
 } = await import('../src/ui.js');
 const { CURATED_PLAYLISTS, HOME_FEEDS } = await import('../src/homeCatalog.js');
+const {
+  artistHomeCaption,
+  replaceArtistProfileCardWithText,
+} = await import('../src/artistProfile.js');
 const { createNonOverlappingScheduler } = await import('../src/crawlerScheduler.js');
 const {
   normalizeText,
@@ -4491,4 +4496,78 @@ test('Track UI never exposes source quality jargon after the primary-download si
   const labels = keyboard.inline_keyboard.flat().map(button => button.text).join(' | ');
   assert.match(labels, /⬇️ دانلود آهنگ/u);
   assert.doesNotMatch(labels, /کیفیت|HQ|normal/iu);
+});
+
+
+test('Artist profile card caption is minimal and branded by role rather than implementation detail', () => {
+  assert.equal(
+    artistHomeCaption('Shervin Hajipour'),
+    '🎤 Shervin Hajipour\n\nاز کجا شروع کنیم؟'
+  );
+});
+
+test('leaving a one-message Artist card replaces it with a safe text control message', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      return true;
+    },
+    async sendMessage(chatId, text, extra) {
+      calls.push(['send', chatId, text, extra]);
+      return { message_id: 77 };
+    },
+  };
+  const session = {
+    chatId: 10,
+    messageId: 55,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  const nextMessageId = await replaceArtistProfileCardWithText(
+    fakeBot,
+    session,
+    55,
+    'یه لحظه…'
+  );
+
+  assert.equal(nextMessageId, 77);
+  assert.equal(session.messageId, 77);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileVisible, false);
+  assert.deepEqual(calls.map(call => call[0]), ['delete', 'send']);
+});
+
+test('legacy two-message Artist sessions keep their text control while removing the companion photo', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      return true;
+    },
+    async sendMessage() {
+      calls.push(['send']);
+      return { message_id: 99 };
+    },
+  };
+  const session = {
+    chatId: 10,
+    messageId: 66,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  const nextMessageId = await replaceArtistProfileCardWithText(
+    fakeBot,
+    session,
+    66,
+    'unused'
+  );
+
+  assert.equal(nextMessageId, 66);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.deepEqual(calls.map(call => call[0]), ['delete']);
 });
