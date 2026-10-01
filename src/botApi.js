@@ -64,6 +64,18 @@ export class BotApi {
     return this.call('editMessageText', { chat_id: chatId, message_id: messageId, text, ...extra });
   }
 
+  editMessageCaption(chatId, messageId, caption, extra = {}) {
+    return this.call('editMessageCaption', { chat_id: chatId, message_id: messageId, caption, ...extra });
+  }
+
+  editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+    return this.call('editMessageReplyMarkup', {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: replyMarkup,
+    });
+  }
+
   deleteMessage(chatId, messageId) {
     return this.call('deleteMessage', { chat_id: chatId, message_id: messageId });
   }
