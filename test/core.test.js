@@ -118,6 +118,7 @@ const {
   artistCreditCompatible,
   titleCreditsArtist,
   trackMediaIdentityMatches,
+  trackBelongsToArtistContext,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -4956,6 +4957,156 @@ test('cache metadata from another Artist cannot teach a durable Track alias', as
       calls.some(call => call.sql.includes('INSERT INTO track_aliases')),
       false
     );
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('Album context membership accepts collaborations/features but rejects unrelated same-title Artists', () => {
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
+      'Ali Sorena'
+    ),
+    true
+  );
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' },
+      'T-Dey'
+    ),
+    true
+  );
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Mehrdad Asemani', title: 'Maryam' },
+      'Ali Sorena'
+    ),
+    false
+  );
+});
+
+test('legacy Catalog Album cache fails closed when one stored Track belongs to another Artist', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('SELECT name, data FROM artists')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          name: 'Ali Sorena',
+          data: {
+            name: 'Ali Sorena',
+            albums: {
+              testalbum: {
+                title: 'TestAlbum',
+                trackListVersion: 1,
+                updatedAt: new Date().toISOString(),
+                tracks: [
+                  { artist: 'Ali Sorena', title: 'Kavir', source: 'melobot' },
+                  { artist: 'Mehrdad Asemani', title: 'Maryam', source: 'melobot' },
+                ],
+              },
+            },
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in Album cache regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new CatalogStore();
+    const tracks = await catalog.getAlbumTracks(
+      'Ali Sorena',
+      'TestAlbum',
+      24 * 60 * 60 * 1000
+    );
+    assert.equal(tracks, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('legacy Catalog Album cache preserves a legitimate featured-primary Track', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('SELECT name, data FROM artists')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          name: 'T-Dey',
+          data: {
+            name: 'T-Dey',
+            albums: {
+              testalbum: {
+                title: 'TestAlbum',
+                trackListVersion: 1,
+                updatedAt: new Date().toISOString(),
+                tracks: [
+                  {
+                    artist: 'Sadegh',
+                    title: 'Khalesaneh (feat. T-Dey)',
+                    source: 'melobot',
+                  },
+                ],
+              },
+            },
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in featured Album cache regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new CatalogStore();
+    const tracks = await catalog.getAlbumTracks(
+      'T-Dey',
+      'TestAlbum',
+      24 * 60 * 60 * 1000
+    );
+    assert.equal(tracks.length, 1);
+    assert.equal(tracks[0].artist, 'Sadegh');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('deep Album relation fails closed instead of returning a polluted partial Album', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM deep_album_tracks dat')) {
+      return {
+        rowCount: 2,
+        rows: [
+          {
+            artist: 'Ali Sorena',
+            title: 'Kavir',
+            album_artist: 'Ali Sorena',
+            source_data: { source: 'melobot' },
+            position: 1,
+          },
+          {
+            artist: 'Mehrdad Asemani',
+            title: 'Maryam',
+            album_artist: 'Ali Sorena',
+            source_data: { source: 'melobot' },
+            position: 2,
+          },
+        ],
+      };
+    }
+    throw new Error('Unexpected SQL in deep Album regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const tracks = await catalog.getAlbumTracksByKey('ali sorena|testalbum');
+    assert.deepEqual(tracks, []);
   } finally {
     db.query = originalQuery;
   }
