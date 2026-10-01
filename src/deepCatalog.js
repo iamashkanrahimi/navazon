@@ -4,6 +4,7 @@ import {
   artistCreditMatchesContext,
   artistCreditCompatible,
   trackBelongsToArtistContext,
+  trackMediaIdentityMatches,
   cleanText,
   normalizeText,
 } from './text.js';
@@ -16,7 +17,16 @@ export function deepNormalize(value = '') {
   return normalizeText(value);
 }
 
+export function hasDurableTrackIdentity(track = {}) {
+  return Boolean(
+    !track?.artistInferred
+    && deepNormalize(track?.artist || '')
+    && deepNormalize(track?.title || '')
+  );
+}
+
 export function deepTrackKey(track = {}) {
+  if (!hasDurableTrackIdentity(track)) return '';
   return `${deepNormalize(track.artist)}|${deepNormalize(track.title)}`;
 }
 
@@ -107,6 +117,8 @@ export class DeepCatalog {
     const aliasResult = await db.query(`
       SELECT
         a.canonical_track_key,
+        a.source AS alias_source,
+        a.evidence AS alias_evidence,
         t.artist,
         t.title,
         t.source_data,
@@ -122,7 +134,37 @@ export class DeepCatalog {
     const known = aliasResult.rows[0];
     if (known) {
       const sourceData = known.source_data || {};
-      return applyPolicyDefaults({
+      const candidate = {
+        artist: known.artist,
+        title: known.title,
+      };
+      const sameScriptIdentity = artistCreditCompatible(track?.artist || '', known.artist || '')
+        && (
+          normalizeText(track?.title || '') === normalizeText(known.title || '')
+          || normalizeText(track?.title || '').includes(normalizeText(known.title || ''))
+          || normalizeText(known.title || '').includes(normalizeText(track?.title || ''))
+        );
+      const trustedMetadataAlias = known.alias_evidence === 'telegram_audio_metadata';
+      const compatible = sameScriptIdentity || (
+        trustedMetadataAlias
+        && trackMediaIdentityMatches(
+          track,
+          { performer: known.artist, title: known.title }
+        )
+      );
+
+      if (!compatible) {
+        console.warn(
+          '[track alias rejected]',
+          track?.artist,
+          track?.title,
+          '=>',
+          known.artist,
+          known.title,
+          known.alias_evidence || 'unknown'
+        );
+      } else {
+        return applyPolicyDefaults({
         ...track,
         artist: known.artist,
         title: known.title,
@@ -140,8 +182,9 @@ export class DeepCatalog {
           ? track.rawText
           : (sourceData.rawText || track.rawText),
         cmd: sourceData.cmd || track.cmd,
-        artistInferred: false,
-      });
+          artistInferred: false,
+        });
+      }
     }
 
     if (!learnFromCache) return track;
