@@ -1109,7 +1109,7 @@ function interactiveSourceFailureMessage(err, action = 'source', quality = '') {
     return 'دانلود کامل نشد؛ دوباره امتحان کن.';
   }
   if (action === 'cover') {
-    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'برای این آهنگ کاوری پیدا نکردم.';
+    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'برای این آهنگ کاوری پیدا نکردم 🖼';
     return 'کاور این بار نرسید؛ دوباره امتحان کن.';
   }
   if (action === 'lyrics') {
