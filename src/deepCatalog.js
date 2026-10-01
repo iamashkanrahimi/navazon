@@ -5,6 +5,7 @@ import {
   artistCreditCompatible,
   trackBelongsToArtistContext,
   trackMediaIdentityMatches,
+  trackTitleIdentityCompatible,
   cleanText,
   normalizeText,
 } from './text.js';
@@ -67,19 +68,12 @@ function safeJson(value) {
 }
 
 function aliasTargetCompatible(aliasTrack = {}, canonicalTrack = {}, evidence = 'unknown') {
-  const aliasTitle = normalizeText(aliasTrack?.title || '');
-  const canonicalTitle = normalizeText(canonicalTrack?.title || '');
   const sameIdentity = artistCreditCompatible(
     aliasTrack?.artist || '',
     canonicalTrack?.artist || ''
-  ) && Boolean(
-    aliasTitle
-    && canonicalTitle
-    && (
-      aliasTitle === canonicalTitle
-      || aliasTitle.includes(canonicalTitle)
-      || canonicalTitle.includes(aliasTitle)
-    )
+  ) && trackTitleIdentityCompatible(
+    aliasTrack?.title || '',
+    canonicalTrack?.title || ''
   );
   if (sameIdentity) return true;
   if (evidence !== 'telegram_audio_metadata') return false;
