@@ -5551,3 +5551,64 @@ test('setTrackAlias refuses same-Artist Original to Remix alias poisoning', asyn
     db.query = originalQuery;
   }
 });
+
+
+test('inferred Track cannot be promoted from audio that has no performer metadata', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
+      { title: 'Maryam', fileId: 'ambiguous-file' }
+    ),
+    false
+  );
+});
+
+test('DeepCatalog setMedia rejects explicit same-title audio from another Artist before DB access', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Conflicting media must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setMedia(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      'hq',
+      {
+        fileId: 'wrong-file',
+        performer: 'Mehrdad Asemani',
+        title: 'Maryam',
+      },
+      { source: 'melobot' }
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache set rejects explicit same-title audio from another Artist before DB access', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Conflicting FileCache write must fail before DB access');
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    await cacheStore.set(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      {
+        fileId: 'wrong-file',
+        performer: 'Mehrdad Asemani',
+        title: 'Maryam',
+      }
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
