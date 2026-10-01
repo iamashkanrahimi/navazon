@@ -1,7 +1,7 @@
 import { config } from './config.js';
 import { bot, bridge, cache, deepCatalog, tg } from './runtime.js';
 import { forwardHiddenToOurBot } from './mtproto.js';
-import { assertDeliveryAllowed } from './media.js';
+import { assertDeliveryAllowed, assertMediaIdentityMatchesTrack } from './media.js';
 import { minimalBrandCaption, trackPageKeyboard, trackPageTitle } from './ui.js';
 import {
   downloadMeloBotTrackQuality,
@@ -268,6 +268,7 @@ export async function sendTrackQuality(
         );
         track = adoptCanonicalCandidate(track, result.candidate);
         media = await captureForwardedMedia(result.audioMessage);
+        assertMediaIdentityMatchesTrack(track, media);
         if (hasCanonicalTrackIdentity(track)) {
           await deepCatalog.setMedia(track, quality, media, { source: 'melobot' });
           if (quality === 'hq') {
