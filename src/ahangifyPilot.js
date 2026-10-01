@@ -5,7 +5,7 @@ import { searchAhangify, downloadAhangifyResult } from './sources/ahangify.js';
 import { forwardHiddenToOurBot } from './mtproto.js';
 import { normalizeText } from './text.js';
 
-const PILOT_VERSION = 'best-v1-50';
+const PILOT_VERSION = 'best-v2-50';
 
 function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
