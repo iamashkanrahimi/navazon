@@ -99,6 +99,11 @@ export class DeepCatalog {
     if (!aliasKey || aliasKey === '|' || !canonicalKey || canonicalKey === '|') return canonicalTrack;
     if (aliasKey === canonicalKey) return canonicalTrack;
     if (aliasTrack?.artistInferred || canonicalTrack?.artistInferred) return canonicalTrack;
+    if (!aliasTargetCompatible(aliasTrack, canonicalTrack, evidence)) {
+      const err = new Error('Track alias identity mismatch');
+      err.code = 'TRACK_ALIAS_IDENTITY_MISMATCH';
+      throw err;
+    }
 
     const existingCanonical = await db.query(
       'SELECT 1 FROM deep_tracks WHERE track_key = $1 LIMIT 1',
@@ -157,19 +162,10 @@ export class DeepCatalog {
     const known = aliasResult.rows[0];
     if (known) {
       const sourceData = known.source_data || {};
-      const sameScriptIdentity = artistCreditCompatible(track?.artist || '', known.artist || '')
-        && (
-          normalizeText(track?.title || '') === normalizeText(known.title || '')
-          || normalizeText(track?.title || '').includes(normalizeText(known.title || ''))
-          || normalizeText(known.title || '').includes(normalizeText(track?.title || ''))
-        );
-      const trustedMetadataAlias = known.alias_evidence === 'telegram_audio_metadata';
-      const compatible = sameScriptIdentity || (
-        trustedMetadataAlias
-        && trackMediaIdentityMatches(
-          track,
-          { performer: known.artist, title: known.title }
-        )
+      const compatible = aliasTargetCompatible(
+        track,
+        { artist: known.artist, title: known.title },
+        known.alias_evidence || 'unknown'
       );
 
       if (!compatible) {
