@@ -1846,7 +1846,9 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          mode === 'recent'\n            ? `تازه‌های ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`\n            : `پربازدیدهای ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`,
+          mode === 'recent'
+            ? `تازه‌های ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`
+            : `پربازدیدهای ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`,
           {
             reply_markup: artistHomeKeyboard(
               job.sessionId,
