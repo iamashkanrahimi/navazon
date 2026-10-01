@@ -2,6 +2,7 @@ import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
   artistCreditMatchesContext,
+  trackBelongsToArtistContext,
   cleanText,
   normalizeText,
   stableSourceTrackVariant,
@@ -350,7 +351,19 @@ export class CatalogStore {
       || Number(album.trackListVersion || 0) < 1
       || !freshEnough(album.updatedAt, maxAgeMs)
     ) return null;
-    return Array.isArray(album.tracks) && album.tracks.length ? album.tracks : null;
+
+    const tracks = Array.isArray(album.tracks)
+      ? album.tracks.map(markLegacyInferredArtist)
+      : [];
+    if (!tracks.length) return null;
+
+    // A persisted Album snapshot is all-or-nothing. Returning only the rows
+    // that look healthy can silently change an Album and preserve stale
+    // cross-Artist pollution. Force the existing live fallback to rebuild it.
+    if (!tracks.every(track => trackBelongsToArtistContext(track, node.name || name))) {
+      return null;
+    }
+    return tracks;
   }
 
   async getSearch(query, maxAgeMs) {
@@ -517,8 +530,15 @@ export class CatalogStore {
 
   async recordAlbumTracks(name, album, tracks = []) {
     const { key, node } = await this.readArtist(name);
-    if (!node) return;
+    if (!node) return false;
     const albumKey = normalize(album.title);
+    if (!albumKey || !(tracks || []).length) return false;
+
+    if (!(tracks || []).every(track => trackBelongsToArtistContext(track, name))) {
+      console.warn('[album cache rejected]', name, album.title, 'track identity mismatch');
+      return false;
+    }
+
     node.albums ||= {};
     node.albums[albumKey] ||= { title: clean(album.title) };
     node.albums[albumKey].tracks = tracks.map(track => this.compactTrack(track));
@@ -527,6 +547,7 @@ export class CatalogStore {
     this.addTracksToNode(node, tracks.filter(track => !track?.artistInferred));
     await this.writeArtist(key, node);
     await this.seedArtistsFromTracks(tracks, `album:${clean(album.title)}`);
+    return true;
   }
 
   async recordSupplementalTracks(name, tracks = [], source = 'supplemental') {
