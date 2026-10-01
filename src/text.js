@@ -207,6 +207,10 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
   const mediaTitleRaw = cleanText(media?.title || '');
   const mediaTitle = normalizeText(mediaTitleRaw);
 
+  // Page/Album rows with an inferred Artist are not durable identity yet.
+  // Without performer metadata there is no evidence that can promote them.
+  if (track?.artistInferred && !performer) return false;
+
   const scriptFamily = value => {
     const text = String(value || '');
     if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
