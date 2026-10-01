@@ -86,23 +86,107 @@ async function rememberOnDemandCache(profile, message) {
   ]);
 }
 
+export function artistHomeCaption(artist = '') {
+  const name = clean(artist);
+  return `🎤 ${name}\n\nاز کجا شروع کنیم؟`;
+}
+
+const MAX_STALE_ARTIST_MESSAGE_IDS = 8;
+
+function rememberStaleArtistMessage(session, messageId) {
+  const id = Number(messageId || 0);
+  if (!session || !id) return;
+  const existing = Array.isArray(session.artistStaleMessageIds)
+    ? session.artistStaleMessageIds.map(Number).filter(Boolean)
+    : [];
+  session.artistStaleMessageIds = [...new Set([...existing, id])]
+    .slice(-MAX_STALE_ARTIST_MESSAGE_IDS);
+}
+
+export function isRetiredArtistProfileMessage(session, messageId) {
+  const id = Number(messageId || 0);
+  if (!id) return false;
+  return (session?.artistStaleMessageIds || [])
+    .some(staleId => Number(staleId) === id);
+}
+
+async function retireArtistProfileMessage(bot, session, messageId) {
+  const chatId = session?.chatId;
+  if (!chatId || !Number(messageId || 0)) return 'gone';
+  try {
+    await bot.deleteMessage(chatId, messageId);
+    return 'deleted';
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (/message to delete not found|MESSAGE_ID_INVALID/i.test(msg)) {
+      return 'gone';
+    }
+    if (!/message can't be deleted/i.test(msg)) {
+      console.warn('[artist profile photo delete]', msg);
+    }
+
+    // A stale Artist card with live inline buttons can mutate the current
+    // session after navigation has moved elsewhere. If Telegram refuses to
+    // delete the old card, disable its keyboard so it becomes harmless.
+    try {
+      await bot.editMessageReplyMarkup(chatId, messageId, { inline_keyboard: [] });
+      return 'disabled';
+    } catch (markupErr) {
+      console.warn(
+        '[artist profile stale keyboard]',
+        String(markupErr?.message || markupErr)
+      );
+      rememberStaleArtistMessage(session, messageId);
+      return 'retained';
+    }
+  }
+}
+
 export async function clearArtistProfilePhoto(bot, session) {
   const id = Number(session?.artistPhotoMessageId || 0);
   if (!id || !session?.chatId) {
-    if (session) session.artistPhotoMessageId = null;
+    if (session) {
+      session.artistPhotoMessageId = null;
+      session.artistProfileArtistKey = null;
+      session.artistProfileVisible = false;
+    }
     return;
   }
   try {
-    await bot.deleteMessage(session.chatId, id);
-  } catch (err) {
-    const msg = String(err?.message || err);
-    if (!/message to delete not found|message can't be deleted|MESSAGE_ID_INVALID/i.test(msg)) {
-      console.warn('[artist profile photo delete]', msg);
-    }
+    await retireArtistProfileMessage(bot, session, id);
   } finally {
     session.artistPhotoMessageId = null;
     session.artistProfileArtistKey = null;
+    session.artistProfileVisible = false;
   }
+}
+
+export async function replaceArtistProfileCardWithText(
+  bot,
+  session,
+  currentMessageId,
+  text = 'یه لحظه…',
+  extra = {}
+) {
+  const photoId = Number(session?.artistPhotoMessageId || 0);
+  const currentId = Number(currentMessageId || 0);
+
+  // Old sessions used a separate photo + text control message. In that case,
+  // remove only the companion photo and keep using the existing text message.
+  if (!photoId || photoId !== currentId) {
+    await clearArtistProfilePhoto(bot, session);
+    return currentId || Number(session?.messageId || 0);
+  }
+
+  // Create the replacement first. If Telegram is temporarily unavailable,
+  // the existing Artist card remains usable instead of disappearing.
+  const replacement = await bot.sendMessage(session.chatId, text, {
+    disable_notification: true,
+    ...extra,
+  });
+  session.messageId = replacement.message_id;
+  await clearArtistProfilePhoto(bot, session);
+  return replacement.message_id;
 }
 
 export async function renderArtistHomePage(
@@ -115,17 +199,31 @@ export async function renderArtistHomePage(
   const artist = clean(session?.artistContext?.artist);
   if (!artist) throw new Error('Artist context missing.');
 
-  await clearArtistProfilePhoto(bot, session);
+  const caption = artistHomeCaption(artist);
+  const currentIsCard = Number(session?.artistPhotoMessageId || 0) === Number(messageId || 0);
   const profile = await getArtistProfileImage(artist).catch(err => {
     console.warn('[artist profile lookup]', artist, err?.message || err);
     return null;
   });
 
   if (!profile?.image_url) {
+    if (currentIsCard) {
+      const replacementId = await replaceArtistProfileCardWithText(
+        bot,
+        session,
+        messageId,
+        caption,
+        { reply_markup: keyboard }
+      );
+      session.messageId = replacementId;
+      return null;
+    }
+
+    await clearArtistProfilePhoto(bot, session);
     const result = await bot.editMessageText(
       session.chatId,
       messageId,
-      artist,
+      caption,
       { reply_markup: keyboard }
     );
     session.messageId = messageId;
@@ -133,48 +231,90 @@ export async function renderArtistHomePage(
     return result;
   }
 
+  // The new Artist surface is a single Telegram photo card: image, title and
+  // keyboard live together. Follow/unfollow can update the same card in place.
+  if (currentIsCard && session.artistProfileArtistKey === profile.artist_key) {
+    try {
+      const result = await bot.editMessageCaption(
+        session.chatId,
+        messageId,
+        caption,
+        { reply_markup: keyboard }
+      );
+      session.messageId = messageId;
+      session.artistProfileVisible = true;
+      return result;
+    } catch (err) {
+      console.warn('[artist profile card edit]', artist, err?.message || err);
+    }
+  }
+
+  // If an in-place card edit failed, keep the current card until a new
+  // photo card has been sent successfully. For legacy two-message sessions,
+  // the companion image can still be cleared before replacement.
+  const preserveCurrentCard = currentIsCard;
+  if (!preserveCurrentCard) {
+    await clearArtistProfilePhoto(bot, session);
+  }
   const photoInput = profile.telegram_file_id || profile.image_url;
   let photoMessage = null;
-  let controlMessage = null;
   try {
     photoMessage = await bot.sendPhoto(session.chatId, photoInput, {
+      caption,
+      reply_markup: keyboard,
       disable_notification: true,
     });
-    controlMessage = await bot.sendMessage(
-      session.chatId,
-      artist,
-      { reply_markup: keyboard, disable_notification: true }
-    );
 
-    try {
-      await bot.deleteMessage(session.chatId, messageId);
-    } catch (err) {
-      console.warn('[artist profile replace old control]', err?.message || err);
+    if (Number(messageId || 0) && Number(messageId) !== Number(photoMessage.message_id)) {
+      await retireArtistProfileMessage(bot, session, messageId);
     }
 
     session.artistPhotoMessageId = photoMessage.message_id;
     session.artistProfileArtistKey = profile.artist_key;
     session.artistProfileVisible = true;
-    session.messageId = controlMessage.message_id;
+    session.messageId = photoMessage.message_id;
 
     if (!profile.telegram_file_id) {
       rememberOnDemandCache(profile, photoMessage).catch(err =>
         console.warn('[artist profile on-demand cache]', err?.message || err)
       );
     }
-    return controlMessage;
+    return photoMessage;
   } catch (err) {
-    if (photoMessage?.message_id && !controlMessage?.message_id) {
+    if (photoMessage?.message_id) {
       try { await bot.deleteMessage(session.chatId, photoMessage.message_id); } catch {}
     }
     console.warn('[artist profile render fallback]', artist, err?.message || err);
-    const result = await bot.editMessageText(
+
+    if (preserveCurrentCard) {
+      // The previous card is still present and interactive. Prefer that safe
+      // fallback over replacing it with a second orphaned control message.
+      session.messageId = Number(messageId || 0) || session.messageId;
+      session.artistProfileVisible = true;
+      return null;
+    }
+
+    const fallbackId = Number(messageId || 0) || Number(session.messageId || 0);
+    if (fallbackId) {
+      try {
+        const result = await bot.editMessageText(
+          session.chatId,
+          fallbackId,
+          caption,
+          { reply_markup: keyboard }
+        );
+        session.messageId = fallbackId;
+        session.artistProfileVisible = false;
+        return result;
+      } catch {}
+    }
+
+    const result = await bot.sendMessage(
       session.chatId,
-      messageId,
-      artist,
-      { reply_markup: keyboard }
+      caption,
+      { reply_markup: keyboard, disable_notification: true }
     );
-    session.messageId = messageId;
+    session.messageId = result.message_id;
     session.artistProfileVisible = false;
     return result;
   }

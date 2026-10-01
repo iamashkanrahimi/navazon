@@ -71,6 +71,7 @@ const { db } = await import('../src/db.js');
 const {
   resultsKeyboard,
   artistHomeKeyboard,
+  artistSongsKeyboard,
   albumTracksKeyboard,
   noAlbumsKeyboard,
   albumsErrorKeyboard,
@@ -83,7 +84,17 @@ const {
   BUSY_SESSION_TTL_MS,
 } = await import('../src/ui.js');
 const { CURATED_PLAYLISTS, HOME_FEEDS } = await import('../src/homeCatalog.js');
+const {
+  artistHomeCaption,
+  clearArtistProfilePhoto,
+  replaceArtistProfileCardWithText,
+  isRetiredArtistProfileMessage,
+} = await import('../src/artistProfile.js');
 const { createNonOverlappingScheduler } = await import('../src/crawlerScheduler.js');
+const {
+  AHANGIFY_ARCHIVE_STALE_RUNNING_MS,
+  recoverStaleAhangifyArchiveJobs,
+} = await import('../src/ahangifyArchiveRecovery.js');
 const {
   normalizeText,
   hasAlbumIntent,
@@ -392,7 +403,7 @@ test('search-opened album returns to search results', () => {
 
 test('no-albums page returns to the artist page', () => {
   const keyboard = noAlbumsKeyboard('sess');
-  assert.equal(keyboard.inline_keyboard[0][0].text, '🔙 صفحه‌ی خواننده');
+  assert.equal(keyboard.inline_keyboard[0][0].text, '↩️ خواننده');
   assert.equal(keyboard.inline_keyboard[0][0].callback_data, 'arh:sess');
 });
 
@@ -401,10 +412,10 @@ test('home exposes only the four primary discovery actions', () => {
   const keyboard = homeKeyboard('sess');
   const labels = keyboard.inline_keyboard.flat().map(button => button.text);
   assert.deepEqual(labels, [
-    '🔥 جدیدترین‌ها',
-    '📥 پردانلودترین‌ها',
+    '🔥 تازه‌ها',
+    '🏆 پردانلودها',
     '🎧 پلی‌لیست‌ها',
-    '🔔 دنبال‌شده‌ها',
+    '♡ دنبال‌شده‌ها',
   ]);
 });
 
@@ -634,7 +645,7 @@ test('all primary Track downloads use one source-agnostic Download Track action'
     { hasHq: true }
   );
   const labels = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(labels.includes('📥 دانلود آهنگ'));
+  assert.ok(labels.includes('⬇️ دانلود آهنگ'));
   assert.equal(labels.includes('📥 بهترین کیفیت موجود'), false);
   assert.equal(labels.includes('📥 کیفیت عالی'), false);
 });
@@ -2040,8 +2051,8 @@ test('artist home always shows top and recent actions even when one list is miss
     false
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('🎵 پربازدیدترین آثار'));
-  assert.ok(texts.includes('🆕 جدیدترین آثار'));
+  assert.ok(texts.includes('🔥 پربازدیدها'));
+  assert.ok(texts.includes('🆕 تازه‌ها'));
 });
 
 test('recent artist list can be recovered from the release-date sort surface', async () => {
@@ -2162,13 +2173,13 @@ test('MeloBot track pages keep lazy media actions visible but require source-bac
     {}
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.ok(texts.includes('⬇️ دانلود آهنگ'));
   assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
-  assert.ok(texts.includes('📝 متن'));
+  assert.ok(texts.includes('📝 متن آهنگ'));
   assert.ok(texts.includes('🖼 کاور'));
-  assert.ok(texts.includes('📋 مشخصات'));
-  assert.equal(texts.includes('🗣 صفحه‌ی خواننده'), false);
+  assert.ok(texts.includes('ℹ️ اطلاعات'));
+  assert.equal(texts.includes('🎤 خواننده'), false);
 });
 
 test('inferred page-context artists are not presented as confirmed primary artists', () => {
@@ -3173,10 +3184,10 @@ test('tri-state track UI hides a quality after the current session confirms fail
     }
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.ok(texts.includes('⬇️ دانلود آهنگ'));
   assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
-  assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
+  assert.ok(texts.includes('🎤 خواننده'));
 });
 
 test('deep catalog learns Persian-to-Latin track alias from cached Telegram audio metadata', async () => {
@@ -4445,4 +4456,251 @@ test('new Track background warmups enqueue HQ but never Normal quality', async (
 
   assert.equal(queued.some(item => item.kind === 'track_hq'), true);
   assert.equal(queued.some(item => item.kind === 'track_normal'), false);
+});
+
+
+test('search results stay unnumbered while ranked browse lists can opt into numbering', () => {
+  const base = {
+    options: [
+      { source: 'melobot', artist: 'Artist', title: 'One', rawText: 'x1' },
+      { source: 'melobot', artist: 'Artist', title: 'Two', rawText: 'x2' },
+    ],
+    albumOptions: [],
+    query: 'Artist Song',
+  };
+
+  const plain = resultsKeyboard('plain', { ...base, resultsNumbered: false });
+  const plainLabels = plain.inline_keyboard.flat().map(button => button.text);
+  assert.equal(plainLabels.some(label => label.startsWith('1️⃣')), false);
+
+  const ranked = resultsKeyboard('ranked', { ...base, resultsNumbered: true });
+  const rankedLabels = ranked.inline_keyboard.flat().map(button => button.text);
+  assert.equal(rankedLabels.some(label => label.startsWith('1️⃣')), true);
+});
+
+test('recent Artist songs are unnumbered while Top remains ranked', () => {
+  const tracks = [
+    { artist: 'Artist', title: 'One' },
+    { artist: 'Artist', title: 'Two' },
+  ];
+  const top = artistSongsKeyboard('top', tracks, { mode: 'top' });
+  const recent = artistSongsKeyboard('recent', tracks, { mode: 'recent' });
+
+  assert.equal(top.inline_keyboard[0][0].text.startsWith('1️⃣'), true);
+  assert.equal(recent.inline_keyboard[0][0].text.startsWith('1️⃣'), false);
+  assert.equal(top.inline_keyboard.at(-2)[0].text, '⬇️ دانلود همه');
+  assert.equal(recent.inline_keyboard.at(-2)[0].text, '⬇️ دانلود همه');
+});
+
+test('Track UI never exposes source quality jargon after the primary-download simplification', () => {
+  const keyboard = trackPageKeyboard(
+    'clean-ui',
+    { source: 'melobot', artist: 'Artist', title: 'Song' },
+    { media: { hq: { fileId: 'hq' }, normal: { fileId: 'normal' } } },
+    { hasHq: true, hasNormal: true, hasMetadata: true }
+  );
+  const labels = keyboard.inline_keyboard.flat().map(button => button.text).join(' | ');
+  assert.match(labels, /⬇️ دانلود آهنگ/u);
+  assert.doesNotMatch(labels, /کیفیت|HQ|normal/iu);
+});
+
+
+test('Artist profile card caption is minimal and branded by role rather than implementation detail', () => {
+  assert.equal(
+    artistHomeCaption('Shervin Hajipour'),
+    '🎤 Shervin Hajipour\n\nاز کجا شروع کنیم؟'
+  );
+});
+
+test('leaving a one-message Artist card replaces it with a safe text control message', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      return true;
+    },
+    async sendMessage(chatId, text, extra) {
+      calls.push(['send', chatId, text, extra]);
+      return { message_id: 77 };
+    },
+  };
+  const session = {
+    chatId: 10,
+    messageId: 55,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  const nextMessageId = await replaceArtistProfileCardWithText(
+    fakeBot,
+    session,
+    55,
+    'یه لحظه…'
+  );
+
+  assert.equal(nextMessageId, 77);
+  assert.equal(session.messageId, 77);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileVisible, false);
+  assert.deepEqual(calls.map(call => call[0]), ['send', 'delete']);
+});
+
+test('legacy two-message Artist sessions keep their text control while removing the companion photo', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      return true;
+    },
+    async sendMessage() {
+      calls.push(['send']);
+      return { message_id: 99 };
+    },
+  };
+  const session = {
+    chatId: 10,
+    messageId: 66,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  const nextMessageId = await replaceArtistProfileCardWithText(
+    fakeBot,
+    session,
+    66,
+    'unused'
+  );
+
+  assert.equal(nextMessageId, 66);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.deepEqual(calls.map(call => call[0]), ['delete']);
+});
+
+
+test('undeletable stale Artist cards have their inline keyboard disabled', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      throw new Error("message can't be deleted");
+    },
+    async editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+      calls.push(['markup', chatId, messageId, replyMarkup]);
+      return true;
+    },
+  };
+  const session = {
+    chatId: 10,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  await clearArtistProfilePhoto(fakeBot, session);
+
+  assert.deepEqual(calls.map(call => call[0]), ['delete', 'markup']);
+  assert.deepEqual(calls[1][3], { inline_keyboard: [] });
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileArtistKey, null);
+  assert.equal(session.artistProfileVisible, false);
+});
+
+
+test('already-gone Artist cards do not trigger redundant stale-keyboard cleanup', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      throw new Error('message to delete not found');
+    },
+    async editMessageReplyMarkup() {
+      calls.push(['markup']);
+      return true;
+    },
+  };
+  const session = {
+    chatId: 10,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  await clearArtistProfilePhoto(fakeBot, session);
+
+  assert.deepEqual(calls.map(call => call[0]), ['delete']);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileVisible, false);
+});
+
+
+test('retained stale Artist cards are remembered so their callbacks can be rejected', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      throw new Error("message can't be deleted");
+    },
+    async editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+      calls.push(['markup', chatId, messageId, replyMarkup]);
+      throw new Error('message cannot be edited');
+    },
+  };
+  const session = {
+    chatId: 10,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  await clearArtistProfilePhoto(fakeBot, session);
+
+  assert.deepEqual(calls.map(call => call[0]), ['delete', 'markup']);
+  assert.deepEqual(session.artistStaleMessageIds, [55]);
+  assert.equal(isRetiredArtistProfileMessage(session, 55), true);
+  assert.equal(isRetiredArtistProfileMessage(session, 56), false);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileVisible, false);
+});
+
+test('Ahangify stale-running recovery makes restart-interrupted work retryable without consuming an attempt', async () => {
+  const calls = [];
+  const fakeDb = {
+    async query(sql, params) {
+      calls.push({ sql: String(sql), params });
+      return { rowCount: 1 };
+    },
+  };
+
+  const recovered = await recoverStaleAhangifyArchiveJobs(fakeDb);
+
+  assert.equal(recovered, 1);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].params, [AHANGIFY_ARCHIVE_STALE_RUNNING_MS]);
+  assert.match(calls[0].sql, /status='retry'/);
+  assert.match(calls[0].sql, /attempts=GREATEST\(attempts - 1, 0\)/);
+  assert.match(calls[0].sql, /next_attempt_at=NOW\(\)/);
+  assert.match(calls[0].sql, /status='running'/);
+});
+
+test('Ahangify stale-running recovery refuses an unsafe sub-minute reclaim window', async () => {
+  const calls = [];
+  const fakeDb = {
+    async query(sql, params) {
+      calls.push({ sql: String(sql), params });
+      return { rowCount: 0 };
+    },
+  };
+
+  await recoverStaleAhangifyArchiveJobs(fakeDb, { staleAfterMs: 1000 });
+
+  assert.deepEqual(calls[0].params, [60_000]);
+});
+
+test('Track identity typography uses an em dash for canonical artist and title', () => {
+  assert.equal(
+    trackPageTitle({ artist: 'Artist', title: 'Song' }),
+    'Artist — Song'
+  );
 });

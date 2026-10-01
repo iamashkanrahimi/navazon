@@ -15,11 +15,16 @@ import {
   homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   artistHomeKeyboard, artistSongsKeyboard, albumsKeyboard,
-  albumTracksKeyboard, trackAlbumKeyboard,
+  albumTracksKeyboard, trackAlbumKeyboard, artistAlbumsTitle, albumPageTitle,
 } from './ui.js';
 import { noteUserActivity } from './state.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
-import { renderArtistHomePage, clearArtistProfilePhoto } from './artistProfile.js';
+import {
+  renderArtistHomePage,
+  clearArtistProfilePhoto,
+  replaceArtistProfileCardWithText,
+  isRetiredArtistProfileMessage,
+} from './artistProfile.js';
 import {
   getTrackInfoText,
   renderTrackPage,
@@ -33,6 +38,7 @@ const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
 const MAX_SOURCE_QUEUE = 30;
 const BULK_SOURCE_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
+const HOME_TEXT = '🎧 Navazon\n\nچی می‌خوای گوش بدی؟\nاسم آهنگ، خواننده یا آلبوم رو بفرست.';
 
 function queueSessionSource(sessionId, session, job) {
   return sourceQueue.push({
@@ -63,7 +69,7 @@ async function cancelQueuedBulkForUser(userId, currentSessionId = null) {
           await bot.editMessageText(
             staleSession.chatId,
             item.messageId,
-            'درخواست قبلی متوقف شد چون درخواست جدیدی شروع کردی.'
+            'درخواست قبلی رو کنار گذاشتم و رفتم سراغ جدیدش.'
           );
         } catch {}
       }
@@ -111,7 +117,7 @@ async function openTrackPageLocal(sessionId, session, messageId) {
     await bot.editMessageText(
       session.chatId,
       messageId,
-      'باز کردن صفحه‌ی آهنگ ممکن نشد.'
+      'این آهنگ این بار باز نشد؛ یه بار دیگه امتحان کن.'
     );
   } finally {
     session.busy = false;
@@ -149,7 +155,7 @@ async function sendHome(chatId, userId) {
 
   const message = await bot.sendMessage(
     chatId,
-    'اسم آهنگ، خواننده یا آلبوم رو بفرست 🎵\n\nیا از بخش‌های زیر انتخاب کن:',
+    HOME_TEXT,
     { reply_markup: homeKeyboard(sessionId) }
   );
   session.messageId = message.message_id;
@@ -157,7 +163,12 @@ async function sendHome(chatId, userId) {
 }
 
 function validSession(callback, session) {
-  return session && session.expiresAt > Date.now() && callback.from?.id === session.userId;
+  return Boolean(
+    session
+    && session.expiresAt > Date.now()
+    && callback.from?.id === session.userId
+    && !isRetiredArtistProfileMessage(session, callback.message?.message_id)
+  );
 }
 
 export async function handleUpdate(update) {
@@ -174,7 +185,7 @@ export async function handleUpdate(update) {
     const sessionId = parts[1];
     const session = await sessions.get(sessionId);
     if (!validSession(callback,session)) {
-      await bot.answerCallbackQuery(callback.id,{ text: 'این جست‌وجو منقضی شده. دوباره جست‌وجو کن.' });
+      await bot.answerCallbackQuery(callback.id,{ text: 'این صفحه دیگه فعّال نیست؛ یه جست‌وجوی تازه بزن 🔎' });
       return;
     }
     try {
@@ -186,18 +197,29 @@ export async function handleUpdate(update) {
       if (cancelled.currentSessionCancelled) session.busy = false;
 
       if (session.busy) {
-        await bot.answerCallbackQuery(callback.id,{ text: 'یک لحظه…' });
+        await bot.answerCallbackQuery(callback.id,{ text: 'هنوز دارم قبلی رو انجام می‌دم…' });
         return;
       }
-      const messageId = callback.message?.message_id || session.messageId;
+      let messageId = callback.message?.message_id || session.messageId;
       await bot.answerCallbackQuery(callback.id);
       await noteUserActivity();
 
-      // Artist profile photos are companion messages. Remove them whenever the
-      // user leaves the Artist home surface so navigation never leaves orphan
-      // images behind. Follow/unfollow stays on the same surface.
+      // Artist home can be a single photo card. Before navigating away, replace
+      // that card with a text control message so every existing editMessageText
+      // route remains safe. Old two-message Artist sessions are also supported.
       if (session.artistPhotoMessageId && action !== 'fol') {
-        await clearArtistProfilePhoto(bot, session);
+        const currentIsCard =
+          Number(session.artistPhotoMessageId) === Number(messageId);
+        if (currentIsCard) {
+          messageId = await replaceArtistProfileCardWithText(
+            bot,
+            session,
+            messageId,
+            'یه لحظه…'
+          );
+        } else {
+          await clearArtistProfilePhoto(bot, session);
+        }
       }
 
       if (action === 'hmn') {
@@ -207,34 +229,34 @@ export async function handleUpdate(update) {
         await bot.editMessageText(
           session.chatId,
           messageId,
-          'اسم آهنگ، خواننده یا آلبوم رو بفرست 🎵\n\nیا از بخش‌های زیر انتخاب کن:',
+          HOME_TEXT,
           { reply_markup: homeKeyboard(sessionId) }
         );
       } else if (action === 'hnew') {
         await bot.editMessageText(
           session.chatId,
           messageId,
-          '🔥 جدیدترین‌ها\nدسته‌بندی رو انتخاب کن:',
+          '🔥 تازه‌ها\nکدوم حال‌و‌هوا؟',
           { reply_markup: newestMenuKeyboard(sessionId) }
         );
       } else if (action === 'htop') {
         await bot.editMessageText(
           session.chatId,
           messageId,
-          '📥 پردانلودترین‌ها\nبازه رو انتخاب کن:',
+          '🏆 پردانلودها\nچه بازه‌ای؟',
           { reply_markup: topMenuKeyboard(sessionId) }
         );
       } else if (action === 'hnc' || action === 'htc') {
         session.busy = true;
         const feedKey = parts[2];
-        await bot.editMessageText(session.chatId, messageId, 'در حال دریافت آهنگ‌ها…');
+        await bot.editMessageText(session.chatId, messageId, 'دارم آهنگ‌ها رو میارم… 🎵');
         queueSessionSource(sessionId, session, { type: 'home_feed', messageId, feedKey });
       } else if (action === 'hpl') {
         session.busy = false;
         await bot.editMessageText(
           session.chatId,
           messageId,
-          '🎧 پلی‌لیست‌ها\nچند پلی‌لیست منتخب:',
+          '🎧 پلی‌لیست‌ها\nیه مود انتخاب کن 👇',
           { reply_markup: curatedPlaylistsKeyboard(sessionId) }
         );
       } else if (action === 'hpo') {
@@ -245,7 +267,7 @@ export async function handleUpdate(update) {
           session.busy = false;
           return;
         }
-        await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن پلی‌لیست…');
+        await bot.editMessageText(session.chatId, messageId, 'دارم پلی‌لیست رو میارم… 🎧');
         queueSessionSource(sessionId, session, {
           type: 'home_playlist',
           messageId,
@@ -257,14 +279,14 @@ export async function handleUpdate(update) {
           await bot.editMessageText(
             session.chatId,
             messageId,
-            '🔔 دنبال‌شده‌ها\n\nهنوز خواننده‌ای رو فالو نکردی.',
+            '♡ دنبال‌شده‌ها\n\nهنوز کسی رو دنبال نمی‌کنی 👀\n\nاز صفحه‌ی هر خواننده می‌تونی روی «♡ دنبال کردن» بزنی.',
             { reply_markup: followedArtistsKeyboard(sessionId, []) }
           );
         } else {
           await bot.editMessageText(
             session.chatId,
             messageId,
-            '🔔 خواننده‌های دنبال‌شده',
+            '♡ دنبال‌شده‌ها',
             { reply_markup: followedArtistsKeyboard(sessionId, session.followedArtists) }
           );
         }
@@ -272,19 +294,19 @@ export async function handleUpdate(update) {
         const index = Number(parts[2]);
         if (!session.followedArtists?.[index]) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId, messageId, 'در حال باز کردن صفحه‌ی خواننده…');
+        await bot.editMessageText(session.chatId, messageId, 'دارم صفحه‌ی خواننده رو باز می‌کنم… 🎤');
         queueSessionSource(sessionId, session, { type: 'home_artist', messageId, index });
       } else if (action === 't') {
         const track = session.options[Number(parts[2])]; if (!track) return;
         session.currentTrack = track;
         session.trackBack = { type: 'results' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'sal') {
         const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
+        await bot.editMessageText(session.chatId,messageId,'دارم آلبوم رو باز می‌کنم… 💿');
         queueSessionSource(sessionId, session, {
           type: 'search_album',
           messageId,
@@ -306,17 +328,17 @@ export async function handleUpdate(update) {
               reply_markup: {
                 inline_keyboard: [
                   ...artistChoices.map((artist, index) => ([{
-                    text: `🗣 ${artist}`,
+                    text: `🎤 ${artist}`,
                     callback_data: `arc:${sessionId}:${index}`,
                   }])),
-                  [{ text: '🔙 برگشت', callback_data: `rs:${sessionId}` }],
+                  [{ text: '↩️ برگشت', callback_data: `rs:${sessionId}` }],
                 ],
               },
             }
           );
         } else {
           session.busy = true;
-          await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+          await bot.editMessageText(session.chatId,messageId,'دارم صفحه‌ی خواننده رو باز می‌کنم… 🎤');
           queueSessionSource(sessionId, session, {
             type: 'artist',
             messageId,
@@ -330,7 +352,7 @@ export async function handleUpdate(update) {
         await bot.editMessageText(
           session.chatId,
           messageId,
-          `در حال باز کردن صفحه‌ی ${artist}…`
+          `دارم صفحه‌ی ${artist} رو باز می‌کنم… 🎤`
         );
         queueSessionSource(sessionId, session, {
           type: 'artist',
@@ -343,7 +365,7 @@ export async function handleUpdate(update) {
         const album = session.albumOptions?.[albumIndex];
         if (!album?.artist) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+        await bot.editMessageText(session.chatId,messageId,'دارم صفحه‌ی خواننده رو باز می‌کنم… 🎤');
         queueSessionSource(sessionId, session, {
           type: 'artist_from_album',
           messageId,
@@ -353,7 +375,7 @@ export async function handleUpdate(update) {
         await showResults(sessionId,session,messageId);
       } else if (action === 'trt') {
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال بازگشت به آهنگ…');
+        await bot.editMessageText(session.chatId,messageId,'دارم برمی‌گردم به آهنگ… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tret') {
         if (session.albumOriginTrack) {
@@ -361,22 +383,25 @@ export async function handleUpdate(update) {
           session.trackBack = session.albumOriginBack || { type: 'results' };
         }
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال بازگشت به آهنگ…');
+        await bot.editMessageText(session.chatId,messageId,'دارم برمی‌گردم به آهنگ… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tbk') {
         const back = session.trackBack || { type: 'results' };
         if (back.type === 'top' && session.artistContext) {
           const tracks = session.artistContext.topTracks || [];
-          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,{
+          await bot.editMessageText(session.chatId,messageId,`🔥 پربازدیدهای ${session.artistContext.artist}`,{
             reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'top' }),
           });
         } else if (back.type === 'recent' && session.artistContext) {
           const tracks = session.artistContext.recentTracks || [];
-          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🆕 جدیدترین آثار`,{
+          await bot.editMessageText(session.chatId,messageId,`🆕 تازه‌های ${session.artistContext.artist}`,{
             reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'recent' }),
           });
         } else if (back.type === 'album' && session.currentAlbum) {
-          const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
+          const title = albumPageTitle(
+            session.currentAlbum,
+            session.artistContext?.artist || ''
+          );
           const keyboard = session.currentAlbumView === 'track'
             ? trackAlbumKeyboard(
                 sessionId,
@@ -410,23 +435,27 @@ export async function handleUpdate(update) {
         );
       } else if (action === 'fol' && session.artistContext) {
         session.isFollowing = await follows.toggle(session.userId,session.artistContext.artist);
-        await bot.editMessageText(session.chatId,messageId,session.artistContext.artist,{
-          reply_markup: artistHomeKeyboard(
+        await renderArtistHomePage(
+          bot,
+          sessionId,
+          session,
+          messageId,
+          artistHomeKeyboard(
             sessionId,
             session.artistContext,
             session.isFollowing,
             { backAction: session.artistBack || 'rs' }
-          ),
-        });
+          )
+        );
       } else if (action === 'ars' && session.artistContext) {
         const tracks = session.artistContext.topTracks || [];
         if (tracks.length) {
-          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,{
+          await bot.editMessageText(session.chatId,messageId,`🔥 پربازدیدهای ${session.artistContext.artist}`,{
             reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'top' }),
           });
         } else {
           session.busy = true;
-          await bot.editMessageText(session.chatId,messageId,'در حال دریافت پربازدیدترین آثار…');
+          await bot.editMessageText(session.chatId,messageId,'دارم پربازدیدها رو میارم… 🔥');
           const openedLocal = await tryOpenArtistListLocal(
             sessionId,
             session,
@@ -440,12 +469,12 @@ export async function handleUpdate(update) {
       } else if (action === 'arn' && session.artistContext) {
         const tracks = session.artistContext.recentTracks || [];
         if (tracks.length) {
-          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n🆕 جدیدترین آثار`,{
+          await bot.editMessageText(session.chatId,messageId,`🆕 تازه‌های ${session.artistContext.artist}`,{
             reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'recent' }),
           });
         } else {
           session.busy = true;
-          await bot.editMessageText(session.chatId,messageId,'در حال دریافت جدیدترین آثار…');
+          await bot.editMessageText(session.chatId,messageId,'دارم تازه‌ها رو میارم… 🆕');
           const openedLocal = await tryOpenArtistListLocal(
             sessionId,
             session,
@@ -460,7 +489,7 @@ export async function handleUpdate(update) {
         session.busy = true;
         const tracks = session.artistContext.topTracks || [];
         const count = Math.min(TOP_TRACKS_LIMIT,tracks.length);
-        await bot.editMessageText(session.chatId,messageId,`در حال دریافت ${count} آهنگ برتر…`);
+        await bot.editMessageText(session.chatId,messageId,`دارم ${count} آهنگ رو می‌فرستم…`);
         const servedLocal = await tryDeliverBulkFromCacheLocal(
           sessionId,
           session,
@@ -473,7 +502,7 @@ export async function handleUpdate(update) {
       } else if (action === 'rta' && session.artistContext?.recentTracks?.length) {
         session.busy = true;
         const count = Math.min(TOP_TRACKS_LIMIT,session.artistContext.recentTracks.length);
-        await bot.editMessageText(session.chatId,messageId,`در حال دریافت ${count} آهنگ جدید…`);
+        await bot.editMessageText(session.chatId,messageId,`دارم ${count} آهنگ رو می‌فرستم…`);
         const servedLocal = await tryDeliverBulkFromCacheLocal(
           sessionId,
           session,
@@ -489,22 +518,22 @@ export async function handleUpdate(update) {
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'top' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'rt') {
         const track = session.artistContext?.recentTracks?.[Number(parts[2])]; if (!track) return;
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'recent' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tqh' || action === 'tqn') {
         if (!session.currentTrack) return;
         session.busy = true;
         const quality = action === 'tqh' ? 'hq' : 'normal';
         const statusText = quality === 'hq'
-          ? 'در حال دریافت آهنگ…'
-          : 'در حال دریافت کیفیت معمولی…';
+          ? 'دارم آهنگ رو می‌فرستم…'
+          : 'دارم آهنگ رو می‌فرستم…';
         await bot.editMessageText(session.chatId,messageId,statusText);
         let servedFromCache = false;
         try {
@@ -518,7 +547,7 @@ export async function handleUpdate(update) {
           if (err?.code === 'REGION_RESTRICTED_IRAN_ONLY') {
             await bot.sendMessage(
               session.chatId,
-              'این محتوا فقط برای کاربران داخل ایران در دسترسه.'
+              'این آهنگ فعلاً فقط داخل ایران در دسترسه 🇮🇷'
             );
             await openTrackPageLocal(sessionId, session, messageId);
             servedFromCache = true;
@@ -532,7 +561,7 @@ export async function handleUpdate(update) {
       } else if (action === 'tly') {
         if (!session.currentTrack) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال دریافت متن…');
+        await bot.editMessageText(session.chatId,messageId,'دارم متنش رو پیدا می‌کنم… 📝');
         const servedLyrics = await trySendCachedTrackLyrics(
           session.chatId,
           session.currentTrack
@@ -545,7 +574,7 @@ export async function handleUpdate(update) {
       } else if (action === 'tcv') {
         if (!session.currentTrack) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال دریافت کاور…');
+        await bot.editMessageText(session.chatId,messageId,'دارم کاورش رو میارم… 🖼');
         const servedCover = await trySendCachedTrackCover(
           session.chatId,
           session.currentTrack
@@ -558,13 +587,13 @@ export async function handleUpdate(update) {
       } else if (action === 'tif') {
         if (!session.currentTrack) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال دریافت مشخصات…');
+        await bot.editMessageText(session.chatId,messageId,'دارم اطلاعاتش رو میارم…');
         try {
           const text = await getTrackInfoText(session.currentTrack);
           await bot.sendMessage(session.chatId, text);
         } catch (err) {
           console.error('[track info local]', err.message);
-          await bot.sendMessage(session.chatId, 'مشخصات بیشتری برای این آهنگ ثبت نشده.');
+          await bot.sendMessage(session.chatId, 'فعلاً اطلاعات بیشتری از این آهنگ ندارم.');
         }
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tar') {
@@ -581,17 +610,17 @@ export async function handleUpdate(update) {
               reply_markup: {
                 inline_keyboard: [
                   ...artistChoices.map((artist, index) => ([{
-                    text: `🗣 ${artist}`,
+                    text: `🎤 ${artist}`,
                     callback_data: `tac:${sessionId}:${index}`,
                   }])),
-                  [{ text: '🔙 برگشت', callback_data: `trt:${sessionId}` }],
+                  [{ text: '↩️ برگشت', callback_data: `trt:${sessionId}` }],
                 ],
               },
             }
           );
         } else {
           session.busy = true;
-          await bot.editMessageText(session.chatId,messageId,'در حال باز کردن صفحه‌ی خواننده…');
+          await bot.editMessageText(session.chatId,messageId,'دارم صفحه‌ی خواننده رو باز می‌کنم… 🎤');
           const openedLocal = await tryOpenTrackArtistLocal(
             sessionId,
             session,
@@ -608,7 +637,7 @@ export async function handleUpdate(update) {
         await bot.editMessageText(
           session.chatId,
           messageId,
-          `در حال باز کردن صفحه‌ی ${artist}…`
+          `دارم صفحه‌ی ${artist} رو باز می‌کنم… 🎤`
         );
         queueSessionSource(sessionId, session, {
           type: 'track_artist',
@@ -618,7 +647,7 @@ export async function handleUpdate(update) {
       } else if (action === 'tal') {
         if (!session.currentTrack) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
+        await bot.editMessageText(session.chatId,messageId,'دارم آلبوم رو باز می‌کنم… 💿');
         const albumData = await getTrackAlbum(session.currentTrack).catch(() => null);
         if (albumData?.album && albumData.tracks?.length) {
           session.albumOriginTrack = session.currentTrack;
@@ -630,7 +659,7 @@ export async function handleUpdate(update) {
           await bot.editMessageText(
             session.chatId,
             messageId,
-            `💿 ${albumData.album.title}\n${albumData.album.artist || session.currentTrack.artist}`,
+            albumPageTitle(albumData.album, session.currentTrack.artist),
             {
               reply_markup: trackAlbumKeyboard(
                 sessionId,
@@ -647,12 +676,16 @@ export async function handleUpdate(update) {
         const page = Number(parts[2] || 0);
         if (session.albums) {
           session.albumsPage = page;
-          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n💿 آلبوم‌ها`,{
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            artistAlbumsTitle(session.artistContext.artist, session.albums.length),
+            {
             reply_markup: albumsKeyboard(sessionId,session.albums,page),
           });
         } else {
           session.busy = true;
-          await bot.editMessageText(session.chatId,messageId,'در حال دریافت آلبوم‌ها…');
+          await bot.editMessageText(session.chatId,messageId,'دارم آلبوم‌ها رو میارم… 💿');
           const openedLocal = await tryOpenAlbumsLocal(
             sessionId,
             session,
@@ -665,7 +698,7 @@ export async function handleUpdate(update) {
         }
       } else if (action === 'ao') {
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آلبوم…');
+        await bot.editMessageText(session.chatId,messageId,'دارم آلبوم رو باز می‌کنم… 💿');
         const openedLocal = await tryOpenAlbumLocal(
           sessionId,
           session,
@@ -678,7 +711,10 @@ export async function handleUpdate(update) {
       } else if (action === 'apg') {
         if (!session.currentAlbum?.tracks?.length) return;
         session.albumTrackPage = Math.max(0, Number(parts[2] || 0));
-        const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
+        const title = albumPageTitle(
+          session.currentAlbum,
+          session.artistContext?.artist || ''
+        );
         const keyboard = session.currentAlbumView === 'track'
           ? trackAlbumKeyboard(
               sessionId,
@@ -699,13 +735,13 @@ export async function handleUpdate(update) {
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'album' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'در حال باز کردن آهنگ…');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'ala') {
         if (!session.currentAlbum?.tracks?.length) return;
         session.busy = true;
         const count = session.currentAlbum.tracks.length;
-        await bot.editMessageText(session.chatId,messageId,`در حال دریافت یکجای آلبوم (${count} آهنگ)…`);
+        await bot.editMessageText(session.chatId,messageId,`دارم ${count} آهنگ آلبوم رو می‌فرستم…`);
         const servedLocal = await tryDeliverBulkFromCacheLocal(
           sessionId,
           session,
@@ -737,19 +773,19 @@ export async function handleUpdate(update) {
   }
   const query = msg.text?.trim();
   if (!query) {
-    await bot.sendMessage(chatId,'اسم آهنگ یا خواننده رو به‌صورت متن بفرست.');
+    await bot.sendMessage(chatId,'اسم آهنگ، خواننده یا آلبوم رو برام بنویس 🎵');
     return;
   }
   if (query.startsWith('/')) {
-    await bot.sendMessage(chatId,'برای جست‌وجو فقط اسم آهنگ یا خواننده رو بفرست.');
+    await bot.sendMessage(chatId,'برای جست‌وجو فقط اسم آهنگ، خواننده یا آلبوم رو بفرست.');
     return;
   }
   if (query.length > 120) {
-    await bot.sendMessage(chatId,'عبارت جست‌وجو خیلی طولانیه؛ کوتاه‌ترش کن.');
+    await bot.sendMessage(chatId,'یکم کوتاه‌ترش کن تا بهتر پیداش کنم 🔎');
     return;
   }
   if (!searchAllowed(userId)) {
-    await bot.sendMessage(chatId,'یک لحظه صبر کن و دوباره جست‌وجو کن.');
+    await bot.sendMessage(chatId,'یه لحظه صبر کن، بعد دوباره بگردیم 🔎');
     return;
   }
   // A new explicit query supersedes queued bulk work from the same user.
@@ -757,7 +793,7 @@ export async function handleUpdate(update) {
   // without cancelling another user's active request or ordinary navigation.
   await cancelQueuedBulkForUser(userId);
 
-  const status = await bot.sendMessage(chatId,'جست‌وجو…');
+  const status = await bot.sendMessage(chatId,'دارم می‌گردم… 🔎');
   const servedFromCache = await tryHandleCachedSearch(
     chatId,
     userId,
@@ -769,7 +805,7 @@ export async function handleUpdate(update) {
       await bot.editMessageText(
         chatId,
         status.message_id,
-        'درخواست‌ها الان زیاده؛ چند لحظه دیگه دوباره امتحان کن.'
+        'الان یه کم شلوغه 😅 چند ثانیه دیگه دوباره بزن.'
       );
       return;
     }
