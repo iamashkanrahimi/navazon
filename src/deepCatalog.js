@@ -522,6 +522,10 @@ export class DeepCatalog {
   }
 
   async setMedia(track, quality, media = {}, extra = {}) {
+    // Durable media must never be keyed by an inferred Artist identity.
+    // Resolve/canonicalize first; otherwise common titles can poison file_id
+    // cache entries for a different performer.
+    if (track?.artistInferred) return;
     const trackKey = await this.upsertTrack(track);
     if (!trackKey || !media.fileId) return;
     await db.query(`
@@ -558,6 +562,7 @@ export class DeepCatalog {
 
   async getMediaMap(tracks = [], quality = 'hq') {
     const keys = [...new Set((tracks || [])
+      .filter(track => !track?.artistInferred)
       .map(track => deepTrackKey(track))
       .filter(key => key && key !== '|'))];
 
