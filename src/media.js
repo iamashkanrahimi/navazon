@@ -10,6 +10,8 @@ import {
   shouldUseSearchRelevanceFallback,
   primarySearchQueries,
   acceptsShortenedPrimarySearch,
+  artistCreditCompatible,
+  titleCreditsArtist,
 } from './text.js';
 import {
   searchMeloBot,
