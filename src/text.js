@@ -223,20 +223,20 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
     return Boolean(a && b && a !== b);
   };
 
-  if (
-    expectedTitle
-    && mediaTitle
-    && !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
-    && !crossScript(expectedTitleRaw, mediaTitleRaw)
-  ) {
-    return false;
-  }
+  if (expectedTitle && mediaTitle) {
+    if (
+      !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
+      && !crossScript(expectedTitleRaw, mediaTitleRaw)
+    ) {
+      return false;
+    }
 
-  const expectedVariants = trackTitleVariantKinds(expectedTitleRaw);
-  const actualVariants = trackTitleVariantKinds(mediaTitleRaw);
-  if (expectedVariants.size !== actualVariants.size) return false;
-  for (const kind of expectedVariants) {
-    if (!actualVariants.has(kind)) return false;
+    const expectedVariants = trackTitleVariantKinds(expectedTitleRaw);
+    const actualVariants = trackTitleVariantKinds(mediaTitleRaw);
+    if (expectedVariants.size !== actualVariants.size) return false;
+    for (const kind of expectedVariants) {
+      if (!actualVariants.has(kind)) return false;
+    }
   }
 
   if (!expectedArtist || !performer) return true;
