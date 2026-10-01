@@ -64,6 +64,7 @@ const { trackCacheKey } = await import('../src/cache.js');
 const {
   DeepCatalog,
   deepTrackKey,
+  hasDurableTrackIdentity,
   isSuspendedBackgroundMediaTaskKind,
 } = await import('../src/deepCatalog.js');
 const { CatalogStore } = await import('../src/catalog.js');
@@ -5149,6 +5150,175 @@ test('deep media cache ignores inferred Artist keys for both reads and writes', 
     await catalog.getMediaMap([inferred, explicit], 'hq');
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0].params[1], ['ali sorena|kavir']);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('durable Track identity is impossible while Artist is still inferred', () => {
+  const inferred = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    artistInferred: true,
+    rawText: '🎵 Maryam',
+  };
+  assert.equal(hasDurableTrackIdentity(inferred), false);
+  assert.equal(deepTrackKey(inferred), '');
+
+  const explicit = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    artistInferred: false,
+  };
+  assert.equal(hasDurableTrackIdentity(explicit), true);
+  assert.equal(deepTrackKey(explicit), 'ali sorena|maryam');
+});
+
+test('all DeepCatalog durable writers become no-ops for inferred Artist identity', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('No database write/read should occur for inferred identity');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      artistInferred: true,
+      source: 'melobot',
+      rawText: '🎵 Maryam',
+    };
+
+    assert.equal(await catalog.upsertTrack(inferred), null);
+    await catalog.setCover(inferred, { fileId: 'cover-file' });
+    await catalog.setLyrics(inferred, 'lyrics');
+    await catalog.markNoLyrics(inferred);
+    await catalog.setMetadata(inferred, { popularityCount: 10 });
+    await catalog.setCapabilities(inferred, { hasHq: true });
+    await catalog.setMedia(inferred, 'hq', { fileId: 'audio-file' });
+    assert.deepEqual(await catalog.getTrackDetails(inferred), null);
+    assert.deepEqual(await catalog.getRecentCapabilityFailures(inferred), {});
+    await catalog.clearCapability(inferred, 'hasHq');
+    await catalog.markCapabilityFailure(inferred, 'hasHq', 'test');
+    await catalog.clearCapabilityFailure(inferred, 'hasHq');
+
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('transient inferred rows survive canonicalization without becoming durable DB identity', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Transient canonicalization must not hit DB');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      artistInferred: true,
+      rawText: '🎵 Maryam',
+      source: 'melobot',
+    };
+    const rows = await catalog.canonicalizeKnownTracks([inferred, { ...inferred }]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Maryam');
+    assert.equal(rows[0].artistInferred, true);
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('legacy same-script poisoned alias is ignored at read time', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('FROM track_aliases a')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          canonical_track_key: 'mehrdad asemani|maryam',
+          alias_source: 'melobot',
+          alias_evidence: 'telegram_audio_metadata',
+          artist: 'Mehrdad Asemani',
+          title: 'Maryam',
+          source_data: { source: 'melobot' },
+          duration_seconds: 180,
+          popularity_count: null,
+          popularity_text: null,
+        }],
+      };
+    }
+    if (text.includes('FROM track_cache')) {
+      return { rowCount: 0, rows: [] };
+    }
+    throw new Error('Unexpected SQL in poisoned alias read regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const source = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    };
+    const resolved = await catalog.resolveTrackAlias(source);
+    assert.equal(resolved.artist, 'Ali Sorena');
+    assert.equal(resolved.title, 'Maryam');
+    assert.equal(
+      calls.some(call => call.sql.includes('FROM track_cache')),
+      true
+    );
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('trusted Telegram metadata alias can still bridge Persian catalog identity to Latin canonical identity', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_aliases a')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          canonical_track_key: 'reza bahram|yar',
+          alias_source: 'ahangify',
+          alias_evidence: 'telegram_audio_metadata',
+          artist: 'Reza Bahram',
+          title: 'Yar',
+          source_data: { source: 'melobot' },
+          duration_seconds: 214,
+          popularity_count: 1200000,
+          popularity_text: '1.2M',
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in trusted transliteration alias regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const resolved = await catalog.resolveTrackAlias({
+      artist: 'رضا بهرام',
+      title: 'یار',
+      source: 'ahangify',
+    }, { learnFromCache: false });
+    assert.equal(resolved.artist, 'Reza Bahram');
+    assert.equal(resolved.title, 'Yar');
+    assert.equal(resolved.artistInferred, false);
   } finally {
     db.query = originalQuery;
   }
