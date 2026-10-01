@@ -13,6 +13,7 @@ import {
   artistCreditCompatible,
   titleCreditsArtist,
   trackMediaIdentityMatches,
+  trackTitleIdentityCompatible,
 } from './text.js';
 import {
   searchMeloBot,
@@ -217,7 +218,9 @@ function chooseAhangifyMatch(results, track) {
       ? 0
       : title === wantedTitle
         ? 2
-        : (title && (title.includes(wantedTitle) || wantedTitle.includes(title)) ? 1 : 0);
+        : trackTitleIdentityCompatible(track?.title || '', parsed.title || '')
+          ? 1
+          : 0;
 
     const artistScore = !wantedArtist
       ? 0
