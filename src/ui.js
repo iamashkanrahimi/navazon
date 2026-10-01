@@ -285,7 +285,7 @@ export function artistSongsKeyboard(sessionId, tracks, { mode = 'top' } = {}) {
 export function trackPageTitle(track = {}) {
   const artist = clean(track.artist || '');
   const title = clean(track.title || '');
-  return [track.artistInferred ? '' : artist, title].filter(Boolean).join(' - ') || 'آهنگ';
+  return [track.artistInferred ? '' : artist, title].filter(Boolean).join(' — ') || 'آهنگ';
 }
 
 export function trackPageKeyboard(sessionId, track, details = {}, capabilities = {}) {
