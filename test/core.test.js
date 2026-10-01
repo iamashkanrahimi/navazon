@@ -5111,3 +5111,45 @@ test('deep Album relation fails closed instead of returning a polluted partial A
     db.query = originalQuery;
   }
 });
+
+
+test('deep media cache ignores inferred Artist keys for both reads and writes', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    calls.push({ sql: String(sql), params });
+    if (String(sql).includes('FROM deep_track_media')) {
+      return { rows: [], rowCount: 0 };
+    }
+    throw new Error('Unexpected SQL in inferred media cache regression: ' + String(sql).slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+      artistInferred: true,
+    };
+    const explicit = {
+      artist: 'Ali Sorena',
+      title: 'Kavir',
+      source: 'melobot',
+    };
+
+    await catalog.setMedia(
+      inferred,
+      'hq',
+      { fileId: 'wrong-file-id', kind: 'audio' },
+      { source: 'melobot' }
+    );
+    assert.equal(calls.length, 0);
+
+    await catalog.getMediaMap([inferred, explicit], 'hq');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].params[1], ['ali sorena|kavir']);
+  } finally {
+    db.query = originalQuery;
+  }
+});
