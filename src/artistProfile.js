@@ -91,7 +91,28 @@ export function artistHomeCaption(artist = '') {
   return `🎤 ${name}\n\nاز کجا شروع کنیم؟`;
 }
 
-async function retireArtistProfileMessage(bot, chatId, messageId) {
+const MAX_STALE_ARTIST_MESSAGE_IDS = 8;
+
+function rememberStaleArtistMessage(session, messageId) {
+  const id = Number(messageId || 0);
+  if (!session || !id) return;
+  const existing = Array.isArray(session.artistStaleMessageIds)
+    ? session.artistStaleMessageIds.map(Number).filter(Boolean)
+    : [];
+  session.artistStaleMessageIds = [...new Set([...existing, id])]
+    .slice(-MAX_STALE_ARTIST_MESSAGE_IDS);
+}
+
+export function isRetiredArtistProfileMessage(session, messageId) {
+  const id = Number(messageId || 0);
+  if (!id) return false;
+  return (session?.artistStaleMessageIds || [])
+    .some(staleId => Number(staleId) === id);
+}
+
+async function retireArtistProfileMessage(bot, session, messageId) {
+  const chatId = session?.chatId;
+  if (!chatId || !Number(messageId || 0)) return 'gone';
   try {
     await bot.deleteMessage(chatId, messageId);
     return 'deleted';
@@ -115,6 +136,7 @@ async function retireArtistProfileMessage(bot, chatId, messageId) {
         '[artist profile stale keyboard]',
         String(markupErr?.message || markupErr)
       );
+      rememberStaleArtistMessage(session, messageId);
       return 'retained';
     }
   }
@@ -131,7 +153,7 @@ export async function clearArtistProfilePhoto(bot, session) {
     return;
   }
   try {
-    await retireArtistProfileMessage(bot, session.chatId, id);
+    await retireArtistProfileMessage(bot, session, id);
   } finally {
     session.artistPhotoMessageId = null;
     session.artistProfileArtistKey = null;
@@ -244,7 +266,7 @@ export async function renderArtistHomePage(
     });
 
     if (Number(messageId || 0) && Number(messageId) !== Number(photoMessage.message_id)) {
-      await retireArtistProfileMessage(bot, session.chatId, messageId);
+      await retireArtistProfileMessage(bot, session, messageId);
     }
 
     session.artistPhotoMessageId = photoMessage.message_id;
