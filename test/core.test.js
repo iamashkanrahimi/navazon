@@ -4601,3 +4601,30 @@ test('undeletable stale Artist cards have their inline keyboard disabled', async
   assert.equal(session.artistProfileArtistKey, null);
   assert.equal(session.artistProfileVisible, false);
 });
+
+
+test('already-gone Artist cards do not trigger redundant stale-keyboard cleanup', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      throw new Error('message to delete not found');
+    },
+    async editMessageReplyMarkup() {
+      calls.push(['markup']);
+      return true;
+    },
+  };
+  const session = {
+    chatId: 10,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  await clearArtistProfilePhoto(fakeBot, session);
+
+  assert.deepEqual(calls.map(call => call[0]), ['delete']);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileVisible, false);
+});
