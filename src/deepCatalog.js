@@ -2,6 +2,7 @@ import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
   artistCreditMatchesContext,
+  artistCreditCompatible,
   cleanText,
   normalizeText,
 } from './text.js';
@@ -156,6 +157,35 @@ export class DeepCatalog {
       const performer = clean(row.media?.performer || '');
       const mediaTitle = clean(row.media?.title || '');
       if (!performer || !mediaTitle) continue;
+
+      const expectedTitle = normalizeText(track?.title || '');
+      const actualTitle = normalizeText(mediaTitle);
+      const titleCompatible = Boolean(
+        expectedTitle
+        && actualTitle
+        && (
+          expectedTitle === actualTitle
+          || expectedTitle.includes(actualTitle)
+          || actualTitle.includes(expectedTitle)
+        )
+      );
+      if (
+        !titleCompatible
+        || (
+          track?.artist
+          && !artistCreditCompatible(track.artist, performer)
+        )
+      ) {
+        console.warn(
+          '[track alias cache mismatch]',
+          track?.artist,
+          track?.title,
+          '!=',
+          performer,
+          mediaTitle
+        );
+        continue;
+      }
 
       const candidate = applyPolicyDefaults({
         ...track,
