@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import {
   collectNewMessages,
+  getTelegramInboxSequence,
   isAudioMessage,
   latestMessageId,
   messageText,
@@ -70,11 +71,13 @@ export async function searchAhangify(
   { timeoutMs = config.searchTimeoutMs } = {}
 ) {
   const peer = config.ahangifyUsername;
+  const beforeSequence = getTelegramInboxSequence(client);
   const beforeSearch = await latestMessageId(client, peer);
 
   await client.sendMessage(peer, { message: query });
 
   const search = await collectNewMessages(client, peer, beforeSearch, {
+    afterSequence: beforeSequence,
     timeoutMs: Math.max(800, Number(timeoutMs || config.searchTimeoutMs)),
     quietMs: 1000,
   });
@@ -94,11 +97,13 @@ export async function downloadAhangifyResult(
   { timeoutMs = config.downloadTimeoutMs } = {}
 ) {
   const peer = config.ahangifyUsername;
+  const beforeSequence = getTelegramInboxSequence(client);
   const beforeDownload = await latestMessageId(client, peer);
 
   await client.sendMessage(peer, { message: candidate.cmd });
 
   const download = await collectNewMessages(client, peer, beforeDownload, {
+    afterSequence: beforeSequence,
     timeoutMs: Math.max(1500, Number(timeoutMs || config.downloadTimeoutMs)),
     stopWhen: message => {
       if (isAudioMessage(message)) return true;
