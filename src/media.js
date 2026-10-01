@@ -126,6 +126,7 @@ export async function bridgeSourceMessage(
   );
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
+  assertMediaIdentityMatchesTrack(track, media);
 
   const originalTrack = { ...track };
   const durableTrack = canonicalTrackFromAudioMetadata(track, media);
@@ -240,9 +241,12 @@ function chooseAhangifyMatch(results, track) {
 
     const artistScore = !wantedArtist
       ? 0
-      : artist === wantedArtist
+      : (
+          artistCreditCompatible(track?.artist || '', parsed.artist || '')
+          || titleCreditsArtist(parsed.title || '', track?.artist || '')
+        )
         ? 2
-        : (artist && (artist.includes(wantedArtist) || wantedArtist.includes(artist)) ? 1 : 0);
+        : 0;
 
     if (wantedTitle && titleScore === 0) continue;
     if (wantedArtist && artistScore === 0) continue;
@@ -312,9 +316,9 @@ export async function downloadTrackWithSources(
     }
   }
 
-  const fallbackQuery = track?.artistInferred
-    ? (track.title || originalQuery)
-    : ([track.artist,track.title].filter(Boolean).join(' ') || originalQuery);
+  const fallbackQuery = [track?.artist, track?.title].filter(Boolean).join(' ')
+    || track?.title
+    || originalQuery;
   if (remaining.expired()) {
     throw new Error('Interactive fallback search budget exhausted.');
   }
