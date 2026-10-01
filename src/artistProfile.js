@@ -97,7 +97,10 @@ async function retireArtistProfileMessage(bot, chatId, messageId) {
     return 'deleted';
   } catch (err) {
     const msg = String(err?.message || err);
-    if (!/message to delete not found|message can't be deleted|MESSAGE_ID_INVALID/i.test(msg)) {
+    if (/message to delete not found|MESSAGE_ID_INVALID/i.test(msg)) {
+      return 'gone';
+    }
+    if (!/message can't be deleted/i.test(msg)) {
       console.warn('[artist profile photo delete]', msg);
     }
 
