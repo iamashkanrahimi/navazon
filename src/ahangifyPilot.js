@@ -110,10 +110,26 @@ function rankAccepted(a, b) {
   return Number(a.candidate?.rank || 999) - Number(b.candidate?.rank || 999);
 }
 
+function coreTitle(value = '') {
+  return norm(
+    clean(value)
+      .replace(/\s*[\(\[]\s*(?:ft\.?|feat\.?|featuring)\b[^\)\]]*[\)\]]/gi, ' ')
+      .replace(/\s+-\s+(?:ft\.?|feat\.?|featuring)\b.*$/gi, ' ')
+  );
+}
+
 function metadataMatches(media, target) {
+  const targetCredits = creditParts(target.artist);
+  const mediaCredits = media?.performer ? creditParts(media.performer) : [];
+  const artistOk = !media?.performer
+    ? null
+    : targetCredits.length <= 1
+      ? mediaCredits.includes(targetCredits[0])
+      : mediaCredits.some(part => targetCredits.includes(part));
+
   const checks = {
-    title: media?.title ? norm(media.title) === norm(target.title) : null,
-    artist: media?.performer ? sameCredits(media.performer, target.artist) : null,
+    title: media?.title ? coreTitle(media.title) === coreTitle(target.title) : null,
+    artist: artistOk,
     duration: media?.duration && target.expectedDuration
       ? Math.abs(Number(media.duration) - Number(target.expectedDuration)) <= 12
       : null,
@@ -266,7 +282,6 @@ export async function seedAhangifyBestPilot(sourceQueue) {
            updated_at=NOW()
      WHERE pilot_version=$1
        AND status='running'
-       AND started_at < NOW() - INTERVAL '10 minutes'
   `, [PILOT_VERSION]);
 
   const { rows } = await db.query(`
@@ -305,11 +320,48 @@ export async function seedAhangifyBestPilot(sourceQueue) {
   return { enabled: true, version: PILOT_VERSION, queued };
 }
 
-async function capturePilotMedia(audioMessage, timeoutMs = 8000) {
+async function capturePilotMedia(audioMessage, target, timeoutMs = 10000) {
   if (!audioMessage?.id) throw new Error('Ahangify audio message missing id');
-  const wait = bridge.expectMedia(timeoutMs);
+  const wait = bridge.expectMediaMatching(
+    media => metadataMatches(media, target).ok,
+    timeoutMs
+  );
   await forwardHiddenToOurBot(tg, config.ahangifyUsername, audioMessage.id);
   return wait;
+}
+
+async function logPilotProgress(version = PILOT_VERSION) {
+  const { rows } = await db.query(`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status='success')::int AS success,
+      COUNT(*) FILTER (WHERE status='no_confident_match')::int AS no_confident_match,
+      COUNT(*) FILTER (WHERE status='failed')::int AS failed,
+      COUNT(*) FILTER (WHERE status='retry')::int AS retry,
+      COUNT(*) FILTER (WHERE status='queued')::int AS queued,
+      COUNT(*) FILTER (WHERE status='running')::int AS running,
+      COUNT(*) FILTER (WHERE status='success' AND bitrate >= 320)::int AS success_320,
+      COUNT(*) FILTER (WHERE status='success' AND bitrate >= 250 AND bitrate < 320)::int AS success_250_319,
+      COUNT(*) FILTER (WHERE status='success' AND (bitrate IS NULL OR bitrate < 250))::int AS success_lower_or_unknown
+    FROM ahangify_best_pilot
+    WHERE pilot_version=$1
+  `, [version]);
+  const summary = rows[0] || {};
+  const terminal = Number(summary.success || 0)
+    + Number(summary.no_confident_match || 0)
+    + Number(summary.failed || 0);
+  if (terminal % 10 === 0 || terminal >= Number(summary.total || 0)) {
+    console.log('[ahangify pilot progress]', JSON.stringify(summary));
+  }
+  if (
+    Number(summary.total || 0) > 0
+    && terminal >= Number(summary.total || 0)
+    && Number(summary.queued || 0) === 0
+    && Number(summary.running || 0) === 0
+    && Number(summary.retry || 0) === 0
+  ) {
+    console.log('[ahangify pilot complete]', JSON.stringify(summary));
+  }
 }
 
 export async function runAhangifyBestPilotJob(job) {
@@ -378,6 +430,7 @@ export async function runAhangifyBestPilotJob(job) {
                updated_at=NOW()
          WHERE pilot_version=$1 AND source_url=$2
       `, [version, sourceUrl]);
+      await logPilotProgress(version);
       return {
         status: 'no_confident_match',
         artist: row.artist,
@@ -394,7 +447,7 @@ export async function runAhangifyBestPilotJob(job) {
           chosen.candidate,
           { timeoutMs: 9000 }
         );
-        const media = await capturePilotMedia(download.audioMessage, 8000);
+        const media = await capturePilotMedia(download.audioMessage, target, 10000);
         const verification = metadataMatches(media, target);
         if (!verification.ok) {
           lastError = new Error(
@@ -441,6 +494,7 @@ export async function runAhangifyBestPilotJob(job) {
           media.title || null,
           media.performer || null,
         ]);
+        await logPilotProgress(version);
 
         return {
           status: 'success',
@@ -472,6 +526,7 @@ export async function runAhangifyBestPilotJob(job) {
       retry ? 'retry' : 'failed',
       String(err?.message || err).slice(0, 1000),
     ]);
+    await logPilotProgress(version);
 
     return {
       status: retry ? 'retry' : 'failed',

@@ -43,6 +43,10 @@ export class BridgeInbox {
   }
 
   expectMedia(timeoutMs = 20000) {
+    return this.expectMediaMatching(null, timeoutMs);
+  }
+
+  expectMediaMatching(predicate = null, timeoutMs = 20000) {
     if (this.waiter) throw new Error('Bridge already has a pending media transfer');
 
     return new Promise((resolve, reject) => {
@@ -52,7 +56,8 @@ export class BridgeInbox {
       }, timeoutMs);
 
       this.waiter = {
-        mode: 'single',
+        mode: predicate ? 'single_match' : 'single',
+        predicate,
         resolve: value => {
           clearTimeout(timer);
           this.waiter = null;
@@ -103,6 +108,18 @@ export class BridgeInbox {
     if (this.waiter.mode === 'many') {
       this.waiter.push(media);
       return true;
+    }
+
+    if (this.waiter.mode === 'single_match') {
+      let matched = false;
+      try {
+        matched = Boolean(this.waiter.predicate?.(media, message));
+      } catch {
+        matched = false;
+      }
+      // Consume mismatched late media so it cannot leak into normal bot
+      // handling, but keep waiting for the transfer belonging to this job.
+      if (!matched) return true;
     }
 
     this.waiter.resolve(media);
