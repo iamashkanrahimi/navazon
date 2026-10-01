@@ -91,19 +91,44 @@ export function artistHomeCaption(artist = '') {
   return `🎤 ${name}\n\nاز کجا شروع کنیم؟`;
 }
 
-export async function clearArtistProfilePhoto(bot, session) {
-  const id = Number(session?.artistPhotoMessageId || 0);
-  if (!id || !session?.chatId) {
-    if (session) session.artistPhotoMessageId = null;
-    return;
-  }
+async function retireArtistProfileMessage(bot, chatId, messageId) {
   try {
-    await bot.deleteMessage(session.chatId, id);
+    await bot.deleteMessage(chatId, messageId);
+    return 'deleted';
   } catch (err) {
     const msg = String(err?.message || err);
     if (!/message to delete not found|message can't be deleted|MESSAGE_ID_INVALID/i.test(msg)) {
       console.warn('[artist profile photo delete]', msg);
     }
+
+    // A stale Artist card with live inline buttons can mutate the current
+    // session after navigation has moved elsewhere. If Telegram refuses to
+    // delete the old card, disable its keyboard so it becomes harmless.
+    try {
+      await bot.editMessageReplyMarkup(chatId, messageId, { inline_keyboard: [] });
+      return 'disabled';
+    } catch (markupErr) {
+      console.warn(
+        '[artist profile stale keyboard]',
+        String(markupErr?.message || markupErr)
+      );
+      return 'retained';
+    }
+  }
+}
+
+export async function clearArtistProfilePhoto(bot, session) {
+  const id = Number(session?.artistPhotoMessageId || 0);
+  if (!id || !session?.chatId) {
+    if (session) {
+      session.artistPhotoMessageId = null;
+      session.artistProfileArtistKey = null;
+      session.artistProfileVisible = false;
+    }
+    return;
+  }
+  try {
+    await retireArtistProfileMessage(bot, session.chatId, id);
   } finally {
     session.artistPhotoMessageId = null;
     session.artistProfileArtistKey = null;
@@ -216,11 +241,7 @@ export async function renderArtistHomePage(
     });
 
     if (Number(messageId || 0) && Number(messageId) !== Number(photoMessage.message_id)) {
-      try {
-        await bot.deleteMessage(session.chatId, messageId);
-      } catch (err) {
-        console.warn('[artist profile replace old control]', err?.message || err);
-      }
+      await retireArtistProfileMessage(bot, session.chatId, messageId);
     }
 
     session.artistPhotoMessageId = photoMessage.message_id;
