@@ -9,7 +9,7 @@ import {
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
   albumsKeyboard, noAlbumsKeyboard, albumsErrorKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
-  artistAlbumsTitle, albumPageTitle,
+  artistAlbumsTitle, albumPageTitle, bulkDownloadSummary,
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
@@ -796,7 +796,7 @@ export async function tryOpenAlbumsLocal(
     await bot.editMessageText(
       session.chatId,
       messageId,
-      artistAlbumsTitle(artist) + '\n\nبرای این خواننده آلبومی پیدا نکردم.',
+      artistAlbumsTitle(artist) + '\n\nفعلاً آلبومی از این خواننده پیدا نکردم.',
       { reply_markup: noAlbumsKeyboard(sessionId) }
     );
   } else {
@@ -808,7 +808,8 @@ export async function tryOpenAlbumsLocal(
         reply_markup: albumsKeyboard(
           sessionId,
           session.albums,
-          session.albumsPage
+          session.albumsPage,
+          artist
         ),
       }
     );
@@ -960,6 +961,11 @@ export async function tryDeliverBulkFromCacheLocal(
               backAction: session.currentAlbumView === 'search'
                 ? 'results'
                 : 'albums',
+              artistCallbackData:
+                session.currentAlbumView === 'search'
+                && Number.isInteger(Number(session.currentAlbumSearchIndex))
+                  ? `aar:${sessionId}:${Number(session.currentAlbumSearchIndex)}`
+                  : null,
             }
           );
 
@@ -1100,27 +1106,21 @@ function interactiveSourceFailureMessage(err, action = 'source', quality = '') {
     if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') {
       return 'این آهنگ فعلاً قابل دانلود نیست.';
     }
-    return 'دانلود کامل نشد؛ یک بار دیگه امتحان کن.';
+    return 'دانلود کامل نشد؛ دوباره امتحان کن.';
   }
   if (action === 'cover') {
-    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'برای این آهنگ کاوری پیدا نکردم.';
-    return 'کاور این بار نرسید؛ یک بار دیگه امتحان کن.';
+    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'برای این آهنگ کاوری پیدا نکردم 🖼';
+    return 'کاور این بار نرسید؛ دوباره امتحان کن.';
   }
   if (action === 'lyrics') {
-    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'متن این آهنگ رو پیدا نکردم.';
-    return 'متن آهنگ این بار نرسید؛ یک بار دیگه امتحان کن.';
+    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'متن این آهنگ رو پیدا نکردم 📝';
+    return 'متن آهنگ این بار نرسید؛ دوباره امتحان کن.';
   }
   return 'این بخش این بار کامل نشد؛ دوباره امتحان کن.';
 }
 
 function bulkFallbackMessage(kind, sent, missing) {
-  if (!missing) return null;
-
-  if (sent > 0) {
-    return `${sent} آهنگ آماده شد.\n${missing} تای دیگه فعلاً نرسید؛ اگه خواستی دوباره بزن.`;
-  }
-
-  return 'دانلود یکجا این بار جور نشد.\nمی‌تونی آهنگ‌ها رو تکی دانلود کنی.';
+  return bulkDownloadSummary(sent, missing);
 }
 
 async function deliverAvailableBulkCache(session, tracks) {
@@ -1161,13 +1161,7 @@ async function deliverAvailableBulkCache(session, tracks) {
 }
 
 export async function showResults(sessionId, session, messageId = session.messageId) {
-  const prompt = session.resultsPrompt || (
-    session.albumFirst && !(session.options || []).length
-      ? 'این آلبوم‌ها رو پیدا کردم:'
-      : session.albumOptions?.length
-        ? 'این‌ها رو پیدا کردم:'
-        : 'این‌ها رو پیدا کردم:'
-  );
+  const prompt = session.resultsPrompt || 'این‌ها رو پیدا کردم:';
   const title = session.resultsTitle || `🔎 ${session.query}`;
   await bot.editMessageText(session.chatId,messageId,`${title}\n\n${prompt}`,{
     reply_markup: resultsKeyboard(sessionId,session),
@@ -1375,7 +1369,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'این بخش این بار باز نشد؛ یه بار دیگه امتحان کن.',
+          'این بخش این بار باز نشد؛ دوباره امتحان کن.',
           { reply_markup: keyboard }
         );
       }
@@ -1413,7 +1407,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'این پلی‌لیست این بار باز نشد؛ یه بار دیگه امتحان کن.',
+          'این پلی‌لیست این بار باز نشد؛ دوباره امتحان کن.',
           { reply_markup: curatedPlaylistsKeyboard(job.sessionId) }
         );
       }
@@ -1612,20 +1606,24 @@ export const sourceQueue = new SerialQueue(async job => {
           tracks,
         };
         session.currentAlbumView = 'search';
+        session.currentAlbumSearchIndex = Number(job.index);
         session.albumTrackPage = 0;
         session.busy = false;
 
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          albumPageTitle(album, album.artist),
+          albumPageTitle(session.currentAlbum, resolvedArtistName),
           {
             reply_markup: albumTracksKeyboard(
               job.sessionId,
               tracks,
               0,
               0,
-              { backAction: 'results' }
+              {
+                backAction: 'results',
+                artistCallbackData: `aar:${job.sessionId}:${Number(job.index)}`,
+              }
             ),
           }
         );
@@ -1642,7 +1640,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await renderTrackPage(job.sessionId, session, job.messageId);
       } catch (err) {
         console.error('[track page]', err.message);
-        await bot.editMessageText(session.chatId, job.messageId, 'این آهنگ این بار باز نشد؛ یه بار دیگه امتحان کن.');
+        await bot.editMessageText(session.chatId, job.messageId, 'این آهنگ این بار باز نشد؛ دوباره امتحان کن.');
       }
       session.busy = false;
       return;
@@ -2125,7 +2123,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0) {
+      if (!fallbackNotified) {
         const notice = bulkFallbackMessage('recent', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2298,7 +2296,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0) {
+      if (!fallbackNotified) {
         const notice = bulkFallbackMessage('top', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2502,7 +2500,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
       }
 
-      if (!fallbackNotified && missing > 0) {
+      if (!fallbackNotified) {
         const notice = bulkFallbackMessage('album', sent, missing);
         if (notice) await bot.sendMessage(session.chatId, notice);
       }
@@ -2516,7 +2514,14 @@ export const sourceQueue = new SerialQueue(async job => {
             album?.tracks || [],
             session.albumsPage || 0,
             session.albumTrackPage || 0,
-            { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
+            {
+              backAction: session.currentAlbumView === 'search' ? 'results' : 'albums',
+              artistCallbackData:
+                session.currentAlbumView === 'search'
+                && Number.isInteger(Number(session.currentAlbumSearchIndex))
+                  ? `aar:${job.sessionId}:${Number(session.currentAlbumSearchIndex)}`
+                  : null,
+            }
           );
 
       await bot.editMessageText(
@@ -2945,7 +2950,7 @@ export const sourceQueue = new SerialQueue(async job => {
           await bot.editMessageText(
             session.chatId,
             job.messageId,
-            artistAlbumsTitle(session.artistContext.artist) + '\n\nبرای این خواننده آلبومی پیدا نکردم.',
+            artistAlbumsTitle(session.artistContext.artist) + '\n\nفعلاً آلبومی از این خواننده پیدا نکردم.',
             { reply_markup: noAlbumsKeyboard(job.sessionId) }
           );
           console.log(
@@ -2960,7 +2965,14 @@ export const sourceQueue = new SerialQueue(async job => {
           session.chatId,
           job.messageId,
           artistAlbumsTitle(session.artistContext.artist, session.albums?.length),
-          { reply_markup: albumsKeyboard(job.sessionId, session.albums, page) }
+          {
+            reply_markup: albumsKeyboard(
+              job.sessionId,
+              session.albums,
+              page,
+              session.artistContext.artist
+            ),
+          }
         );
 
         console.log(
@@ -2982,7 +2994,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          artistAlbumsTitle(session.artistContext?.artist || 'خواننده') + '\n\nفعلاً نتونستم آلبوم‌ها رو بیارم. دوباره امتحان کن.',
+          artistAlbumsTitle(session.artistContext?.artist || 'خواننده') + '\n\nفعلاً نتونستم آلبوم‌ها رو بیارم؛ دوباره امتحان کن.',
           { reply_markup: albumsErrorKeyboard(job.sessionId, session.albumsPage || 0) }
         );
       }

@@ -523,7 +523,7 @@ export async function sendTrackCover(chatId, track) {
   }
 
   if (!media?.fileId) {
-    await bot.sendMessage(chatId, 'برای این آهنگ کاوری پیدا نکردم.');
+    await bot.sendMessage(chatId, 'برای این آهنگ کاوری پیدا نکردم 🖼');
     return false;
   }
 
@@ -538,13 +538,13 @@ export async function getTrackInfoText(track) {
   // enriched by the existing background crawler instead of blocking the user
   // on another serialized MeloBot round-trip.
   const lines = [`ℹ️ ${trackPageTitle(track)}`];
-  if (details?.albumInfo?.title) lines.push(`💿 آلبوم: ${details.albumInfo.title}`);
-  if (details?.release_date) lines.push(`📅 تاریخ انتشار: ${details.release_date}`);
-  else if (details?.release_date_raw) lines.push(`📅 تاریخ انتشار: ${details.release_date_raw}`);
+  if (details?.albumInfo?.title) lines.push(`💿 ${details.albumInfo.title}`);
+  if (details?.release_date) lines.push(`📅 ${details.release_date}`);
+  else if (details?.release_date_raw) lines.push(`📅 ${details.release_date_raw}`);
   if (details?.duration_seconds) {
     const min = Math.floor(details.duration_seconds / 60);
     const sec = String(details.duration_seconds % 60).padStart(2, '0');
-    lines.push(`⏱ مدت: ${min}:${sec}`);
+    lines.push(`⏱ ${min}:${sec}`);
   }
   if (details?.popularity_text) lines.push(`📈 بازدید تقریبی: ${details.popularity_text}`);
   else if (details?.popularity_count) lines.push(`📈 بازدید تقریبی: ${Number(details.popularity_count).toLocaleString('en-US')}`);

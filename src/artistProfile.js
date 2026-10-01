@@ -88,7 +88,7 @@ async function rememberOnDemandCache(profile, message) {
 
 export function artistHomeCaption(artist = '') {
   const name = clean(artist);
-  return `🎤 ${name}\n\nاز کجا شروع کنیم؟`;
+  return `🎤 ${name}`;
 }
 
 const MAX_STALE_ARTIST_MESSAGE_IDS = 8;

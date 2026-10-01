@@ -35,8 +35,7 @@ export function trackButtonLabel(track, index, { numbered = false } = {}) {
 
 export function albumButtonLabel(album) {
   const body = album.artist ? `${album.artist} — ${album.title}` : album.title;
-  const suffix = album.trackCount ? ` · ${album.trackCount} آهنگ` : '';
-  return truncate(`💿 ${body}${suffix}`);
+  return truncate(`💿${body}`);
 }
 
 export function artistAlbumsTitle(artist = '', count = null) {
@@ -50,11 +49,8 @@ export function albumPageTitle(album = {}, fallbackArtist = '') {
   const title = clean(album?.title || 'آلبوم');
   const artist = clean(album?.artist || fallbackArtist);
   const count = Number(album?.trackCount || album?.tracks?.length || 0);
-  const meta = [
-    artist,
-    count > 0 ? `${count} آهنگ` : '',
-  ].filter(Boolean).join(' · ');
-  return [`💿 ${title}`, meta].filter(Boolean).join('\n');
+  const countText = count > 0 ? ` (${count} آهنگ)` : '';
+  return [`💿 ${title}${countText}`, artist].filter(Boolean).join('\n');
 }
 
 function artistShortcutMatchesQuery(query = '', artist = '') {
@@ -273,10 +269,13 @@ export function artistSongsKeyboard(sessionId, tracks, { mode = 'top' } = {}) {
   const bulkAction = mode === 'recent' ? 'rta' : 'ata';
   const bulkText = '⬇️ دانلود همه';
 
-  const rows = visible.map((track,index) => ([{
-    text: trackButtonLabel(track,index,{ numbered: mode === 'top' }),
-    callback_data: `${trackAction}:${sessionId}:${index}`,
-  }]));
+  const rows = visible.map((track,index) => {
+    const prefix = mode === 'top' ? `${numberEmoji(index)} ` : '';
+    return [{
+      text: truncate(`${prefix}🎵 ${clean(track?.title || 'آهنگ')}`),
+      callback_data: `${trackAction}:${sessionId}:${index}`,
+    }];
+  });
   if (visible.length) rows.push([{ text: bulkText, callback_data: `${bulkAction}:${sessionId}` }]);
   rows.push([{ text: '↩️ خواننده', callback_data: `arh:${sessionId}` }]);
   return { inline_keyboard: rows };
@@ -323,7 +322,7 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
     || (!lyricsKnownMissing && capabilities.hasLyrics === true)
     || (isMeloBot && !lyricsKnownMissing && capabilities.hasLyrics !== false)
   ) {
-    extras.push({ text: '📝 متن آهنگ', callback_data: `tly:${sessionId}` });
+    extras.push({ text: '📝 متن', callback_data: `tly:${sessionId}` });
   }
   if (
     details?.cover_file_id
@@ -370,7 +369,7 @@ export function trackPageKeyboard(sessionId, track, details = {}, capabilities =
 export function albumsErrorKeyboard(sessionId, page = 0) {
   return {
     inline_keyboard: [
-      [{ text: '🔄 تلاش دوباره', callback_data: `alb:${sessionId}:${Math.max(0, Number(page || 0))}` }],
+      [{ text: '🔄 دوباره امتحان کن', callback_data: `alb:${sessionId}:${Math.max(0, Number(page || 0))}` }],
       [{ text: '↩️ خواننده', callback_data: `arh:${sessionId}` }],
     ],
   };
@@ -384,13 +383,19 @@ export function noAlbumsKeyboard(sessionId) {
   };
 }
 
-export function albumsKeyboard(sessionId, albums, page) {
+export function albumsKeyboard(sessionId, albums, page, fallbackArtist = '') {
   const start = page * ALBUMS_PER_PAGE;
   const visible = (albums || []).slice(start,start + ALBUMS_PER_PAGE);
-  const rows = visible.map((album,offset) => ([{
-    text: truncate(`💿 ${album.title}${album.trackCount ? ` · ${album.trackCount} آهنگ` : ''}`),
-    callback_data: `ao:${sessionId}:${start + offset}`,
-  }]));
+  const rows = visible.map((album,offset) => {
+    const artist = clean(album?.artist || fallbackArtist);
+    const label = artist
+      ? `💿${artist} — ${clean(album?.title || 'آلبوم')}`
+      : `💿${clean(album?.title || 'آلبوم')}`;
+    return [{
+      text: truncate(label),
+      callback_data: `ao:${sessionId}:${start + offset}`,
+    }];
+  });
   const nav = [];
   if (page > 0) nav.push({ text: '‹ قبلی', callback_data: `alb:${sessionId}:${page - 1}` });
   if (start + ALBUMS_PER_PAGE < albums.length) nav.push({ text: 'بعدی ›', callback_data: `alb:${sessionId}:${page + 1}` });
@@ -405,7 +410,7 @@ function pagedAlbumTrackRows(sessionId, tracks, page = 0) {
   const start = safePage * ALBUM_TRACKS_PER_PAGE;
   const visible = list.slice(start, start + ALBUM_TRACKS_PER_PAGE);
   const rows = visible.map((track, offset) => ([{
-    text: trackButtonLabel(track, start + offset),
+    text: truncate(`🎵 ${clean(track?.title || 'آهنگ')}`),
     callback_data: `alt:${sessionId}:${start + offset}`,
   }]));
 
@@ -423,6 +428,7 @@ export function trackAlbumKeyboard(sessionId, album, tracks, page = 0) {
   if ((tracks || []).length) {
     rows.push([{ text: '⬇️ دانلود همه‌ی آلبوم', callback_data: `ala:${sessionId}` }]);
   }
+  rows.push([{ text: '🎤 صفحه‌ی خواننده', callback_data: `tar:${sessionId}` }]);
   rows.push([{ text: '↩️ آهنگ', callback_data: `tret:${sessionId}` }]);
   return { inline_keyboard: rows };
 }
@@ -432,21 +438,41 @@ export function albumTracksKeyboard(
   tracks,
   backPage = 0,
   page = 0,
-  { backAction = 'albums' } = {}
+  { backAction = 'albums', artistCallbackData = null } = {}
 ) {
   const rows = pagedAlbumTrackRows(sessionId, tracks, page);
   if ((tracks || []).length) {
     rows.push([{ text: '⬇️ دانلود همه‌ی آلبوم', callback_data: `ala:${sessionId}` }]);
   }
 
+  rows.push([{
+    text: '🎤 صفحه‌ی خواننده',
+    callback_data: artistCallbackData || `arh:${sessionId}`,
+  }]);
+
   if (backAction === 'results') {
     rows.push([{ text: '↩️ نتایج', callback_data: `rs:${sessionId}` }]);
+  } else if (backAction === 'fallback') {
+    rows.push([{ text: '↩️ برگشت', callback_data: `rs:${sessionId}` }]);
   } else {
     rows.push([{ text: '↩️ آلبوم‌ها', callback_data: `alb:${sessionId}:${backPage}` }]);
   }
   return { inline_keyboard: rows };
 }
 
+export function bulkDownloadSummary(sent = 0, missing = 0) {
+  const ready = Math.max(0, Number(sent || 0));
+  const missed = Math.max(0, Number(missing || 0));
+
+  if (!missed && ready > 0) {
+    return `همه‌ی ${ready} آهنگ آماده شد.`;
+  }
+  if (ready > 0) {
+    return `${ready} آهنگ آماده شد.\n${missed} تای دیگه فعلاً نرسید؛ به نظرم دوباره امتحان کن.`;
+  }
+  return 'دانلود یکجا موفقیت‌آمیز نبود.\nاگه میخوای دوباره امتحان کن یا آهنگ‌ها رو تکی بگیر.';
+}
+
 export function minimalBrandCaption() {
-  return '🎧 Navazon';
+  return '🎧 @NavazonBot';
 }

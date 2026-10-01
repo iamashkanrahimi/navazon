@@ -38,7 +38,7 @@ const lastSearchAt = new Map();
 const SEARCH_COOLDOWN_MS = 1000;
 const MAX_SOURCE_QUEUE = 30;
 const BULK_SOURCE_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
-const HOME_TEXT = '🎧 Navazon\n\nچی می‌خوای گوش بدی؟\nاسم آهنگ، خواننده یا آلبوم رو بفرست.';
+const HOME_TEXT = '🎧 Navazon\n\nچی می‌خوای گوش بدی؟\nاسم آهنگ، خواننده یا آلبوم رو بفرست 👇';
 
 function queueSessionSource(sessionId, session, job) {
   return sourceQueue.push({
@@ -69,7 +69,7 @@ async function cancelQueuedBulkForUser(userId, currentSessionId = null) {
           await bot.editMessageText(
             staleSession.chatId,
             item.messageId,
-            'درخواست قبلی رو کنار گذاشتم و رفتم سراغ جدیدش.'
+            'درخواست قبلی رو کنار گذاشتم و رفتم سراغ درخواست جدیدت.'
           );
         } catch {}
       }
@@ -117,7 +117,7 @@ async function openTrackPageLocal(sessionId, session, messageId) {
     await bot.editMessageText(
       session.chatId,
       messageId,
-      'این آهنگ این بار باز نشد؛ یه بار دیگه امتحان کن.'
+      'این آهنگ این بار باز نشد؛ دوباره امتحان کن.'
     );
   } finally {
     session.busy = false;
@@ -185,7 +185,7 @@ export async function handleUpdate(update) {
     const sessionId = parts[1];
     const session = await sessions.get(sessionId);
     if (!validSession(callback,session)) {
-      await bot.answerCallbackQuery(callback.id,{ text: 'این صفحه دیگه فعّال نیست؛ یه جست‌وجوی تازه بزن 🔎' });
+      await bot.answerCallbackQuery(callback.id,{ text: 'این صفحه دیگه فعال نیست؛ دوباره جست‌وجو کن 🔎' });
       return;
     }
     try {
@@ -197,7 +197,7 @@ export async function handleUpdate(update) {
       if (cancelled.currentSessionCancelled) session.busy = false;
 
       if (session.busy) {
-        await bot.answerCallbackQuery(callback.id,{ text: 'هنوز دارم قبلی رو انجام می‌دم…' });
+        await bot.answerCallbackQuery(callback.id,{ text: 'هنوز دارم درخواست قبلی رو انجام می‌دم…' });
         return;
       }
       let messageId = callback.message?.message_id || session.messageId;
@@ -301,7 +301,7 @@ export async function handleUpdate(update) {
         session.currentTrack = track;
         session.trackBack = { type: 'results' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، الان واست میفرستم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'sal') {
         const album = session.albumOptions?.[Number(parts[2])]; if (!album) return;
@@ -414,7 +414,14 @@ export async function handleUpdate(update) {
                 session.currentAlbum.tracks,
                 session.albumsPage || 0,
                 session.albumTrackPage || 0,
-                { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
+                {
+                  backAction: session.currentAlbumView === 'search' ? 'results' : 'albums',
+                  artistCallbackData:
+                    session.currentAlbumView === 'search'
+                    && Number.isInteger(Number(session.currentAlbumSearchIndex))
+                      ? `aar:${sessionId}:${Number(session.currentAlbumSearchIndex)}`
+                      : null,
+                }
               );
           await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
         } else {
@@ -518,14 +525,14 @@ export async function handleUpdate(update) {
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'top' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، الان واست میفرستم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'rt') {
         const track = session.artistContext?.recentTracks?.[Number(parts[2])]; if (!track) return;
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'recent' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، الان واست میفرستم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'tqh' || action === 'tqn') {
         if (!session.currentTrack) return;
@@ -574,7 +581,7 @@ export async function handleUpdate(update) {
       } else if (action === 'tcv') {
         if (!session.currentTrack) return;
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'دارم کاورش رو میارم… 🖼');
+        await bot.editMessageText(session.chatId,messageId,'دارم کاورش رو پیدا می‌کنم… 🖼');
         const servedCover = await trySendCachedTrackCover(
           session.chatId,
           session.currentTrack
@@ -681,7 +688,12 @@ export async function handleUpdate(update) {
             messageId,
             artistAlbumsTitle(session.artistContext.artist, session.albums.length),
             {
-            reply_markup: albumsKeyboard(sessionId,session.albums,page),
+            reply_markup: albumsKeyboard(
+              sessionId,
+              session.albums,
+              page,
+              session.artistContext.artist
+            ),
           });
         } else {
           session.busy = true;
@@ -727,7 +739,14 @@ export async function handleUpdate(update) {
               session.currentAlbum.tracks,
               session.albumsPage || 0,
               session.albumTrackPage,
-              { backAction: session.currentAlbumView === 'search' ? 'results' : 'albums' }
+              {
+                backAction: session.currentAlbumView === 'search' ? 'results' : 'albums',
+                artistCallbackData:
+                  session.currentAlbumView === 'search'
+                  && Number.isInteger(Number(session.currentAlbumSearchIndex))
+                    ? `aar:${sessionId}:${Number(session.currentAlbumSearchIndex)}`
+                    : null,
+              }
             );
         await bot.editMessageText(session.chatId,messageId,title,{ reply_markup: keyboard });
       } else if (action === 'alt') {
@@ -735,7 +754,7 @@ export async function handleUpdate(update) {
         session.currentTrack = { ...track, source: track.source || 'melobot' };
         session.trackBack = { type: 'album' };
         session.busy = true;
-        await bot.editMessageText(session.chatId,messageId,'یه لحظه، دارم بازش می‌کنم… 🎵');
+        await bot.editMessageText(session.chatId,messageId,'یه لحظه، الان واست میفرستم… 🎵');
         await openTrackPageLocal(sessionId, session, messageId);
       } else if (action === 'ala') {
         if (!session.currentAlbum?.tracks?.length) return;
@@ -805,7 +824,7 @@ export async function handleUpdate(update) {
       await bot.editMessageText(
         chatId,
         status.message_id,
-        'الان یه کم شلوغه 😅 چند ثانیه دیگه دوباره بزن.'
+        'الان یه کم شلوغه 😅 چند ثانیه دیگه دوباره امتحان کن.'
       );
       return;
     }
