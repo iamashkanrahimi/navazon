@@ -599,6 +599,10 @@ export class DeepCatalog {
     // Resolve/canonicalize first; otherwise common titles can poison file_id
     // cache entries for a different performer.
     if (track?.artistInferred) return;
+    if (!trackMediaIdentityMatches(track, media || {})) {
+      console.warn('[deep media write rejected]', track?.artist, track?.title);
+      return;
+    }
     const trackKey = await this.upsertTrack(track);
     if (!trackKey || !media.fileId) return;
     await db.query(`
