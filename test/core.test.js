@@ -88,8 +88,13 @@ const {
   artistHomeCaption,
   clearArtistProfilePhoto,
   replaceArtistProfileCardWithText,
+  isRetiredArtistProfileMessage,
 } = await import('../src/artistProfile.js');
 const { createNonOverlappingScheduler } = await import('../src/crawlerScheduler.js');
+const {
+  AHANGIFY_ARCHIVE_STALE_RUNNING_MS,
+  recoverStaleAhangifyArchiveJobs,
+} = await import('../src/ahangifyArchiveRecovery.js');
 const {
   normalizeText,
   hasAlbumIntent,
@@ -4627,4 +4632,75 @@ test('already-gone Artist cards do not trigger redundant stale-keyboard cleanup'
   assert.deepEqual(calls.map(call => call[0]), ['delete']);
   assert.equal(session.artistPhotoMessageId, null);
   assert.equal(session.artistProfileVisible, false);
+});
+
+
+test('retained stale Artist cards are remembered so their callbacks can be rejected', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      throw new Error("message can't be deleted");
+    },
+    async editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+      calls.push(['markup', chatId, messageId, replyMarkup]);
+      throw new Error('message cannot be edited');
+    },
+  };
+  const session = {
+    chatId: 10,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  await clearArtistProfilePhoto(fakeBot, session);
+
+  assert.deepEqual(calls.map(call => call[0]), ['delete', 'markup']);
+  assert.deepEqual(session.artistStaleMessageIds, [55]);
+  assert.equal(isRetiredArtistProfileMessage(session, 55), true);
+  assert.equal(isRetiredArtistProfileMessage(session, 56), false);
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileVisible, false);
+});
+
+test('Ahangify stale-running recovery makes restart-interrupted work retryable without consuming an attempt', async () => {
+  const calls = [];
+  const fakeDb = {
+    async query(sql, params) {
+      calls.push({ sql: String(sql), params });
+      return { rowCount: 1 };
+    },
+  };
+
+  const recovered = await recoverStaleAhangifyArchiveJobs(fakeDb);
+
+  assert.equal(recovered, 1);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].params, [AHANGIFY_ARCHIVE_STALE_RUNNING_MS]);
+  assert.match(calls[0].sql, /status='retry'/);
+  assert.match(calls[0].sql, /attempts=GREATEST\(attempts - 1, 0\)/);
+  assert.match(calls[0].sql, /next_attempt_at=NOW\(\)/);
+  assert.match(calls[0].sql, /status='running'/);
+});
+
+test('Ahangify stale-running recovery refuses an unsafe sub-minute reclaim window', async () => {
+  const calls = [];
+  const fakeDb = {
+    async query(sql, params) {
+      calls.push({ sql: String(sql), params });
+      return { rowCount: 0 };
+    },
+  };
+
+  await recoverStaleAhangifyArchiveJobs(fakeDb, { staleAfterMs: 1000 });
+
+  assert.deepEqual(calls[0].params, [60_000]);
+});
+
+test('Track identity typography uses an em dash for canonical artist and title', () => {
+  assert.equal(
+    trackPageTitle({ artist: 'Artist', title: 'Song' }),
+    'Artist — Song'
+  );
 });
