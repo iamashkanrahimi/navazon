@@ -56,6 +56,37 @@ export function canonicalTrackFromAudioMetadata(track = {}, media = {}) {
   });
 }
 
+export function mediaIdentityMatchesTrack(track = {}, media = {}) {
+  const expectedArtist = String(track?.artist || '').replace(/\s+/g, ' ').trim();
+  const expectedTitle = normalizeText(track?.title || '');
+  const performer = String(media?.performer || '').replace(/\s+/g, ' ').trim();
+  const mediaTitleRaw = String(media?.title || '').replace(/\s+/g, ' ').trim();
+  const mediaTitle = normalizeText(mediaTitleRaw);
+
+  if (
+    expectedTitle
+    && mediaTitle
+    && expectedTitle !== mediaTitle
+    && !expectedTitle.includes(mediaTitle)
+    && !mediaTitle.includes(expectedTitle)
+  ) {
+    return false;
+  }
+
+  if (!expectedArtist || !performer) return true;
+  return artistCreditCompatible(expectedArtist, performer)
+    || titleCreditsArtist(mediaTitleRaw || track?.title || '', expectedArtist);
+}
+
+export function assertMediaIdentityMatchesTrack(track = {}, media = {}) {
+  if (mediaIdentityMatchesTrack(track, media)) return true;
+  const err = new Error(
+    `Source media identity mismatch: expected ${track?.artist || '?'} — ${track?.title || '?'}; got ${media?.performer || '?'} — ${media?.title || '?'}`
+  );
+  err.code = 'SOURCE_MEDIA_IDENTITY_MISMATCH';
+  throw err;
+}
+
 export function assertDeliveryAllowed(track, userRegion = 'unknown') {
   const decision = canDeliverTrack(track,userRegion);
   if (!decision.allowed) {
