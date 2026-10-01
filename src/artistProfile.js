@@ -115,7 +115,8 @@ export async function replaceArtistProfileCardWithText(
   bot,
   session,
   currentMessageId,
-  text = 'یه لحظه…'
+  text = 'یه لحظه…',
+  extra = {}
 ) {
   const photoId = Number(session?.artistPhotoMessageId || 0);
   const currentId = Number(currentMessageId || 0);
@@ -131,6 +132,7 @@ export async function replaceArtistProfileCardWithText(
   // the existing Artist card remains usable instead of disappearing.
   const replacement = await bot.sendMessage(session.chatId, text, {
     disable_notification: true,
+    ...extra,
   });
   session.messageId = replacement.message_id;
   await clearArtistProfilePhoto(bot, session);
@@ -160,11 +162,6 @@ export async function renderArtistHomePage(
         bot,
         session,
         messageId,
-        caption
-      );
-      await bot.editMessageText(
-        session.chatId,
-        replacementId,
         caption,
         { reply_markup: keyboard }
       );
