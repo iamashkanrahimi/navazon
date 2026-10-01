@@ -330,6 +330,40 @@ async function capturePilotMedia(audioMessage, target, timeoutMs = 10000) {
   return wait;
 }
 
+async function logPilotProgress(version = PILOT_VERSION) {
+  const { rows } = await db.query(`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status='success')::int AS success,
+      COUNT(*) FILTER (WHERE status='no_confident_match')::int AS no_confident_match,
+      COUNT(*) FILTER (WHERE status='failed')::int AS failed,
+      COUNT(*) FILTER (WHERE status='retry')::int AS retry,
+      COUNT(*) FILTER (WHERE status='queued')::int AS queued,
+      COUNT(*) FILTER (WHERE status='running')::int AS running,
+      COUNT(*) FILTER (WHERE status='success' AND bitrate >= 320)::int AS success_320,
+      COUNT(*) FILTER (WHERE status='success' AND bitrate >= 250 AND bitrate < 320)::int AS success_250_319,
+      COUNT(*) FILTER (WHERE status='success' AND (bitrate IS NULL OR bitrate < 250))::int AS success_lower_or_unknown
+    FROM ahangify_best_pilot
+    WHERE pilot_version=$1
+  `, [version]);
+  const summary = rows[0] || {};
+  const terminal = Number(summary.success || 0)
+    + Number(summary.no_confident_match || 0)
+    + Number(summary.failed || 0);
+  if (terminal % 10 === 0 || terminal >= Number(summary.total || 0)) {
+    console.log('[ahangify pilot progress]', JSON.stringify(summary));
+  }
+  if (
+    Number(summary.total || 0) > 0
+    && terminal >= Number(summary.total || 0)
+    && Number(summary.queued || 0) === 0
+    && Number(summary.running || 0) === 0
+    && Number(summary.retry || 0) === 0
+  ) {
+    console.log('[ahangify pilot complete]', JSON.stringify(summary));
+  }
+}
+
 export async function runAhangifyBestPilotJob(job) {
   const version = job?.pilotVersion || PILOT_VERSION;
   const sourceUrl = clean(job?.sourceUrl);
@@ -396,6 +430,7 @@ export async function runAhangifyBestPilotJob(job) {
                updated_at=NOW()
          WHERE pilot_version=$1 AND source_url=$2
       `, [version, sourceUrl]);
+      await logPilotProgress(version);
       return {
         status: 'no_confident_match',
         artist: row.artist,
@@ -459,6 +494,7 @@ export async function runAhangifyBestPilotJob(job) {
           media.title || null,
           media.performer || null,
         ]);
+        await logPilotProgress(version);
 
         return {
           status: 'success',
@@ -490,6 +526,7 @@ export async function runAhangifyBestPilotJob(job) {
       retry ? 'retry' : 'failed',
       String(err?.message || err).slice(0, 1000),
     ]);
+    await logPilotProgress(version);
 
     return {
       status: retry ? 'retry' : 'failed',
