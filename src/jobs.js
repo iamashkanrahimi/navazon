@@ -803,7 +803,7 @@ export async function tryOpenAlbumsLocal(
     await bot.editMessageText(
       session.chatId,
       messageId,
-      `💿 آلبوم‌های ${artist}`,
+      artistAlbumsTitle(artist, session.albums?.length),
       {
         reply_markup: albumsKeyboard(
           sessionId,
@@ -857,7 +857,7 @@ export async function tryOpenAlbumLocal(
   await bot.editMessageText(
     session.chatId,
     messageId,
-    `💿 ${album.title}\n${artist}`,
+    albumPageTitle(album, artist),
     {
       reply_markup: albumTracksKeyboard(
         sessionId,
@@ -1986,7 +1986,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `💿 ${albumData.album.title}\n${albumData.album.artist || session.currentTrack.artist}`,
+          albumPageTitle(albumData.album, session.currentTrack.artist),
           { reply_markup: trackAlbumKeyboard(job.sessionId, albumData.album, albumData.tracks, 0) }
         );
       } catch (err) {
@@ -2949,7 +2949,7 @@ export const sourceQueue = new SerialQueue(async job => {
           await bot.editMessageText(
             session.chatId,
             job.messageId,
-            `💿 آلبوم‌های ${session.artistContext.artist}\n\nبرای این خواننده آلبومی پیدا نکردم.`,
+            artistAlbumsTitle(session.artistContext.artist) + '\n\nبرای این خواننده آلبومی پیدا نکردم.',
             { reply_markup: noAlbumsKeyboard(job.sessionId) }
           );
           console.log(
@@ -2963,7 +2963,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `💿 آلبوم‌های ${session.artistContext.artist}`,
+          artistAlbumsTitle(session.artistContext.artist, session.albums?.length),
           { reply_markup: albumsKeyboard(job.sessionId, session.albums, page) }
         );
 
@@ -2986,7 +2986,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `💿 آلبوم‌های ${session.artistContext?.artist || 'خواننده'}\n\nفعلاً نتونستم آلبوم‌ها رو بیارم. دوباره امتحان کن.`,
+          artistAlbumsTitle(session.artistContext?.artist || 'خواننده') + '\n\nفعلاً نتونستم آلبوم‌ها رو بیارم. دوباره امتحان کن.',
           { reply_markup: albumsErrorKeyboard(job.sessionId, session.albumsPage || 0) }
         );
       }
@@ -3098,7 +3098,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `💿 آلبوم‌های ${session.artistContext?.artist || 'خواننده'}\n\nاین آلبوم این بار باز نشد؛ دوباره امتحان کن.`,
+          artistAlbumsTitle(session.artistContext?.artist || 'خواننده') + '\n\nاین آلبوم این بار باز نشد؛ دوباره امتحان کن.',
           { reply_markup: albumsErrorKeyboard(job.sessionId, page) }
         );
       }
