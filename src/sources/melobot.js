@@ -7,6 +7,7 @@ import {
   albumSpecificTitleTokens,
   artistCreditCompatible,
   titleCreditsArtist,
+  trackTitleIdentityCompatible,
 } from '../text.js';
 import {
   collectNewMessages,
@@ -3670,14 +3671,10 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
   const allowPositionalFallback = tracks.length === audioItems.length;
 
   const identityCompatible = (track, item) => {
-    const wantedTitle = titleIdentity(track?.title || '');
-    const actualTitle = titleIdentity(item?.title || '');
     if (
-      wantedTitle
-      && actualTitle
-      && wantedTitle !== actualTitle
-      && !wantedTitle.includes(actualTitle)
-      && !actualTitle.includes(wantedTitle)
+      track?.title
+      && item?.title
+      && !trackTitleIdentityCompatible(track.title, item.title)
     ) {
       return false;
     }
@@ -3699,7 +3696,11 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
       const ia = normalize(item.performer);
       let score = 0;
       if (nt && it === nt) score += 8;
-      else if (nt && it && (it.includes(nt) || nt.includes(it))) score += 5;
+      else if (
+        track?.title
+        && item?.title
+        && trackTitleIdentityCompatible(track.title, item.title)
+      ) score += 5;
       if (na && ia === na) score += 4;
       else if (track?.artist && item?.performer && artistCreditCompatible(track.artist, item.performer)) {
         score += 2;
