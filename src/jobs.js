@@ -1116,12 +1116,6 @@ function interactiveSourceFailureMessage(err, action = 'source', quality = '') {
 function bulkFallbackMessage(kind, sent, missing) {
   if (!missing) return null;
 
-  const label = kind === 'album'
-    ? 'آلبوم'
-    : kind === 'top'
-      ? 'پربازدیدترین‌ها'
-      : 'جدیدترین‌ها';
-
   if (sent > 0) {
     return `${sent} آهنگ آماده شد.\n${missing} تای دیگه فعلاً نرسید؛ اگه خواستی دوباره بزن.`;
   }
