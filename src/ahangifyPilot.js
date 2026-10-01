@@ -347,7 +347,7 @@ export async function seedAhangifyBestPilot(sourceQueue) {
   return { enabled: true, version: PILOT_VERSION, queued };
 }
 
-async function capturePilotMedia(audioMessage, target, timeoutMs = 15000) {
+async function capturePilotMedia(audioMessage, target, timeoutMs = 20000) {
   if (!audioMessage?.id) throw new Error('Ahangify audio message missing id');
   const wait = bridge.expectMediaMatching(
     media => {
@@ -490,7 +490,7 @@ export async function runAhangifyBestPilotJob(job) {
           chosen.candidate,
           { timeoutMs: 9000 }
         );
-        const media = await capturePilotMedia(download.audioMessage, target, 15000);
+        const media = await capturePilotMedia(download.audioMessage, target, 20000);
         const verification = metadataMatches(media, target);
         if (!verification.ok) {
           lastError = new Error(
@@ -555,7 +555,10 @@ export async function runAhangifyBestPilotJob(job) {
     throw lastError || new Error('All accepted Ahangify candidates failed to download');
   } catch (err) {
     const attempts = Number(row.attempts || 0);
-    const retry = attempts < 3 && !/no confident match/i.test(err.message || '');
+    const message = String(err?.message || err);
+    const terminalNoMatch = /Ahangify search returned no usable result/i.test(message)
+      && /(هیچ نتیجه|کپی.?رایت|copyright|no usable result)/i.test(message);
+    const retry = !terminalNoMatch && attempts < 2;
     await db.query(`
       UPDATE ahangify_best_pilot
          SET status=$3,
@@ -566,13 +569,13 @@ export async function runAhangifyBestPilotJob(job) {
     `, [
       version,
       sourceUrl,
-      retry ? 'retry' : 'failed',
-      String(err?.message || err).slice(0, 1000),
+      terminalNoMatch ? 'no_confident_match' : (retry ? 'retry' : 'failed'),
+      message.slice(0, 1000),
     ]);
     await logPilotProgress(version);
 
     return {
-      status: retry ? 'retry' : 'failed',
+      status: terminalNoMatch ? 'no_confident_match' : (retry ? 'retry' : 'failed'),
       artist: row.artist,
       title: row.title,
       error: err?.message || String(err),
