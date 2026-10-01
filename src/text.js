@@ -124,6 +124,17 @@ export function titleCreditsArtist(title = '', artist = '') {
   return credits.some(credit => artistCreditCompatible(artist, credit));
 }
 
+export function trackBelongsToArtistContext(track = {}, artist = '') {
+  const contextArtist = cleanText(artist);
+  const trackArtist = cleanText(track?.artist || '');
+  const title = cleanText(track?.title || '');
+  if (!contextArtist || !title) return false;
+  if (!trackArtist) return false;
+
+  return artistCreditCompatible(contextArtist, trackArtist)
+    || titleCreditsArtist(title, contextArtist);
+}
+
 export function trackMediaIdentityMatches(track = {}, media = {}) {
   const expectedArtist = cleanText(track?.artist || '');
   const expectedTitleRaw = cleanText(track?.title || '');
