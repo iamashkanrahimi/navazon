@@ -73,6 +73,10 @@ const {
   artistHomeKeyboard,
   artistSongsKeyboard,
   albumTracksKeyboard,
+  trackAlbumKeyboard,
+  albumsKeyboard,
+  albumButtonLabel,
+  albumPageTitle,
   noAlbumsKeyboard,
   albumsErrorKeyboard,
   homeKeyboard,
@@ -80,6 +84,8 @@ const {
   trackPageKeyboard,
   trackPageTitle,
   trackButtonLabel,
+  bulkDownloadSummary,
+  minimalBrandCaption,
   SESSION_TTL_MS,
   BUSY_SESSION_TTL_MS,
 } = await import('../src/ui.js');
@@ -2176,7 +2182,8 @@ test('MeloBot track pages keep lazy media actions visible but require source-bac
   assert.ok(texts.includes('⬇️ دانلود آهنگ'));
   assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
-  assert.ok(texts.includes('📝 متن آهنگ'));
+  assert.ok(texts.includes('📝 متن'));
+  assert.equal(texts.includes('📝 متن آهنگ'), false);
   assert.ok(texts.includes('🖼 کاور'));
   assert.ok(texts.includes('ℹ️ اطلاعات'));
   assert.equal(texts.includes('🎤 خواننده'), false);
@@ -4508,7 +4515,7 @@ test('Track UI never exposes source quality jargon after the primary-download si
 test('Artist profile card caption is minimal and branded by role rather than implementation detail', () => {
   assert.equal(
     artistHomeCaption('Shervin Hajipour'),
-    '🎤 Shervin Hajipour\n\nاز کجا شروع کنیم؟'
+    '🎤 Shervin Hajipour'
   );
 });
 
@@ -4702,5 +4709,103 @@ test('Track identity typography uses an em dash for canonical artist and title',
   assert.equal(
     trackPageTitle({ artist: 'Artist', title: 'Song' }),
     'Artist — Song'
+  );
+});
+
+
+test('album labels use the compact Artist — Album visual in Search and Albums list', () => {
+  assert.equal(
+    albumButtonLabel({ artist: 'Googoosh', title: 'Gole Bee Goldoon', trackCount: 8 }),
+    '💿Googoosh — Gole Bee Goldoon'
+  );
+
+  const keyboard = albumsKeyboard(
+    'sess',
+    [{ title: 'Gole Bee Goldoon', trackCount: 8 }],
+    0,
+    'Googoosh'
+  );
+  assert.equal(
+    keyboard.inline_keyboard[0][0].text,
+    '💿Googoosh — Gole Bee Goldoon'
+  );
+});
+
+test('Album page header keeps count beside album name and Artist on its own line', () => {
+  assert.equal(
+    albumPageTitle(
+      { title: 'Gole Bee Goldoon', artist: 'Googoosh', trackCount: 8 },
+      ''
+    ),
+    '💿 Gole Bee Goldoon (8 آهنگ)\nGoogoosh'
+  );
+});
+
+test('Album pages expose a contextual Artist-page action without losing their Back destination', () => {
+  const artistAlbum = albumTracksKeyboard(
+    'sess',
+    [{ artist: 'Googoosh', title: 'Nemiyad' }],
+    0,
+    0
+  );
+  const artistCallbacks = artistAlbum.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(artistCallbacks.includes('arh:sess'));
+  assert.ok(artistCallbacks.includes('alb:sess:0'));
+
+  const searchAlbum = albumTracksKeyboard(
+    'sess',
+    [{ artist: 'Googoosh', title: 'Nemiyad' }],
+    0,
+    0,
+    { backAction: 'results', artistCallbackData: 'aar:sess:2' }
+  );
+  const searchCallbacks = searchAlbum.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(searchCallbacks.includes('aar:sess:2'));
+  assert.ok(searchCallbacks.includes('rs:sess'));
+
+  const trackAlbum = trackAlbumKeyboard(
+    'sess',
+    { artist: 'Googoosh', title: 'Album' },
+    [{ artist: 'Googoosh', title: 'Nemiyad' }],
+    0
+  );
+  const trackCallbacks = trackAlbum.inline_keyboard.flat().map(button => button.callback_data);
+  assert.ok(trackCallbacks.includes('tar:sess'));
+  assert.ok(trackCallbacks.includes('tret:sess'));
+});
+
+test('Artist and Album track rows avoid repeating the already-visible Artist name', () => {
+  const artistKeyboard = artistSongsKeyboard(
+    'sess',
+    [{ artist: 'Googoosh', title: 'Nemiyad' }],
+    { mode: 'recent' }
+  );
+  assert.equal(artistKeyboard.inline_keyboard[0][0].text, '🎵 Nemiyad');
+
+  const albumKeyboard = albumTracksKeyboard(
+    'sess',
+    [{ artist: 'Googoosh', title: 'Nemiyad' }],
+    0,
+    0
+  );
+  assert.equal(albumKeyboard.inline_keyboard[0][0].text, '🎵 Nemiyad');
+});
+
+test('audio delivery uses only the requested Navazon handle caption', () => {
+  assert.equal(minimalBrandCaption(), '🎧 @NavazonBot');
+});
+
+test('bulk download summaries use the final friendly copy', () => {
+  assert.equal(
+    bulkDownloadSummary(4, 4),
+    '4 آهنگ آماده شد.\n4 تای دیگه فعلاً نرسید؛ به نظرم دوباره امتحان کن.'
+  );
+  assert.equal(
+    bulkDownloadSummary(0, 8),
+    'دانلود یکجا موفقیت‌آمیز نبود.\nاگه میخوای دوباره امتحان کن یا آهنگ‌ها رو تکی بگیر.'
+  );
+  assert.equal(
+    bulkDownloadSummary(8, 0),
+    'همه‌ی 8 آهنگ آماده شد.'
   );
 });
