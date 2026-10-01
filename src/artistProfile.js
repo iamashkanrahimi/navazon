@@ -202,7 +202,13 @@ export async function renderArtistHomePage(
     }
   }
 
-  await clearArtistProfilePhoto(bot, session);
+  // If an in-place card edit failed, keep the current card until a new
+  // photo card has been sent successfully. For legacy two-message sessions,
+  // the companion image can still be cleared before replacement.
+  const preserveCurrentCard = currentIsCard;
+  if (!preserveCurrentCard) {
+    await clearArtistProfilePhoto(bot, session);
+  }
   const photoInput = profile.telegram_file_id || profile.image_url;
   let photoMessage = null;
   try {
@@ -236,6 +242,14 @@ export async function renderArtistHomePage(
       try { await bot.deleteMessage(session.chatId, photoMessage.message_id); } catch {}
     }
     console.warn('[artist profile render fallback]', artist, err?.message || err);
+
+    if (preserveCurrentCard) {
+      // The previous card is still present and interactive. Prefer that safe
+      // fallback over replacing it with a second orphaned control message.
+      session.messageId = Number(messageId || 0) || session.messageId;
+      session.artistProfileVisible = true;
+      return null;
+    }
 
     const fallbackId = Number(messageId || 0) || Number(session.messageId || 0);
     if (fallbackId) {
