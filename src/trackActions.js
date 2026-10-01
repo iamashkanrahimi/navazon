@@ -20,6 +20,18 @@ function hasCanonicalTrackIdentity(track = {}) {
   return Boolean(track?.artist && track?.title && !track?.artistInferred);
 }
 
+function trackPageHeading(track = {}) {
+  const title = clean(track?.title || '') || 'آهنگ';
+  const artist = track?.artistInferred ? '' : clean(track?.artist || '');
+  return [`🎵 ${title}`, artist].filter(Boolean).join('\n');
+}
+
+function trackCaption(track = {}) {
+  const artist = track?.artistInferred ? '' : clean(track?.artist || '');
+  const title = clean(track?.title || '');
+  return `🎵 ${[artist, title].filter(Boolean).join(' — ') || 'آهنگ'}`;
+}
+
 const CAPABILITY_TTL_MS = 60 * 60 * 1000;
 
 function freshCapabilitySnapshot(details = {}) {
@@ -177,7 +189,7 @@ export async function renderTrackPage(sessionId, session, messageId) {
   await bot.editMessageText(
     session.chatId,
     messageId,
-    trackPageTitle(track),
+    trackPageHeading(track),
     { reply_markup: trackPageKeyboard(sessionId, track, page.details, page.capabilities) }
   );
 }
@@ -344,7 +356,9 @@ function chunks(text, max = 3800) {
 async function sendLyricsText(chatId, track, lyrics) {
   const parts = chunks(lyrics);
   for (let index = 0; index < parts.length; index += 1) {
-    const prefix = index === 0 ? `📝 ${trackPageTitle(track)}\n\n` : '';
+    const prefix = index === 0
+      ? `📝 متن «${clean(track?.title || 'آهنگ')}»${track?.artist && !track?.artistInferred ? `\n${clean(track.artist)}` : ''}\n\n`
+      : '';
     await bot.sendMessage(chatId, `${prefix}${parts[index]}`);
   }
 }
@@ -381,7 +395,7 @@ export async function trySendCachedTrackCover(chatId, track) {
   if (!details?.cover_file_id) return false;
 
   await bot.sendPhoto(chatId, details.cover_file_id, {
-    caption: trackPageTitle(track),
+    caption: trackCaption(track),
   });
   if (hasCanonicalTrackIdentity(track)) {
     try { await deepCatalog.clearCapabilityFailure(track, 'hasCover'); } catch {}
@@ -452,7 +466,7 @@ export async function sendTrackLyrics(chatId, track) {
   }
 
   if (!lyrics) {
-    await bot.sendMessage(chatId, 'متن این آهنگ موجود نیست.');
+    await bot.sendMessage(chatId, 'متن این آهنگ رو پیدا نکردم 📝');
     return false;
   }
 
@@ -509,17 +523,11 @@ export async function sendTrackCover(chatId, track) {
   }
 
   if (!media?.fileId) {
-    const confirmedAbsent = Boolean(track?.capabilityUnavailable?.hasCover);
-    await bot.sendMessage(
-      chatId,
-      confirmedAbsent
-        ? 'MeloBot برای این آهنگ دکمه‌ی کاور نشان نداد.'
-        : 'هنوز کاوری برای این آهنگ در کش نداریم.'
-    );
+    await bot.sendMessage(chatId, 'برای این آهنگ کاوری پیدا نکردم.');
     return false;
   }
 
-  await bot.sendPhoto(chatId, media.fileId, { caption: trackPageTitle(track) });
+  await bot.sendPhoto(chatId, media.fileId, { caption: trackCaption(track) });
   return true;
 }
 
@@ -529,7 +537,7 @@ export async function getTrackInfoText(track) {
   // Track info is an instant local view. Missing release/popularity fields are
   // enriched by the existing background crawler instead of blocking the user
   // on another serialized MeloBot round-trip.
-  const lines = [`📋 ${trackPageTitle(track)}`];
+  const lines = [`ℹ️ ${trackPageTitle(track)}`];
   if (details?.albumInfo?.title) lines.push(`💿 آلبوم: ${details.albumInfo.title}`);
   if (details?.release_date) lines.push(`📅 تاریخ انتشار: ${details.release_date}`);
   else if (details?.release_date_raw) lines.push(`📅 تاریخ انتشار: ${details.release_date_raw}`);
@@ -538,27 +546,10 @@ export async function getTrackInfoText(track) {
     const sec = String(details.duration_seconds % 60).padStart(2, '0');
     lines.push(`⏱ مدت: ${min}:${sec}`);
   }
-  if (details?.popularity_text) lines.push(`📈 بازدید حدودی: ${details.popularity_text}`);
-  else if (details?.popularity_count) lines.push(`📈 بازدید حدودی: ${Number(details.popularity_count).toLocaleString('en-US')}`);
+  if (details?.popularity_text) lines.push(`📈 بازدید تقریبی: ${details.popularity_text}`);
+  else if (details?.popularity_count) lines.push(`📈 بازدید تقریبی: ${Number(details.popularity_count).toLocaleString('en-US')}`);
 
-  const qualitySet = new Set(Object.keys(details?.media || {}));
-  const knownCapabilities = freshCapabilitySnapshot(details);
-  if (knownCapabilities.hasHq === true) qualitySet.add('hq');
-  if (knownCapabilities.hasNormal === true) qualitySet.add('normal');
-  const qualities = [...qualitySet];
-
-  if (qualities.length) {
-    const labels = qualities.map(q =>
-      q === 'hq'
-        ? (track?.source === 'ahangify' ? 'بهترین کیفیت منبع' : 'عالی')
-        : q === 'normal'
-          ? 'معمولی'
-          : q
-    );
-    lines.push(`🎧 کیفیت‌های موجود: ${labels.join('، ')}`);
-  }
-
-  if (lines.length === 1) lines.push('اطلاعات بیشتری برای این آهنگ ثبت نشده.');
+  if (lines.length === 1) lines.push('فعلاً اطلاعات بیشتری از این آهنگ ندارم.');
   return lines.join('\n');
 }
 
