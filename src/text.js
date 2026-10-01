@@ -135,6 +135,70 @@ export function trackBelongsToArtistContext(track = {}, artist = '') {
     || titleCreditsArtist(title, contextArtist);
 }
 
+const TRACK_VARIANT_ALIASES = new Map([
+  ['remix', 'remix'],
+  ['ریمیکس', 'remix'],
+  ['mix', 'mix'],
+  ['edit', 'edit'],
+  ['version', 'version'],
+  ['ورژن', 'version'],
+  ['نسخه', 'version'],
+  ['live', 'live'],
+  ['لایو', 'live'],
+  ['زنده', 'live'],
+  ['acoustic', 'acoustic'],
+  ['unplugged', 'acoustic'],
+  ['آکوستیک', 'acoustic'],
+  ['instrumental', 'instrumental'],
+  ['بیکلام', 'instrumental'],
+  ['بی‌کلام', 'instrumental'],
+  ['remaster', 'remaster'],
+  ['remastered', 'remaster'],
+  ['rework', 'rework'],
+  ['sped', 'sped'],
+  ['slowed', 'slowed'],
+  ['karaoke', 'karaoke'],
+  ['demo', 'demo'],
+  ['radio', 'radio'],
+  ['extended', 'extended'],
+  ['club', 'club'],
+  ['cover', 'cover'],
+  ['original', 'original'],
+]);
+const TRACK_VARIANT_WORDS = new Set(TRACK_VARIANT_ALIASES.keys());
+
+export function trackTitleIdentity(value = '') {
+  const stripped = cleanText(value)
+    .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
+  return normalizeText(stripped);
+}
+
+function trackTitleVariantKinds(value = '') {
+  const out = new Set();
+  for (const token of trackTitleIdentity(value).split(' ').filter(Boolean)) {
+    const kind = TRACK_VARIANT_ALIASES.get(token);
+    if (kind) out.add(kind);
+  }
+  return out;
+}
+
+export function trackTitleIdentityCompatible(requested = '', actual = '') {
+  const left = trackTitleIdentity(requested);
+  const right = trackTitleIdentity(actual);
+  if (!left || !right) return false;
+
+  const leftKinds = trackTitleVariantKinds(requested);
+  const rightKinds = trackTitleVariantKinds(actual);
+  if (leftKinds.size !== rightKinds.size) return false;
+  for (const kind of leftKinds) {
+    if (!rightKinds.has(kind)) return false;
+  }
+
+  return left === right || left.includes(right) || right.includes(left);
+}
+
 export function trackMediaIdentityMatches(track = {}, media = {}) {
   const expectedArtist = cleanText(track?.artist || '');
   const expectedTitleRaw = cleanText(track?.title || '');
@@ -158,12 +222,17 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
   if (
     expectedTitle
     && mediaTitle
-    && expectedTitle !== mediaTitle
-    && !expectedTitle.includes(mediaTitle)
-    && !mediaTitle.includes(expectedTitle)
+    && !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
     && !crossScript(expectedTitleRaw, mediaTitleRaw)
   ) {
     return false;
+  }
+
+  const expectedVariants = trackTitleVariantKinds(expectedTitleRaw);
+  const actualVariants = trackTitleVariantKinds(mediaTitleRaw);
+  if (expectedVariants.size !== actualVariants.size) return false;
+  for (const kind of expectedVariants) {
+    if (!actualVariants.has(kind)) return false;
   }
 
   if (!expectedArtist || !performer) return true;
@@ -237,12 +306,6 @@ export function shouldUseLiveAlbumDiscovery(query = '') {
 const SEARCH_NOISE_WORDS = new Set([
   'ft', 'feat', 'featuring', 'with', 'and', 'vs',
   'the', 'a', 'an',
-]);
-
-const TRACK_VARIANT_WORDS = new Set([
-  'remix', 'mix', 'edit', 'version', 'live', 'acoustic', 'instrumental',
-  'remaster', 'remastered', 'rework', 'sped', 'slowed', 'karaoke',
-  'ریمیکس', 'لایو', 'آکوستیک', 'بیکلام', 'بی‌کلام',
 ]);
 
 export function unrequestedTrackVariantWords(query = '', track = {}) {
