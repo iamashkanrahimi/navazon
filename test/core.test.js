@@ -52,6 +52,7 @@ const {
   findArtistButtonFor,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
+const { mediaIdentityMatchesTrack } = await import('../src/media.js');
 const {
   installTelegramInbox,
   primeTelegramInboxBoundary,
@@ -115,6 +116,8 @@ const {
   primarySearchQueries,
   acceptsShortenedPrimarySearch,
   artistCreditMatchesContext,
+  artistCreditCompatible,
+  titleCreditsArtist,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -2205,7 +2208,7 @@ test('inferred featured-artist rows resolve to the explicit primary artist by ti
     source: 'melobot',
   };
   const client = new FakeTelegramClient({
-    'Khalesaneh (feat. T-Dey)': [[
+    'T-Dey Khalesaneh (feat. T-Dey)': [[
       fakeBotMessage(
         'نتیجه جستجو',
         ['🎵 Sadegh, Khalesaneh (feat. T-Dey) x 1.2M']
@@ -4808,4 +4811,142 @@ test('bulk download summaries use the final friendly copy', () => {
     bulkDownloadSummary(8, 0),
     'همه‌ی 8 آهنگ آماده شد.'
   );
+});
+
+
+test('inferred Artist context rejects an exact same-title Track from another Artist', async () => {
+  const inferred = {
+    ...parseTrackButton('🎵 Maryam', 'Ali Sorena'),
+    source: 'melobot',
+  };
+  const wrong = fakeBotMessage(
+    'نتیجه جستجو',
+    ['🎵 Mehrdad Asemani, Maryam x 10k']
+  );
+  const client = new FakeTelegramClient({
+    'Ali Sorena Maryam': [[wrong]],
+    Maryam: [[wrong]],
+  });
+
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      inferred,
+      { timeoutMs: 1200, forceIdentity: true }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+  assert.equal(client.sent[0], 'Ali Sorena Maryam');
+});
+
+test('inferred Artist context rejects other real collision examples such as Marg and Teryagh', async () => {
+  for (const item of [
+    { title: 'Marg', wrongArtist: 'Yas' },
+    { title: 'Teryagh', wrongArtist: 'Mohsen Chavoshi' },
+  ]) {
+    const inferred = {
+      ...parseTrackButton(`🎵 ${item.title}`, 'Ali Sorena'),
+      source: 'melobot',
+    };
+    const wrong = fakeBotMessage(
+      'نتیجه جستجو',
+      [`🎵 ${item.wrongArtist}, ${item.title} x 10k`]
+    );
+    const client = new FakeTelegramClient({
+      [`Ali Sorena ${item.title}`]: [[wrong]],
+      [item.title]: [[wrong]],
+    });
+
+    await assert.rejects(
+      () => resolveMeloBotTrackCandidate(
+        client,
+        inferred,
+        { timeoutMs: 1200, forceIdentity: true }
+      ),
+      err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED',
+      item.title
+    );
+  }
+});
+
+test('identity helpers allow a true featured credit but reject unrelated short-name collisions', () => {
+  assert.equal(artistCreditCompatible('Ali Sorena', 'Ali Sorena'), true);
+  assert.equal(artistCreditCompatible('Yas', 'Yaser Binam'), false);
+  assert.equal(titleCreditsArtist('Khalesaneh (feat. T-Dey)', 'T-Dey'), true);
+  assert.equal(titleCreditsArtist('Maryam', 'Ali Sorena'), false);
+});
+
+test('bulk matcher never pairs a same-title audio file from the wrong performer', () => {
+  const wrong = matchBulkAudioToTracks(
+    [{ artist: 'Ali Sorena', title: 'Maryam', artistInferred: true }],
+    [{ performer: 'Mehrdad Asemani', title: 'Maryam' }]
+  );
+  assert.deepEqual(wrong, []);
+
+  const correct = matchBulkAudioToTracks(
+    [{ artist: 'Ali Sorena', title: 'Maryam', artistInferred: true }],
+    [{ performer: 'Ali Sorena', title: 'Maryam' }]
+  );
+  assert.equal(correct.length, 1);
+});
+
+test('bulk matcher preserves legitimate featured-Artist rows', () => {
+  const matches = matchBulkAudioToTracks(
+    [{ artist: 'T-Dey', title: 'Khalesaneh (feat. T-Dey)', artistInferred: true }],
+    [{ performer: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' }]
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('media identity validation blocks cross-Artist audio before cache or delivery', () => {
+  assert.equal(
+    mediaIdentityMatchesTrack(
+      { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
+      { performer: 'Mehrdad Asemani', title: 'Maryam' }
+    ),
+    false
+  );
+  assert.equal(
+    mediaIdentityMatchesTrack(
+      { artist: 'T-Dey', title: 'Khalesaneh (feat. T-Dey)', artistInferred: true },
+      { performer: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' }
+    ),
+    true
+  );
+});
+
+test('cache metadata from another Artist cannot teach a durable Track alias', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('FROM track_aliases a')) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (text.includes('FROM track_cache')) {
+      return {
+        rows: [{
+          track: { source: 'melobot' },
+          media: { performer: 'Mehrdad Asemani', title: 'Maryam' },
+        }],
+        rowCount: 1,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const source = { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' };
+    const resolved = await catalog.resolveTrackAlias(source);
+    assert.equal(resolved.artist, 'Ali Sorena');
+    assert.equal(resolved.title, 'Maryam');
+    assert.equal(
+      calls.some(call => call.sql.includes('INSERT INTO track_aliases')),
+      false
+    );
+  } finally {
+    db.query = originalQuery;
+  }
 });
