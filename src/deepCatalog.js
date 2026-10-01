@@ -134,10 +134,6 @@ export class DeepCatalog {
     const known = aliasResult.rows[0];
     if (known) {
       const sourceData = known.source_data || {};
-      const candidate = {
-        artist: known.artist,
-        title: known.title,
-      };
       const sameScriptIdentity = artistCreditCompatible(track?.artist || '', known.artist || '')
         && (
           normalizeText(track?.title || '') === normalizeText(known.title || '')
@@ -289,6 +285,19 @@ export class DeepCatalog {
     const out = [];
     const seen = new Set();
     for (const track of tracks || []) {
+      if (!hasDurableTrackIdentity(track)) {
+        const transientKey = [
+          'transient',
+          deepNormalize(track?.artist || ''),
+          deepNormalize(track?.title || ''),
+          deepNormalize(track?.rawText || track?.cmd || ''),
+        ].join('|');
+        if (!deepNormalize(track?.title || '') || seen.has(transientKey)) continue;
+        seen.add(transientKey);
+        out.push(track);
+        continue;
+      }
+
       let resolved = track;
       try {
         resolved = await this.resolveTrackAlias(track);
