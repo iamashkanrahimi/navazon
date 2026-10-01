@@ -124,6 +124,7 @@ export async function bridgeSourceMessage(
         evidence: 'telegram_audio_metadata',
       });
     } catch (err) {
+      if (err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH') throw err;
       console.warn('[track alias learn]', err.message);
     }
     Object.assign(track, durableTrack);
