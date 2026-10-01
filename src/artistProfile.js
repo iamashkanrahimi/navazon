@@ -86,6 +86,11 @@ async function rememberOnDemandCache(profile, message) {
   ]);
 }
 
+export function artistHomeCaption(artist = '') {
+  const name = clean(artist);
+  return `🎤 ${name}\n\nاز کجا شروع کنیم؟`;
+}
+
 export async function clearArtistProfilePhoto(bot, session) {
   const id = Number(session?.artistPhotoMessageId || 0);
   if (!id || !session?.chatId) {
@@ -102,7 +107,32 @@ export async function clearArtistProfilePhoto(bot, session) {
   } finally {
     session.artistPhotoMessageId = null;
     session.artistProfileArtistKey = null;
+    session.artistProfileVisible = false;
   }
+}
+
+export async function replaceArtistProfileCardWithText(
+  bot,
+  session,
+  currentMessageId,
+  text = 'یه لحظه…'
+) {
+  const photoId = Number(session?.artistPhotoMessageId || 0);
+  const currentId = Number(currentMessageId || 0);
+
+  // Old sessions used a separate photo + text control message. In that case,
+  // remove only the companion photo and keep using the existing text message.
+  if (!photoId || photoId !== currentId) {
+    await clearArtistProfilePhoto(bot, session);
+    return currentId || Number(session?.messageId || 0);
+  }
+
+  await clearArtistProfilePhoto(bot, session);
+  const replacement = await bot.sendMessage(session.chatId, text, {
+    disable_notification: true,
+  });
+  session.messageId = replacement.message_id;
+  return replacement.message_id;
 }
 
 export async function renderArtistHomePage(
@@ -115,17 +145,36 @@ export async function renderArtistHomePage(
   const artist = clean(session?.artistContext?.artist);
   if (!artist) throw new Error('Artist context missing.');
 
-  await clearArtistProfilePhoto(bot, session);
+  const caption = artistHomeCaption(artist);
+  const currentIsCard = Number(session?.artistPhotoMessageId || 0) === Number(messageId || 0);
   const profile = await getArtistProfileImage(artist).catch(err => {
     console.warn('[artist profile lookup]', artist, err?.message || err);
     return null;
   });
 
   if (!profile?.image_url) {
+    if (currentIsCard) {
+      const replacementId = await replaceArtistProfileCardWithText(
+        bot,
+        session,
+        messageId,
+        caption
+      );
+      await bot.editMessageText(
+        session.chatId,
+        replacementId,
+        caption,
+        { reply_markup: keyboard }
+      );
+      session.messageId = replacementId;
+      return null;
+    }
+
+    await clearArtistProfilePhoto(bot, session);
     const result = await bot.editMessageText(
       session.chatId,
       messageId,
-      artist,
+      caption,
       { reply_markup: keyboard }
     );
     session.messageId = messageId;
@@ -133,48 +182,80 @@ export async function renderArtistHomePage(
     return result;
   }
 
+  // The new Artist surface is a single Telegram photo card: image, title and
+  // keyboard live together. Follow/unfollow can update the same card in place.
+  if (currentIsCard && session.artistProfileArtistKey === profile.artist_key) {
+    try {
+      const result = await bot.editMessageCaption(
+        session.chatId,
+        messageId,
+        caption,
+        { reply_markup: keyboard }
+      );
+      session.messageId = messageId;
+      session.artistProfileVisible = true;
+      return result;
+    } catch (err) {
+      console.warn('[artist profile card edit]', artist, err?.message || err);
+    }
+  }
+
+  await clearArtistProfilePhoto(bot, session);
   const photoInput = profile.telegram_file_id || profile.image_url;
   let photoMessage = null;
-  let controlMessage = null;
   try {
     photoMessage = await bot.sendPhoto(session.chatId, photoInput, {
+      caption,
+      reply_markup: keyboard,
       disable_notification: true,
     });
-    controlMessage = await bot.sendMessage(
-      session.chatId,
-      artist,
-      { reply_markup: keyboard, disable_notification: true }
-    );
 
-    try {
-      await bot.deleteMessage(session.chatId, messageId);
-    } catch (err) {
-      console.warn('[artist profile replace old control]', err?.message || err);
+    if (Number(messageId || 0) && Number(messageId) !== Number(photoMessage.message_id)) {
+      try {
+        await bot.deleteMessage(session.chatId, messageId);
+      } catch (err) {
+        console.warn('[artist profile replace old control]', err?.message || err);
+      }
     }
 
     session.artistPhotoMessageId = photoMessage.message_id;
     session.artistProfileArtistKey = profile.artist_key;
     session.artistProfileVisible = true;
-    session.messageId = controlMessage.message_id;
+    session.messageId = photoMessage.message_id;
 
     if (!profile.telegram_file_id) {
       rememberOnDemandCache(profile, photoMessage).catch(err =>
         console.warn('[artist profile on-demand cache]', err?.message || err)
       );
     }
-    return controlMessage;
+    return photoMessage;
   } catch (err) {
-    if (photoMessage?.message_id && !controlMessage?.message_id) {
+    if (photoMessage?.message_id) {
       try { await bot.deleteMessage(session.chatId, photoMessage.message_id); } catch {}
     }
     console.warn('[artist profile render fallback]', artist, err?.message || err);
-    const result = await bot.editMessageText(
+
+    const fallbackId = Number(messageId || 0) || Number(session.messageId || 0);
+    if (fallbackId) {
+      try {
+        const result = await bot.editMessageText(
+          session.chatId,
+          fallbackId,
+          caption,
+          { reply_markup: keyboard }
+        );
+        session.messageId = fallbackId;
+        session.artistProfileVisible = false;
+        return result;
+      } catch {}
+    }
+
+    const result = await bot.sendMessage(
       session.chatId,
-      messageId,
-      artist,
-      { reply_markup: keyboard }
+      caption,
+      { reply_markup: keyboard, disable_notification: true }
     );
-    session.messageId = messageId;
+    session.messageId = result.message_id;
     session.artistProfileVisible = false;
     return result;
   }
