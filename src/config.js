@@ -40,6 +40,19 @@ export const config = {
   ahangifyUsername: (process.env.AHANGIFY_USERNAME || 'ahangifybot').replace(/^@/, ''),
   ahangifyBestPilotEnabled: boolEnv('AHANGIFY_BEST_PILOT_ENABLED', false),
   ahangifyBestPilotCount: Math.max(1, Math.min(50, Number(process.env.AHANGIFY_BEST_PILOT_COUNT || 50))),
+  ahangifyArchiveEnabled: boolEnv('AHANGIFY_ARCHIVE_ENABLED', false),
+  ahangifyArchiveBatchSize: Math.max(
+    1,
+    Math.min(100, Number(process.env.AHANGIFY_ARCHIVE_BATCH_SIZE || 24))
+  ),
+  ahangifyArchiveMaxAttempts: Math.max(
+    1,
+    Math.min(5, Number(process.env.AHANGIFY_ARCHIVE_MAX_ATTEMPTS || 2))
+  ),
+  ahangifyArchivePumpMs: Math.max(
+    5000,
+    Number(process.env.AHANGIFY_ARCHIVE_PUMP_SECONDS || 15) * 1000
+  ),
   brandCaption: process.env.BRAND_CAPTION || `@${required('BOT_USERNAME').replace(/^@/, '')}`,
 
   catalogSearchTtlMs: Number(process.env.CATALOG_SEARCH_TTL_MINUTES || 15) * 60 * 1000,
