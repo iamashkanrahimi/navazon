@@ -165,7 +165,7 @@ export function resultsKeyboard(sessionId, session) {
       );
 
   const trackRows = tracks.map((track,index) => ([{
-    text: trackButtonLabel(track,index,{ numbered: false }),
+    text: trackButtonLabel(track,index,{ numbered: session.resultsNumbered === true }),
     callback_data: `t:${sessionId}:${index}`,
   }]));
 
