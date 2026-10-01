@@ -796,7 +796,7 @@ export async function tryOpenAlbumsLocal(
     await bot.editMessageText(
       session.chatId,
       messageId,
-      `💿 آلبوم‌های ${artist}\n\nبرای این خواننده آلبومی پیدا نکردم.`,
+      artistAlbumsTitle(artist) + '\n\nبرای این خواننده آلبومی پیدا نکردم.',
       { reply_markup: noAlbumsKeyboard(sessionId) }
     );
   } else {
@@ -1409,7 +1409,7 @@ export const sourceQueue = new SerialQueue(async job => {
         }
 
         await setBrowseResults(job.sessionId, session, job.messageId, tracks, {
-          title: `🎧 ${playlist.label}`,
+          title: playlist.uiLabel || `🎧 ${playlist.label}`,
           backAction: 'hpl',
           backText: '↩️ پلی‌لیست‌ها',
         });
@@ -1846,7 +1846,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `${label}ی ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`,
+          mode === 'recent'\n            ? `تازه‌های ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`\n            : `پربازدیدهای ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`,
           {
             reply_markup: artistHomeKeyboard(
               job.sessionId,
