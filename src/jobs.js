@@ -9,6 +9,7 @@ import {
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
   albumsKeyboard, noAlbumsKeyboard, albumsErrorKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
+  artistAlbumsTitle, albumPageTitle,
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
@@ -942,7 +943,7 @@ export async function tryDeliverBulkFromCacheLocal(
       if (repairedOwner) session.currentAlbum.artist = repairedOwner;
 
       const album = session.currentAlbum;
-      const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
+      const title = albumPageTitle(album || {}, session.artistContext?.artist || '');
       const keyboard = session.currentAlbumView === 'track'
         ? trackAlbumKeyboard(
             sessionId,
@@ -1183,6 +1184,7 @@ async function setBrowseResults(sessionId, session, messageId, tracks, {
   title,
   backAction,
   backText = '↩️ برگشت',
+  numbered = false,
 } = {}) {
   const visible = (tracks || []).slice(0, 10);
   if (!visible.length) throw new Error('Browse source returned no tracks.');
@@ -1194,6 +1196,7 @@ async function setBrowseResults(sessionId, session, messageId, tracks, {
   session.resultsPrompt = 'این‌ها رو پیدا کردم:';
   session.resultsBackAction = backAction || 'hmn';
   session.resultsBackText = backText;
+  session.resultsNumbered = Boolean(numbered);
   session.currentTrack = null;
   session.trackBack = null;
   session.busy = false;
@@ -1302,7 +1305,37 @@ export const sourceQueue = new SerialQueue(async job => {
         );
       } catch (err) {
         console.error('[search]',err.message);
-        await bot.editMessageText(job.chatId,job.statusMessageId,'چیزی پیدا نکردم 👀\nاملای اسم رو یه مدل دیگه امتحان کن.');
+        const sessionId = newSessionId();
+        const fresh = {
+          chatId: job.chatId,
+          userId: job.userId,
+          query: job.query,
+          messageId: job.statusMessageId,
+          options: [],
+          albumOptions: [],
+          artistContext: null,
+          artistSeed: null,
+          followedArtists: [],
+          isFollowing: false,
+          albums: null,
+          albumsEmptyConfirmed: false,
+          currentAlbum: null,
+          currentAlbumView: null,
+          albumsPage: 0,
+          albumTrackPage: 0,
+          currentTrack: null,
+          trackBack: null,
+          artistBack: 'hmn',
+          busy: false,
+          expiresAt: Date.now() + SESSION_TTL_MS,
+        };
+        await sessions.set(sessionId, fresh);
+        await bot.editMessageText(
+          job.chatId,
+          job.statusMessageId,
+          'چیزی پیدا نکردم 👀\nاملای اسم رو یه مدل دیگه امتحان کن.',
+          { reply_markup: homeKeyboard(sessionId) }
+        );
       }
       return;
     }
@@ -1336,6 +1369,7 @@ export const sourceQueue = new SerialQueue(async job => {
           title: feed.title,
           backAction: feed.backAction,
           backText: '↩️ دسته‌بندی‌ها',
+          numbered: feed.backAction === 'htop',
         });
       } catch (err) {
         console.error('[home feed]', err.message);
@@ -1590,7 +1624,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `💿 ${album.title}\n${album.artist}`,
+          albumPageTitle(album, album.artist),
           {
             reply_markup: albumTracksKeyboard(
               job.sessionId,
@@ -2478,7 +2512,7 @@ export const sourceQueue = new SerialQueue(async job => {
       }
       session.busy = false;
       const album = session.currentAlbum;
-      const title = `💿 ${album?.title || 'آلبوم'}\n${album?.artist || session.artistContext?.artist || ''}`;
+      const title = albumPageTitle(album || {}, session.artistContext?.artist || '');
       const keyboard = session.currentAlbumView === 'track'
         ? trackAlbumKeyboard(job.sessionId, album, album?.tracks || [], session.albumTrackPage || 0)
         : albumTracksKeyboard(
@@ -3047,7 +3081,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `💿 ${session.currentAlbum.title}\n${resolvedArtist}`,
+          albumPageTitle(session.currentAlbum, resolvedArtist),
           {
             reply_markup: albumTracksKeyboard(
               job.sessionId,
