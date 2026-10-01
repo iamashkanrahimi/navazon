@@ -392,7 +392,7 @@ test('search-opened album returns to search results', () => {
 
 test('no-albums page returns to the artist page', () => {
   const keyboard = noAlbumsKeyboard('sess');
-  assert.equal(keyboard.inline_keyboard[0][0].text, '🔙 صفحه‌ی خواننده');
+  assert.equal(keyboard.inline_keyboard[0][0].text, '↩️ خواننده');
   assert.equal(keyboard.inline_keyboard[0][0].callback_data, 'arh:sess');
 });
 
@@ -401,10 +401,10 @@ test('home exposes only the four primary discovery actions', () => {
   const keyboard = homeKeyboard('sess');
   const labels = keyboard.inline_keyboard.flat().map(button => button.text);
   assert.deepEqual(labels, [
-    '🔥 جدیدترین‌ها',
-    '📥 پردانلودترین‌ها',
+    '🔥 تازه‌ها',
+    '🏆 پردانلودها',
     '🎧 پلی‌لیست‌ها',
-    '🔔 دنبال‌شده‌ها',
+    '♡ دنبال‌شده‌ها',
   ]);
 });
 
@@ -634,7 +634,7 @@ test('all primary Track downloads use one source-agnostic Download Track action'
     { hasHq: true }
   );
   const labels = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(labels.includes('📥 دانلود آهنگ'));
+  assert.ok(labels.includes('⬇️ دانلود آهنگ'));
   assert.equal(labels.includes('📥 بهترین کیفیت موجود'), false);
   assert.equal(labels.includes('📥 کیفیت عالی'), false);
 });
@@ -2040,8 +2040,8 @@ test('artist home always shows top and recent actions even when one list is miss
     false
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('🎵 پربازدیدترین آثار'));
-  assert.ok(texts.includes('🆕 جدیدترین آثار'));
+  assert.ok(texts.includes('🔥 پربازدیدها'));
+  assert.ok(texts.includes('🆕 تازه‌ها'));
 });
 
 test('recent artist list can be recovered from the release-date sort surface', async () => {
@@ -2162,13 +2162,13 @@ test('MeloBot track pages keep lazy media actions visible but require source-bac
     {}
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.ok(texts.includes('⬇️ دانلود آهنگ'));
   assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
-  assert.ok(texts.includes('📝 متن'));
+  assert.ok(texts.includes('📝 متن آهنگ'));
   assert.ok(texts.includes('🖼 کاور'));
-  assert.ok(texts.includes('📋 مشخصات'));
-  assert.equal(texts.includes('🗣 صفحه‌ی خواننده'), false);
+  assert.ok(texts.includes('ℹ️ اطلاعات'));
+  assert.equal(texts.includes('🎤 خواننده'), false);
 });
 
 test('inferred page-context artists are not presented as confirmed primary artists', () => {
@@ -3173,10 +3173,10 @@ test('tri-state track UI hides a quality after the current session confirms fail
     }
   );
   const texts = keyboard.inline_keyboard.flat().map(button => button.text);
-  assert.ok(texts.includes('📥 دانلود آهنگ'));
+  assert.ok(texts.includes('⬇️ دانلود آهنگ'));
   assert.equal(texts.includes('📥 کیفیت عالی'), false);
   assert.equal(texts.includes('📥 کیفیت معمولی'), false);
-  assert.ok(texts.includes('🗣 صفحه‌ی خواننده'));
+  assert.ok(texts.includes('🎤 خواننده'));
 });
 
 test('deep catalog learns Persian-to-Latin track alias from cached Telegram audio metadata', async () => {
@@ -4445,4 +4445,50 @@ test('new Track background warmups enqueue HQ but never Normal quality', async (
 
   assert.equal(queued.some(item => item.kind === 'track_hq'), true);
   assert.equal(queued.some(item => item.kind === 'track_normal'), false);
+});
+
+
+test('search results stay unnumbered while ranked browse lists can opt into numbering', () => {
+  const base = {
+    options: [
+      { source: 'melobot', artist: 'Artist', title: 'One', rawText: 'x1' },
+      { source: 'melobot', artist: 'Artist', title: 'Two', rawText: 'x2' },
+    ],
+    albumOptions: [],
+    query: 'Artist Song',
+  };
+
+  const plain = resultsKeyboard('plain', { ...base, resultsNumbered: false });
+  const plainLabels = plain.inline_keyboard.flat().map(button => button.text);
+  assert.equal(plainLabels.some(label => label.startsWith('1️⃣')), false);
+
+  const ranked = resultsKeyboard('ranked', { ...base, resultsNumbered: true });
+  const rankedLabels = ranked.inline_keyboard.flat().map(button => button.text);
+  assert.equal(rankedLabels.some(label => label.startsWith('1️⃣')), true);
+});
+
+test('recent Artist songs are unnumbered while Top remains ranked', () => {
+  const tracks = [
+    { artist: 'Artist', title: 'One' },
+    { artist: 'Artist', title: 'Two' },
+  ];
+  const top = artistSongsKeyboard('top', tracks, { mode: 'top' });
+  const recent = artistSongsKeyboard('recent', tracks, { mode: 'recent' });
+
+  assert.equal(top.inline_keyboard[0][0].text.startsWith('1️⃣'), true);
+  assert.equal(recent.inline_keyboard[0][0].text.startsWith('1️⃣'), false);
+  assert.equal(top.inline_keyboard.at(-2)[0].text, '⬇️ دانلود همه');
+  assert.equal(recent.inline_keyboard.at(-2)[0].text, '⬇️ دانلود همه');
+});
+
+test('Track UI never exposes source quality jargon after the primary-download simplification', () => {
+  const keyboard = trackPageKeyboard(
+    'clean-ui',
+    { source: 'melobot', artist: 'Artist', title: 'Song' },
+    { media: { hq: { fileId: 'hq' }, normal: { fileId: 'normal' } } },
+    { hasHq: true, hasNormal: true, hasMetadata: true }
+  );
+  const labels = keyboard.inline_keyboard.flat().map(button => button.text).join(' | ');
+  assert.match(labels, /⬇️ دانلود آهنگ/u);
+  assert.doesNotMatch(labels, /کیفیت|HQ|normal/iu);
 });
