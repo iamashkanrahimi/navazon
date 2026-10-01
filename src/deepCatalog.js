@@ -169,11 +169,18 @@ export class DeepCatalog {
           || actualTitle.includes(expectedTitle)
         )
       );
+      const trustedAhangifyMetadataAlias = Boolean(
+        track?.source === 'ahangify'
+        && row.track?.source === 'ahangify'
+      );
       if (
-        !titleCompatible
-        || (
-          track?.artist
-          && !artistCreditCompatible(track.artist, performer)
+        !trustedAhangifyMetadataAlias
+        && (
+          !titleCompatible
+          || (
+            track?.artist
+            && !artistCreditCompatible(track.artist, performer)
+          )
         )
       ) {
         console.warn(
