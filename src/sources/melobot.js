@@ -5,6 +5,8 @@ import {
   normalizeText,
   hasAlbumIntent,
   albumSpecificTitleTokens,
+  artistCreditCompatible,
+  titleCreditsArtist,
 } from '../text.js';
 import {
   collectNewMessages,
@@ -1375,13 +1377,14 @@ export async function resolveMeloBotTrackCandidate(
   const featuredTitle = baseTitle && normalize(baseTitle) !== normalize(candidate?.title || '');
   let queries;
   if (candidate?.artistInferred) {
-    // Title-only rows must first ask for the exact visible title so MeloBot can
-    // reveal the authoritative primary performer.
+    // Page-context rows may only change primary performer when the resulting
+    // credit still proves the context Artist participates in the Track. Ask
+    // with Artist + title first so common titles do not drift to another Artist.
     queries = [
+      [candidate?.artist, candidate?.title].filter(Boolean).join(' '),
+      [candidate?.artist, baseTitle].filter(Boolean).join(' '),
       candidate?.title,
       baseTitle,
-      [candidate?.artist, baseTitle].filter(Boolean).join(' '),
-      primaryQuery,
     ];
   } else if (collaborationCredit) {
     // Collaboration credits are commonly reordered by the source; title-first
@@ -1426,11 +1429,17 @@ export async function resolveMeloBotTrackCandidate(
 
       let resolved = null;
       if (candidate?.artistInferred) {
-        // A title-only page row may legitimately reveal a different primary
-        // source artist. Still require the title itself to match.
-        resolved = exactTitle.find(track => track.artist && !track.artistInferred)
-          || exactTitle[0]
-          || null;
+        // Do not accept a same-title Track from an unrelated Artist. A
+        // different primary performer is allowed only when the Track title
+        // explicitly credits the page-context Artist (feat/ft/featuring).
+        resolved = exactTitle.find(track =>
+          track?.artist
+          && !track?.artistInferred
+          && (
+            artistCreditCompatible(candidate?.artist || '', track.artist || '')
+            || titleCreditsArtist(track.title || candidate?.title || '', candidate?.artist || '')
+          )
+        ) || null;
       } else {
         resolved = exactTitle.find(track =>
           artistIdentityCompatible(candidate?.artist || '', track.artist || '')
@@ -3660,6 +3669,24 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
   const matches = [];
   const allowPositionalFallback = tracks.length === audioItems.length;
 
+  const identityCompatible = (track, item) => {
+    const wantedTitle = titleIdentity(track?.title || '');
+    const actualTitle = titleIdentity(item?.title || '');
+    if (
+      wantedTitle
+      && actualTitle
+      && wantedTitle !== actualTitle
+      && !wantedTitle.includes(actualTitle)
+      && !actualTitle.includes(wantedTitle)
+    ) {
+      return false;
+    }
+
+    if (!track?.artist || !item?.performer) return true;
+    return artistCreditCompatible(track.artist, item.performer)
+      || titleCreditsArtist(item.title || track.title || '', track.artist);
+  };
+
   for (const track of tracks) {
     let best = null;
     let bestScore = -1;
@@ -3667,25 +3694,28 @@ export function matchBulkAudioToTracks(tracks, audioItems) {
     const na = normalize(track.artist);
 
     for (const item of unused) {
-      if (item.used) continue;
+      if (item.used || !identityCompatible(track, item)) continue;
       const it = normalize(item.title);
       const ia = normalize(item.performer);
       let score = 0;
       if (nt && it === nt) score += 8;
       else if (nt && it && (it.includes(nt) || nt.includes(it))) score += 5;
       if (na && ia === na) score += 4;
-      else if (na && ia && (ia.includes(na) || na.includes(ia))) score += 2;
+      else if (track?.artist && item?.performer && artistCreditCompatible(track.artist, item.performer)) {
+        score += 2;
+      }
       if (score > bestScore) {
         bestScore = score;
         best = item;
       }
     }
 
-    // Avoid corrupting cache when a partial bulk response is missing a song.
-    // Positional matching is used only when the source returned the full count.
+    // Full-count bulk delivery is not enough evidence to pair conflicting
+    // metadata positionally. Positional fallback is allowed only for an item
+    // whose available Artist/title metadata remains compatible.
     if (!best || bestScore < 5) {
       best = allowPositionalFallback
-        ? (unused.find(item => !item.used) || null)
+        ? (unused.find(item => !item.used && identityCompatible(track, item)) || null)
         : null;
     }
     if (!best) continue;
