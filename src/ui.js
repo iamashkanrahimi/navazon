@@ -40,6 +40,24 @@ export function albumButtonLabel(album) {
   return truncate(`💿 ${body}${suffix}`);
 }
 
+export function artistAlbumsTitle(artist = '', count = null) {
+  const suffix = Number.isFinite(Number(count)) && Number(count) > 0
+    ? ` · ${Number(count)}`
+    : '';
+  return `💿 آلبوم‌های ${clean(artist) || 'خواننده'}${suffix}`;
+}
+
+export function albumPageTitle(album = {}, fallbackArtist = '') {
+  const title = clean(album?.title || 'آلبوم');
+  const artist = clean(album?.artist || fallbackArtist);
+  const count = Number(album?.trackCount || album?.tracks?.length || 0);
+  const meta = [
+    artist,
+    count > 0 ? `${count} آهنگ` : '',
+  ].filter(Boolean).join(' · ');
+  return [`💿 ${title}`, meta].filter(Boolean).join('\n');
+}
+
 function artistShortcutMatchesQuery(query = '', artist = '') {
   if (!clean(query)) return true;
   const queryTokens = meaningfulSearchTokens(query);
