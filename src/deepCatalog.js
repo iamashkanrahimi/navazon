@@ -66,6 +66,29 @@ function safeJson(value) {
   return JSON.stringify(value ?? {});
 }
 
+function aliasTargetCompatible(aliasTrack = {}, canonicalTrack = {}, evidence = 'unknown') {
+  const aliasTitle = normalizeText(aliasTrack?.title || '');
+  const canonicalTitle = normalizeText(canonicalTrack?.title || '');
+  const sameIdentity = artistCreditCompatible(
+    aliasTrack?.artist || '',
+    canonicalTrack?.artist || ''
+  ) && Boolean(
+    aliasTitle
+    && canonicalTitle
+    && (
+      aliasTitle === canonicalTitle
+      || aliasTitle.includes(canonicalTitle)
+      || canonicalTitle.includes(aliasTitle)
+    )
+  );
+  if (sameIdentity) return true;
+  if (evidence !== 'telegram_audio_metadata') return false;
+  return trackMediaIdentityMatches(aliasTrack, {
+    performer: canonicalTrack?.artist || '',
+    title: canonicalTrack?.title || '',
+  });
+}
+
 export class DeepCatalog {
   async setTrackAlias(aliasTrack = {}, canonicalTrack = {}, {
     source = null,
