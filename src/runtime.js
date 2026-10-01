@@ -27,10 +27,12 @@ export const tg = createTelegramClient();
 await tg.connect();
 if (!(await tg.checkAuthorization())) throw new Error('Proxy Telegram session is not authorized');
 installTelegramInbox(tg);
-try {
-  await primeTelegramInboxBoundary(tg, config.melobotUsername);
-} catch (err) {
-  console.warn('[mtproto prime boundary]', err.message);
+for (const peer of [config.melobotUsername, config.ahangifyUsername]) {
+  try {
+    await primeTelegramInboxBoundary(tg, peer);
+  } catch (err) {
+    console.warn('[mtproto prime boundary]', peer, err.message);
+  }
 }
 
 console.log('Proxy MTProto connected.');

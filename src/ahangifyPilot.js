@@ -457,7 +457,7 @@ export async function runAhangifyBestPilotJob(job) {
 
     throw lastError || new Error('All accepted Ahangify candidates failed to download');
   } catch (err) {
-    const attempts = Number(row.attempts || 0) + 1;
+    const attempts = Number(row.attempts || 0);
     const retry = attempts < 3 && !/no confident match/i.test(err.message || '');
     await db.query(`
       UPDATE ahangify_best_pilot
