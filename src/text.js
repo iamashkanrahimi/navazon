@@ -126,10 +126,23 @@ export function titleCreditsArtist(title = '', artist = '') {
 
 export function trackMediaIdentityMatches(track = {}, media = {}) {
   const expectedArtist = cleanText(track?.artist || '');
-  const expectedTitle = normalizeText(track?.title || '');
+  const expectedTitleRaw = cleanText(track?.title || '');
+  const expectedTitle = normalizeText(expectedTitleRaw);
   const performer = cleanText(media?.performer || '');
   const mediaTitleRaw = cleanText(media?.title || '');
   const mediaTitle = normalizeText(mediaTitleRaw);
+
+  const scriptFamily = value => {
+    const text = String(value || '');
+    if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
+    if (/[a-z]/iu.test(text)) return 'latin';
+    return '';
+  };
+  const crossScript = (left, right) => {
+    const a = scriptFamily(left);
+    const b = scriptFamily(right);
+    return Boolean(a && b && a !== b);
+  };
 
   if (
     expectedTitle
@@ -137,13 +150,23 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
     && expectedTitle !== mediaTitle
     && !expectedTitle.includes(mediaTitle)
     && !mediaTitle.includes(expectedTitle)
+    && !crossScript(expectedTitleRaw, mediaTitleRaw)
   ) {
     return false;
   }
 
   if (!expectedArtist || !performer) return true;
-  return artistCreditCompatible(expectedArtist, performer)
-    || titleCreditsArtist(mediaTitleRaw || track?.title || '', expectedArtist);
+  if (
+    artistCreditCompatible(expectedArtist, performer)
+    || titleCreditsArtist(mediaTitleRaw || expectedTitleRaw, expectedArtist)
+  ) {
+    return true;
+  }
+
+  // Persian/Arabic-script catalog rows often carry Latin Telegram metadata.
+  // Without a transliteration oracle, treat cross-script metadata as unknown
+  // rather than falsely rejecting a valid file; same-script mismatches fail.
+  return crossScript(expectedArtist, performer);
 }
 
 export function hasAlbumIntent(query = '') {
