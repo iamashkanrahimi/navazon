@@ -751,7 +751,7 @@ export async function tryOpenArtistListLocal(
   await bot.editMessageText(
     session.chatId,
     messageId,
-    `${artist}\n${normalizedMode === 'recent' ? '🆕' : '🎵'} ${normalizedMode === 'recent' ? 'جدیدترین آثار' : 'پربازدیدترین آثار'}`,
+    `${normalizedMode === 'recent' ? '🆕 تازه‌های' : '🔥 پربازدیدهای'} ${artist}`,
     {
       reply_markup: artistSongsKeyboard(
         sessionId,
@@ -795,14 +795,14 @@ export async function tryOpenAlbumsLocal(
     await bot.editMessageText(
       session.chatId,
       messageId,
-      `${artist}\n💿 آلبوم‌ها\n\nبرای این خواننده آلبومی در منبع پیدا نشد.`,
+      `💿 آلبوم‌های ${artist}\n\nبرای این خواننده آلبومی پیدا نکردم.`,
       { reply_markup: noAlbumsKeyboard(sessionId) }
     );
   } else {
     await bot.editMessageText(
       session.chatId,
       messageId,
-      `${artist}\n💿 آلبوم‌ها`,
+      `💿 آلبوم‌های ${artist}`,
       {
         reply_markup: albumsKeyboard(
           sessionId,
@@ -905,7 +905,7 @@ export async function tryDeliverBulkFromCacheLocal(
       await bot.editMessageText(
         session.chatId,
         messageId,
-        `${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,
+        `🔥 پربازدیدهای ${session.artistContext.artist}`,
         {
           reply_markup: artistSongsKeyboard(
             sessionId,
@@ -920,7 +920,7 @@ export async function tryDeliverBulkFromCacheLocal(
       await bot.editMessageText(
         session.chatId,
         messageId,
-        `${session.artistContext.artist}\n🆕 جدیدترین آثار`,
+        `🆕 تازه‌های ${session.artistContext.artist}`,
         {
           reply_markup: artistSongsKeyboard(
             sessionId,
@@ -1093,27 +1093,23 @@ async function deliverBulkIndividuallyHq(session, tracks, {
 
 function interactiveSourceFailureMessage(err, action = 'source', quality = '') {
   if (err?.code === 'REGION_RESTRICTED_IRAN_ONLY') {
-    return 'این محتوا فقط برای کاربران داخل ایران در دسترسه.';
+    return 'این آهنگ فعلاً فقط داخل ایران در دسترسه 🇮🇷';
   }
-  if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') {
-    if (action === 'quality') {
-      return `MeloBot دکمه‌ی ${quality === 'normal' ? 'کیفیت معمولی' : 'کیفیت عالی'} را برای این آهنگ نشان نداد.`;
+  if (action === 'quality') {
+    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') {
+      return 'این آهنگ فعلاً قابل دانلود نیست.';
     }
-    if (action === 'cover') return 'MeloBot برای این آهنگ دکمه‌ی کاور نشان نداد.';
-    if (action === 'lyrics') return 'MeloBot برای این آهنگ گزینه‌ی متن آهنگ نشان نداد.';
+    return 'دانلود کامل نشد؛ یک بار دیگه امتحان کن.';
   }
-  if (
-    ['MELOBOT_DELIVERY_TIMEOUT','MELOBOT_TRACK_MENU_TIMEOUT','MELOBOT_TRACK_RESOLVE_FAILED']
-      .includes(err?.code)
-  ) {
-    if (action === 'quality') return 'دریافت این کیفیت از MeloBot این بار کامل نشد؛ دوباره امتحان کن.';
-    if (action === 'cover') return 'دریافت کاور از MeloBot این بار کامل نشد؛ دوباره امتحان کن.';
-    if (action === 'lyrics') return 'دریافت متن آهنگ از MeloBot این بار کامل نشد؛ دوباره امتحان کن.';
+  if (action === 'cover') {
+    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'برای این آهنگ کاوری پیدا نکردم.';
+    return 'کاور این بار نرسید؛ یک بار دیگه امتحان کن.';
   }
-  if (action === 'quality') return 'دریافت این کیفیت این بار ناموفق بود؛ دوباره امتحان کن.';
-  if (action === 'cover') return 'دریافت کاور این بار ناموفق بود؛ دوباره امتحان کن.';
-  if (action === 'lyrics') return 'دریافت متن آهنگ این بار ناموفق بود؛ دوباره امتحان کن.';
-  return 'دریافت اطلاعات از منبع این بار ناموفق بود؛ دوباره امتحان کن.';
+  if (action === 'lyrics') {
+    if (err?.code === 'MELOBOT_CAPABILITY_ABSENT') return 'متن این آهنگ رو پیدا نکردم.';
+    return 'متن آهنگ این بار نرسید؛ یک بار دیگه امتحان کن.';
+  }
+  return 'این بخش این بار کامل نشد؛ دوباره امتحان کن.';
 }
 
 function bulkFallbackMessage(kind, sent, missing) {
@@ -1126,10 +1122,10 @@ function bulkFallbackMessage(kind, sent, missing) {
       : 'جدیدترین‌ها';
 
   if (sent > 0) {
-    return `بخشی از ${label} دانلود شد؛ ${missing} آهنگ فعلاً دریافت نشد. دوباره امتحان کن.`;
+    return `${sent} آهنگ آماده شد.\n${missing} تای دیگه فعلاً نرسید؛ اگه خواستی دوباره بزن.`;
   }
 
-  return `دانلود یکجای ${label} فعلاً انجام نشد. دوباره امتحان کن.`;
+  return 'دانلود یکجا این بار جور نشد.\nمی‌تونی آهنگ‌ها رو تکی دانلود کنی.';
 }
 
 async function deliverAvailableBulkCache(session, tracks) {
@@ -1172,13 +1168,13 @@ async function deliverAvailableBulkCache(session, tracks) {
 export async function showResults(sessionId, session, messageId = session.messageId) {
   const prompt = session.resultsPrompt || (
     session.albumFirst && !(session.options || []).length
-      ? 'یک آلبوم رو انتخاب کن:'
+      ? 'این آلبوم‌ها رو پیدا کردم:'
       : session.albumOptions?.length
-        ? 'یک آهنگ یا آلبوم رو انتخاب کن:'
-        : 'یک نسخه رو انتخاب کن:'
+        ? 'این‌ها رو پیدا کردم:'
+        : 'این‌ها رو پیدا کردم:'
   );
-  const title = session.resultsTitle || `نتیجه‌ها برای «${session.query}»`;
-  await bot.editMessageText(session.chatId,messageId,`${title}\n${prompt}`,{
+  const title = session.resultsTitle || `🔎 ${session.query}`;
+  await bot.editMessageText(session.chatId,messageId,`${title}\n\n${prompt}`,{
     reply_markup: resultsKeyboard(sessionId,session),
   });
 }
@@ -1186,7 +1182,7 @@ export async function showResults(sessionId, session, messageId = session.messag
 async function setBrowseResults(sessionId, session, messageId, tracks, {
   title,
   backAction,
-  backText = '🔙 برگشت',
+  backText = '↩️ برگشت',
 } = {}) {
   const visible = (tracks || []).slice(0, 10);
   if (!visible.length) throw new Error('Browse source returned no tracks.');
@@ -1195,7 +1191,7 @@ async function setBrowseResults(sessionId, session, messageId, tracks, {
   session.albumOptions = [];
   session.query = title || 'موسیقی';
   session.resultsTitle = title || 'موسیقی';
-  session.resultsPrompt = 'یک آهنگ رو انتخاب کن:';
+  session.resultsPrompt = 'این‌ها رو پیدا کردم:';
   session.resultsBackAction = backAction || 'hmn';
   session.resultsBackText = backText;
   session.currentTrack = null;
@@ -1306,7 +1302,7 @@ export const sourceQueue = new SerialQueue(async job => {
         );
       } catch (err) {
         console.error('[search]',err.message);
-        await bot.editMessageText(job.chatId,job.statusMessageId,'نتیجه‌ای پیدا نشد.');
+        await bot.editMessageText(job.chatId,job.statusMessageId,'چیزی پیدا نکردم 👀\nاملای اسم رو یه مدل دیگه امتحان کن.');
       }
       return;
     }
@@ -1339,7 +1335,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await setBrowseResults(job.sessionId, session, job.messageId, tracks, {
           title: feed.title,
           backAction: feed.backAction,
-          backText: '🔙 دسته‌بندی‌ها',
+          backText: '↩️ دسته‌بندی‌ها',
         });
       } catch (err) {
         console.error('[home feed]', err.message);
@@ -1351,7 +1347,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'این بخش فعلاً در دسترس نیست. دوباره امتحان کن.',
+          'این بخش این بار باز نشد؛ یه بار دیگه امتحان کن.',
           { reply_markup: keyboard }
         );
       }
@@ -1381,7 +1377,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await setBrowseResults(job.sessionId, session, job.messageId, tracks, {
           title: `🎧 ${playlist.label}`,
           backAction: 'hpl',
-          backText: '🔙 پلی‌لیست‌ها',
+          backText: '↩️ پلی‌لیست‌ها',
         });
       } catch (err) {
         console.error('[home playlist]', err.message);
@@ -1389,7 +1385,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'این پلی‌لیست فعلاً در دسترس نیست.',
+          'این پلی‌لیست این بار باز نشد؛ یه بار دیگه امتحان کن.',
           { reply_markup: curatedPlaylistsKeyboard(job.sessionId) }
         );
       }
@@ -1442,7 +1438,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          'باز کردن این خواننده ممکن نشد.',
+          'صفحه‌ی این خواننده فعلاً باز نشد.',
           { reply_markup: followedArtistsKeyboard(job.sessionId, session.followedArtists || []) }
         );
       }
@@ -1618,7 +1614,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await renderTrackPage(job.sessionId, session, job.messageId);
       } catch (err) {
         console.error('[track page]', err.message);
-        await bot.editMessageText(session.chatId, job.messageId, 'باز کردن صفحه‌ی آهنگ ممکن نشد.');
+        await bot.editMessageText(session.chatId, job.messageId, 'این آهنگ این بار باز نشد؛ یه بار دیگه امتحان کن.');
       }
       session.busy = false;
       return;
@@ -1685,7 +1681,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.sendMessage(session.chatId, text);
       } catch (err) {
         console.error('[track info]', err.message);
-        await bot.sendMessage(session.chatId, 'مشخصات بیشتری برای این آهنگ پیدا نشد.');
+        await bot.sendMessage(session.chatId, 'فعلاً اطلاعات بیشتری از این آهنگ ندارم.');
       }
       session.busy = false;
       try { await renderTrackPage(job.sessionId, session, job.messageId); } catch {}
@@ -1695,7 +1691,7 @@ export const sourceQueue = new SerialQueue(async job => {
     if (job.type === 'artist_list') {
       const startedAt = Date.now();
       const mode = job.mode === 'recent' ? 'recent' : 'top';
-      const label = mode === 'recent' ? 'جدیدترین آثار' : 'پربازدیدترین آثار';
+      const label = mode === 'recent' ? 'تازه‌ها' : 'پربازدیدها';
       let route = 'unknown';
 
       try {
@@ -1795,7 +1791,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `${session.artistContext.artist}\n${mode === 'recent' ? '🆕' : '🎵'} ${label}`,
+          `${mode === 'recent' ? '🆕 تازه‌های' : '🔥 پربازدیدهای'} ${session.artistContext.artist}`,
           {
             reply_markup: artistSongsKeyboard(
               job.sessionId,
@@ -1816,7 +1812,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `${session.artistContext?.artist || 'خواننده'}\n\n${label} فعلاً قابل دریافت نیست.`,
+          `${label}ی ${session.artistContext?.artist || 'این خواننده'} این بار نرسید؛ دوباره امتحان کن.`,
           {
             reply_markup: artistHomeKeyboard(
               job.sessionId,
@@ -2107,7 +2103,7 @@ export const sourceQueue = new SerialQueue(async job => {
       await bot.editMessageText(
         session.chatId,
         job.messageId,
-        `${session.artistContext.artist}\n🆕 جدیدترین آثار`,
+        `🆕 تازه‌های ${session.artistContext.artist}`,
         {
           reply_markup: artistSongsKeyboard(
             job.sessionId,
@@ -2134,8 +2130,8 @@ export const sourceQueue = new SerialQueue(async job => {
         console.error('[download]',err.message);
         session.busy = false;
         const text = err.code === 'REGION_RESTRICTED_IRAN_ONLY'
-          ? 'این محتوا فقط برای کاربران داخل ایران در دسترسه.'
-          : 'این نسخه در دسترس نیست.';
+          ? 'این آهنگ فعلاً فقط داخل ایران در دسترسه 🇮🇷'
+          : 'این آهنگ فعلاً قابل دانلود نیست.';
         await bot.editMessageText(session.chatId,job.messageId,text,{
           reply_markup: resultsKeyboard(job.sessionId,session),
         });
@@ -2281,7 +2277,7 @@ export const sourceQueue = new SerialQueue(async job => {
       await bot.editMessageText(
         session.chatId,
         job.messageId,
-        `${session.artistContext.artist}\n🎵 پربازدیدترین آثار`,
+        `🔥 پربازدیدهای ${session.artistContext.artist}`,
         {
           reply_markup: artistSongsKeyboard(job.sessionId, tracks, { mode: 'top' }),
         }
@@ -2919,7 +2915,7 @@ export const sourceQueue = new SerialQueue(async job => {
           await bot.editMessageText(
             session.chatId,
             job.messageId,
-            `${session.artistContext.artist}\n💿 آلبوم‌ها\n\nبرای این خواننده آلبومی در منبع پیدا نشد.`,
+            `💿 آلبوم‌های ${session.artistContext.artist}\n\nبرای این خواننده آلبومی پیدا نکردم.`,
             { reply_markup: noAlbumsKeyboard(job.sessionId) }
           );
           console.log(
@@ -2933,7 +2929,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `${session.artistContext.artist}\n💿 آلبوم‌ها`,
+          `💿 آلبوم‌های ${session.artistContext.artist}`,
           { reply_markup: albumsKeyboard(job.sessionId, session.albums, page) }
         );
 
@@ -2956,7 +2952,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `${session.artistContext?.artist || 'خواننده'}\n💿 آلبوم‌ها\n\nدریافت آلبوم‌ها موقتاً ناموفق بود.`,
+          `💿 آلبوم‌های ${session.artistContext?.artist || 'خواننده'}\n\nفعلاً نتونستم آلبوم‌ها رو بیارم. دوباره امتحان کن.`,
           { reply_markup: albumsErrorKeyboard(job.sessionId, session.albumsPage || 0) }
         );
       }
@@ -3068,7 +3064,7 @@ export const sourceQueue = new SerialQueue(async job => {
         await bot.editMessageText(
           session.chatId,
           job.messageId,
-          `${session.artistContext?.artist || 'خواننده'}\n💿 آلبوم‌ها\n\nباز کردن آلبوم موقتاً ناموفق بود.`,
+          `💿 آلبوم‌های ${session.artistContext?.artist || 'خواننده'}\n\nاین آلبوم این بار باز نشد؛ دوباره امتحان کن.`,
           { reply_markup: albumsErrorKeyboard(job.sessionId, page) }
         );
       }
