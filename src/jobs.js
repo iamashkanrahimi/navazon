@@ -9,7 +9,7 @@ import {
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   resultsKeyboard, artistHomeKeyboard, artistSongsKeyboard,
   albumsKeyboard, noAlbumsKeyboard, albumsErrorKeyboard, albumTracksKeyboard, trackAlbumKeyboard,
-  artistAlbumsTitle, albumPageTitle,
+  artistAlbumsTitle, albumPageTitle, bulkDownloadSummary,
 } from './ui.js';
 import {
   assertDeliveryAllowed, bridgeSourceAudio, bridgeSourceMessage, bridgeSourceMessages,
@@ -1120,15 +1120,7 @@ function interactiveSourceFailureMessage(err, action = 'source', quality = '') {
 }
 
 function bulkFallbackMessage(kind, sent, missing) {
-  if (!missing && sent > 0) {
-    return `همه‌ی ${sent} آهنگ آماده شد.`;
-  }
-
-  if (sent > 0) {
-    return `${sent} آهنگ آماده شد.\n${missing} تای دیگه فعلاً نرسید؛ به نظرم دوباره امتحان کن.`;
-  }
-
-  return 'دانلود یکجا موفقیت‌آمیز نبود.\nاگه میخوای دوباره امتحان کن یا آهنگ‌ها رو تکی بگیر.';
+  return bulkDownloadSummary(sent, missing);
 }
 
 async function deliverAvailableBulkCache(session, tracks) {
