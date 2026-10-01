@@ -460,6 +460,19 @@ export function albumTracksKeyboard(
   return { inline_keyboard: rows };
 }
 
+export function bulkDownloadSummary(sent = 0, missing = 0) {
+  const ready = Math.max(0, Number(sent || 0));
+  const missed = Math.max(0, Number(missing || 0));
+
+  if (!missed && ready > 0) {
+    return `همه‌ی ${ready} آهنگ آماده شد.`;
+  }
+  if (ready > 0) {
+    return `${ready} آهنگ آماده شد.\n${missed} تای دیگه فعلاً نرسید؛ به نظرم دوباره امتحان کن.`;
+  }
+  return 'دانلود یکجا موفقیت‌آمیز نبود.\nاگه میخوای دوباره امتحان کن یا آهنگ‌ها رو تکی بگیر.';
+}
+
 export function minimalBrandCaption() {
   return '🎧 @NavazonBot';
 }
