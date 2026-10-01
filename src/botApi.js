@@ -37,7 +37,10 @@ export class BotApi {
       if (data.ok) return data.result;
 
       const description = data.description || 'unknown error';
-      if (method === 'editMessageText' && /message is not modified/i.test(description)) {
+      if (
+        ['editMessageText', 'editMessageCaption', 'editMessageReplyMarkup'].includes(method)
+        && /message is not modified/i.test(description)
+      ) {
         return null;
       }
 
