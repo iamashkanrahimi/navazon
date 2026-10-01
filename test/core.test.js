@@ -4915,6 +4915,16 @@ test('media identity validation blocks cross-Artist audio before cache or delive
   );
 });
 
+test('media identity validation keeps legitimate Persian-to-Latin metadata compatible', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'رضا بهرام', title: 'یار' },
+      { performer: 'Reza Bahram', title: 'Yar' }
+    ),
+    true
+  );
+});
+
 test('cache metadata from another Artist cannot teach a durable Track alias', async () => {
   const originalQuery = db.query;
   const calls = [];
