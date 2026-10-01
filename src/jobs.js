@@ -34,6 +34,7 @@ import { recordCrawlerStart, recordCrawlerFinish, setState } from './state.js';
 import { renderArtistHomePage } from './artistProfile.js';
 import { executeDeepTask } from './deepCrawler.js';
 import { runAhangifyBestPilotJob } from './ahangifyPilot.js';
+import { runAhangifyArchiveJob } from './ahangifyArchive.js';
 import {
   deepAlbumKey,
   deepTrackKey,
@@ -60,7 +61,7 @@ import {
 
 function newSessionId() { return randomBytes(4).toString('hex'); }
 
-const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap', 'ahangify_pilot']);
+const BACKGROUND_JOB_TYPES = new Set(['deep_crawl', 'discover', 'discover_bootstrap', 'ahangify_pilot', 'ahangify_archive']);
 const SEARCH_CACHE_NAMESPACE = 'source-lane-v3';
 
 function userSearchCacheKey(query = '') {
@@ -140,6 +141,9 @@ function sourceJobKey(job = {}) {
   }
   if (job.type === 'ahangify_pilot') {
     return job.sourceUrl ? `ahangify-pilot:${job.sourceUrl}` : null;
+  }
+  if (job.type === 'ahangify_archive') {
+    return job.sourceUrl ? `ahangify-archive:${job.sourceUrl}` : null;
   }
   if (!job.sessionId) return null;
 
@@ -1455,6 +1459,27 @@ export const sourceQueue = new SerialQueue(async job => {
       return;
     }
 
+    if (job.type === 'ahangify_archive') {
+      try {
+        const result = await runAhangifyArchiveJob(job);
+        const status = result?.status || 'unknown';
+        if (status === 'success') {
+          console.log('[ahangify archive job]', JSON.stringify({
+            status,
+            artist: result.artist,
+            title: result.title,
+            bitrate: result.bitrate,
+            durationDelta: result.durationDelta,
+          }));
+        } else if (status !== 'skipped') {
+          console.log('[ahangify archive job]', JSON.stringify(result));
+        }
+      } catch (err) {
+        console.warn('[ahangify archive job]', err.message);
+      }
+      return;
+    }
+
     if (job.type === 'deep_crawl') {
       try {
         const kind = job.task?.kind || 'unknown';
@@ -1494,7 +1519,7 @@ export const sourceQueue = new SerialQueue(async job => {
       return;
     }
 
-    if (!session && !['discover','discover_bootstrap','ahangify_pilot'].includes(job.type)) return;
+    if (!session && !['discover','discover_bootstrap','ahangify_pilot','ahangify_archive'].includes(job.type)) return;
     if (session) session.expiresAt = Date.now() + BUSY_SESSION_TTL_MS;
 
     if (job.type === 'search_album') {
