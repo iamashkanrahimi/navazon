@@ -60,7 +60,7 @@ const {
   collectNewMessages,
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
-const { trackCacheKey } = await import('../src/cache.js');
+const { FileCache, trackCacheKey } = await import('../src/cache.js');
 const {
   DeepCatalog,
   deepTrackKey,
@@ -5319,6 +5319,136 @@ test('trusted Telegram metadata alias can still bridge Persian catalog identity 
     assert.equal(resolved.artist, 'Reza Bahram');
     assert.equal(resolved.title, 'Yar');
     assert.equal(resolved.artistInferred, false);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('FileCache refuses inferred identities before touching the database', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('FileCache must not query inferred identity');
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      artistInferred: true,
+      source: 'melobot',
+    };
+    assert.equal(await cacheStore.get(inferred), null);
+    await cacheStore.set(inferred, { fileId: 'bad-file' });
+    await cacheStore.recordSourceFetch(inferred);
+    await cacheStore.recordServe(inferred);
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache rejects a legacy same-title row whose media performer is another Artist', async () => {
+  const originalQuery = db.query;
+  let calls = 0;
+  db.query = async (sql) => {
+    calls += 1;
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|',
+          track: {
+            artist: 'Ali Sorena',
+            title: 'Maryam',
+            source: 'melobot',
+          },
+          media: {
+            fileId: 'wrong-file-id',
+            performer: 'Mehrdad Asemani',
+            title: 'Maryam',
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in FileCache identity regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+    assert.equal(calls, 1);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache preserves a legitimate Persian-to-Latin metadata row', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'رضا بهرام|یار|',
+          track: {
+            artist: 'رضا بهرام',
+            title: 'یار',
+            source: 'ahangify',
+          },
+          media: {
+            fileId: 'good-file-id',
+            performer: 'Reza Bahram',
+            title: 'Yar',
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in FileCache transliteration regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'رضا بهرام',
+      title: 'یار',
+      source: 'ahangify',
+    });
+    assert.equal(cached.fileId, 'good-file-id');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('setTrackAlias itself refuses same-title cross-Artist poisoning before DB access', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Alias mismatch must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await assert.rejects(
+      () => catalog.setTrackAlias(
+        { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+        { artist: 'Mehrdad Asemani', title: 'Maryam', source: 'melobot' },
+        { source: 'melobot', evidence: 'telegram_audio_metadata' }
+      ),
+      err => err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH'
+    );
+    assert.equal(calls.length, 0);
   } finally {
     db.query = originalQuery;
   }
