@@ -86,6 +86,7 @@ const {
 const { CURATED_PLAYLISTS, HOME_FEEDS } = await import('../src/homeCatalog.js');
 const {
   artistHomeCaption,
+  clearArtistProfilePhoto,
   replaceArtistProfileCardWithText,
 } = await import('../src/artistProfile.js');
 const { createNonOverlappingScheduler } = await import('../src/crawlerScheduler.js');
@@ -4570,4 +4571,33 @@ test('legacy two-message Artist sessions keep their text control while removing 
   assert.equal(nextMessageId, 66);
   assert.equal(session.artistPhotoMessageId, null);
   assert.deepEqual(calls.map(call => call[0]), ['delete']);
+});
+
+
+test('undeletable stale Artist cards have their inline keyboard disabled', async () => {
+  const calls = [];
+  const fakeBot = {
+    async deleteMessage(chatId, messageId) {
+      calls.push(['delete', chatId, messageId]);
+      throw new Error("message can't be deleted");
+    },
+    async editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+      calls.push(['markup', chatId, messageId, replyMarkup]);
+      return true;
+    },
+  };
+  const session = {
+    chatId: 10,
+    artistPhotoMessageId: 55,
+    artistProfileArtistKey: 'artist-key',
+    artistProfileVisible: true,
+  };
+
+  await clearArtistProfilePhoto(fakeBot, session);
+
+  assert.deepEqual(calls.map(call => call[0]), ['delete', 'markup']);
+  assert.deepEqual(calls[1][3], { inline_keyboard: [] });
+  assert.equal(session.artistPhotoMessageId, null);
+  assert.equal(session.artistProfileArtistKey, null);
+  assert.equal(session.artistProfileVisible, false);
 });
