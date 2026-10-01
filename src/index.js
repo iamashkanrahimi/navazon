@@ -9,6 +9,11 @@ import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { closeArchiveDb } from './archiveDb.js';
 import { seedAhangifyBestPilot } from './ahangifyPilot.js';
+import {
+  startAhangifyArchivePump,
+  stopAhangifyArchivePump,
+  getAhangifyArchiveSummary,
+} from './ahangifyArchive.js';
 
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
@@ -190,6 +195,11 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await getStats(),null,2)); return;
     }
+    if (req.method === 'GET' && url.pathname === '/admin/ahangify-archive') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await getAhangifyArchiveSummary(),null,2)); return;
+    }
     res.writeHead(404).end('not found');
   } catch (err) {
     console.error('[http]',err.message);
@@ -217,6 +227,14 @@ server.listen(config.port,'0.0.0.0',async () => {
     }
     startMediaCacheWorker();
     try {
+      const archiveWorker = await startAhangifyArchivePump(sourceQueue);
+      if (archiveWorker?.enabled) {
+        console.log('[ahangify archive] startup', JSON.stringify(archiveWorker));
+      }
+    } catch (err) {
+      console.error('[ahangify archive startup]', err?.stack || err?.message || err);
+    }
+    try {
       const pilot = await seedAhangifyBestPilot(sourceQueue);
       if (pilot?.enabled) console.log('[ahangify pilot] startup', JSON.stringify(pilot));
     } catch (err) {
@@ -237,6 +255,7 @@ async function shutdown(signal) {
   console.log(`${signal}: shutting down...`);
   crawlerScheduler.stop();
   stopMediaCacheWorker();
+  stopAhangifyArchivePump();
   server.close();
   try { await tg.disconnect(); } catch {}
   try { await db.end(); } catch {}
