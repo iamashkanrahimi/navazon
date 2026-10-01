@@ -15,7 +15,7 @@ import {
   homeKeyboard, newestMenuKeyboard, topMenuKeyboard,
   curatedPlaylistsKeyboard, followedArtistsKeyboard,
   artistHomeKeyboard, artistSongsKeyboard, albumsKeyboard,
-  albumTracksKeyboard, trackAlbumKeyboard,
+  albumTracksKeyboard, trackAlbumKeyboard, artistAlbumsTitle, albumPageTitle,
 } from './ui.js';
 import { noteUserActivity } from './state.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
@@ -392,7 +392,10 @@ export async function handleUpdate(update) {
             reply_markup: artistSongsKeyboard(sessionId,tracks,{ mode: 'recent' }),
           });
         } else if (back.type === 'album' && session.currentAlbum) {
-          const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
+          const title = albumPageTitle(
+            session.currentAlbum,
+            session.artistContext?.artist || ''
+          );
           const keyboard = session.currentAlbumView === 'track'
             ? trackAlbumKeyboard(
                 sessionId,
@@ -524,7 +527,7 @@ export async function handleUpdate(update) {
         const quality = action === 'tqh' ? 'hq' : 'normal';
         const statusText = quality === 'hq'
           ? 'دارم آهنگ رو می‌فرستم…'
-          : 'در حال دریافت کیفیت معمولی…';
+          : 'دارم آهنگ رو می‌فرستم…';
         await bot.editMessageText(session.chatId,messageId,statusText);
         let servedFromCache = false;
         try {
@@ -650,7 +653,7 @@ export async function handleUpdate(update) {
           await bot.editMessageText(
             session.chatId,
             messageId,
-            `💿 ${albumData.album.title}\n${albumData.album.artist || session.currentTrack.artist}`,
+            albumPageTitle(albumData.album, session.currentTrack.artist),
             {
               reply_markup: trackAlbumKeyboard(
                 sessionId,
@@ -667,7 +670,11 @@ export async function handleUpdate(update) {
         const page = Number(parts[2] || 0);
         if (session.albums) {
           session.albumsPage = page;
-          await bot.editMessageText(session.chatId,messageId,`${session.artistContext.artist}\n💿 آلبوم‌ها`,{
+          await bot.editMessageText(
+            session.chatId,
+            messageId,
+            artistAlbumsTitle(session.artistContext.artist, session.albums.length),
+            {
             reply_markup: albumsKeyboard(sessionId,session.albums,page),
           });
         } else {
@@ -698,7 +705,10 @@ export async function handleUpdate(update) {
       } else if (action === 'apg') {
         if (!session.currentAlbum?.tracks?.length) return;
         session.albumTrackPage = Math.max(0, Number(parts[2] || 0));
-        const title = `💿 ${session.currentAlbum.title}\n${session.currentAlbum.artist || session.artistContext?.artist || ''}`;
+        const title = albumPageTitle(
+          session.currentAlbum,
+          session.artistContext?.artist || ''
+        );
         const keyboard = session.currentAlbumView === 'track'
           ? trackAlbumKeyboard(
               sessionId,
