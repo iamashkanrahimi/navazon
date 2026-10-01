@@ -4,6 +4,7 @@ import { getArchiveDb } from './archiveDb.js';
 import { searchAhangify, downloadAhangifyResult } from './sources/ahangify.js';
 import { forwardHiddenToOurBot } from './mtproto.js';
 import { normalizeText } from './text.js';
+import { recoverStaleAhangifyArchiveJobs } from './ahangifyArchiveRecovery.js';
 
 const ARCHIVE_VERSION = 'archive-v1';
 let pumpTimer = null;
@@ -284,15 +285,13 @@ async function seedAllTracks() {
     ]);
   }
 
-  await db.query(`
-    UPDATE ahangify_archive_media
-       SET status='retry',
-           next_attempt_at=NOW(),
-           last_error=COALESCE(last_error, 'recovered after restart'),
-           updated_at=NOW()
-     WHERE status='running'
-       AND updated_at < NOW() - INTERVAL '5 minutes'
-  `);
+  const recovered = await recoverStaleAhangifyArchiveJobs(db);
+  if (recovered > 0) {
+    console.warn('[ahangify archive recovery]', JSON.stringify({
+      recovered,
+      trigger: 'startup',
+    }));
+  }
 
   const pilotExists = await db.query(
     `SELECT to_regclass('public.ahangify_best_pilot') AS table_name`
@@ -341,6 +340,14 @@ export async function enqueueAhangifyArchiveBatch(sourceQueue, limit = config.ah
     };
   }
   await ensureSchema();
+
+  const recovered = await recoverStaleAhangifyArchiveJobs(db);
+  if (recovered > 0) {
+    console.warn('[ahangify archive recovery]', JSON.stringify({
+      recovered,
+      trigger: 'pump',
+    }));
+  }
 
   const { rows } = await db.query(`
     SELECT source_url
