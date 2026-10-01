@@ -4537,7 +4537,7 @@ test('leaving a one-message Artist card replaces it with a safe text control mes
   assert.equal(session.messageId, 77);
   assert.equal(session.artistPhotoMessageId, null);
   assert.equal(session.artistProfileVisible, false);
-  assert.deepEqual(calls.map(call => call[0]), ['delete', 'send']);
+  assert.deepEqual(calls.map(call => call[0]), ['send', 'delete']);
 });
 
 test('legacy two-message Artist sessions keep their text control while removing the companion photo', async () => {
