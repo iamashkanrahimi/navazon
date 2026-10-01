@@ -38,6 +38,8 @@ export const config = {
 
   melobotUsername: (process.env.MELOBOT_USERNAME || 'melobot').replace(/^@/, ''),
   ahangifyUsername: (process.env.AHANGIFY_USERNAME || 'ahangifybot').replace(/^@/, ''),
+  ahangifyBestPilotEnabled: boolEnv('AHANGIFY_BEST_PILOT_ENABLED', false),
+  ahangifyBestPilotCount: Math.max(1, Math.min(50, Number(process.env.AHANGIFY_BEST_PILOT_COUNT || 50))),
   brandCaption: process.env.BRAND_CAPTION || `@${required('BOT_USERNAME').replace(/^@/, '')}`,
 
   catalogSearchTtlMs: Number(process.env.CATALOG_SEARCH_TTL_MINUTES || 15) * 60 * 1000,
