@@ -1,4 +1,3 @@
-import { config } from './config.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
 import { cleanText, normalizeText, meaningfulSearchTokens, hasAlbumIntent } from './text.js';
 
