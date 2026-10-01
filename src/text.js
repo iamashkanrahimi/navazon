@@ -83,6 +83,47 @@ export function artistCreditMatchesContext(credit = '', artist = '') {
   return wantedParts.every(part => actualParts.includes(part));
 }
 
+export function artistCreditCompatible(requested = '', actual = '') {
+  const requestedText = normalizeText(requested);
+  const actualText = normalizeText(actual);
+  if (!requestedText || !actualText) return false;
+  if (requestedText === actualText) return true;
+
+  const requestedParts = artistCreditParts(requested);
+  const actualParts = artistCreditParts(actual);
+  if (!requestedParts.length || !actualParts.length) return false;
+
+  const partMatches = (left, right) => {
+    if (left === right) return true;
+    const leftTokens = left.split(' ').filter(Boolean);
+    const rightTokens = right.split(' ').filter(Boolean);
+    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
+    return left.includes(right) || right.includes(left);
+  };
+
+  if (requestedParts.length > 1) {
+    return requestedParts.every(left =>
+      actualParts.some(right => partMatches(left, right))
+    );
+  }
+
+  return actualParts.some(right => partMatches(requestedParts[0], right));
+}
+
+export function titleCreditsArtist(title = '', artist = '') {
+  const source = cleanText(title);
+  if (!source || !artist) return false;
+
+  const credits = [];
+  const re = /\b(?:feat\.?|ft\.?|featuring)\s+([^()[\]]+?)(?=\)|\]|$|\s+[–—-]\s+)/giu;
+  for (const match of source.matchAll(re)) {
+    const credit = cleanText(match[1]);
+    if (credit) credits.push(credit);
+  }
+
+  return credits.some(credit => artistCreditCompatible(artist, credit));
+}
+
 export function hasAlbumIntent(query = '') {
   const tokens = normalizeText(query).split(' ').filter(Boolean);
   return tokens.some(token => ALBUM_INTENT_WORDS.has(token));
