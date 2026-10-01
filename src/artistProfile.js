@@ -127,11 +127,13 @@ export async function replaceArtistProfileCardWithText(
     return currentId || Number(session?.messageId || 0);
   }
 
-  await clearArtistProfilePhoto(bot, session);
+  // Create the replacement first. If Telegram is temporarily unavailable,
+  // the existing Artist card remains usable instead of disappearing.
   const replacement = await bot.sendMessage(session.chatId, text, {
     disable_notification: true,
   });
   session.messageId = replacement.message_id;
+  await clearArtistProfilePhoto(bot, session);
   return replacement.message_id;
 }
 
