@@ -290,10 +290,18 @@ export class DeepCatalog {
           })
         : candidate;
 
-      await this.setTrackAlias(track, resolved, {
-        source: row.track?.source || track.source || null,
-        evidence: 'telegram_audio_metadata',
-      });
+      try {
+        await this.setTrackAlias(track, resolved, {
+          source: row.track?.source || track.source || null,
+          evidence: 'telegram_audio_metadata',
+        });
+      } catch (err) {
+        if (err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH') {
+          console.warn('[track alias learn rejected]', track?.artist, track?.title);
+          continue;
+        }
+        throw err;
+      }
       return resolved;
     }
 
