@@ -124,6 +124,28 @@ export function titleCreditsArtist(title = '', artist = '') {
   return credits.some(credit => artistCreditCompatible(artist, credit));
 }
 
+export function trackMediaIdentityMatches(track = {}, media = {}) {
+  const expectedArtist = cleanText(track?.artist || '');
+  const expectedTitle = normalizeText(track?.title || '');
+  const performer = cleanText(media?.performer || '');
+  const mediaTitleRaw = cleanText(media?.title || '');
+  const mediaTitle = normalizeText(mediaTitleRaw);
+
+  if (
+    expectedTitle
+    && mediaTitle
+    && expectedTitle !== mediaTitle
+    && !expectedTitle.includes(mediaTitle)
+    && !mediaTitle.includes(expectedTitle)
+  ) {
+    return false;
+  }
+
+  if (!expectedArtist || !performer) return true;
+  return artistCreditCompatible(expectedArtist, performer)
+    || titleCreditsArtist(mediaTitleRaw || track?.title || '', expectedArtist);
+}
+
 export function hasAlbumIntent(query = '') {
   const tokens = normalizeText(query).split(' ').filter(Boolean);
   return tokens.some(token => ALBUM_INTENT_WORDS.has(token));
