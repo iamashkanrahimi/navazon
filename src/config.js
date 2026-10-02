@@ -38,6 +38,14 @@ export const config = {
 
   rjAudioCacheEnabled: boolEnv('RJ_AUDIO_CACHE_ENABLED', false),
   rjAudioCacheDelayMs: Math.max(900, Number(process.env.RJ_AUDIO_CACHE_DELAY_MS || 1100)),
+  rjAudioCacheConcurrency: Math.max(
+    1,
+    Math.min(12, Number(process.env.RJ_AUDIO_CACHE_CONCURRENCY || 8))
+  ),
+  rjAudioCacheSendIntervalMs: Math.max(
+    1000,
+    Number(process.env.RJ_AUDIO_CACHE_SEND_INTERVAL_MS || 1100)
+  ),
   rjAudioCacheMaxAttempts: Math.max(
     1,
     Math.min(3, Number(process.env.RJ_AUDIO_CACHE_MAX_ATTEMPTS || 2))
