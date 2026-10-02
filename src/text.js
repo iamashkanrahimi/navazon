@@ -75,19 +75,7 @@ export function artistCreditParts(value = '') {
 }
 
 export function artistCreditMatchesContext(credit = '', artist = '') {
-  const target = identityNormalizeText(artist);
-  const actual = identityNormalizeText(credit);
-  if (!target || !actual) return false;
-  if (target === actual) return true;
-
-  const wantedParts = artistCreditParts(artist).map(identityNormalizeText);
-  const actualParts = artistCreditParts(credit).map(identityNormalizeText);
-  if (!wantedParts.length || !actualParts.length) return false;
-
-  if (wantedParts.length === 1) {
-    return actualParts.includes(wantedParts[0]);
-  }
-  return wantedParts.every(part => actualParts.includes(part));
+  return artistCreditCompatible(artist, credit);
 }
 
 export function artistCreditCompatible(requested = '', actual = '') {
