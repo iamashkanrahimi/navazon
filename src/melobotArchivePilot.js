@@ -214,7 +214,9 @@ export async function runMeloBotArchivePilotJob(job) {
   const row = claimed.rows[0];
 
   try {
-    const queries = archiveQueryVariants(row);
+    const exhaustivePass = Number(row.attempts || 0) >= 2;
+    const allQueries = archiveQueryVariants(row);
+    const queries = exhaustivePass ? allQueries : allQueries.slice(0, 1);
 
     let results = [];
     let searchError = null;
@@ -222,7 +224,7 @@ export async function runMeloBotArchivePilotJob(job) {
       try {
         results = await searchMeloBot(tg, query, {
           timeoutMs: 12000,
-          maxRefinements: 5,
+          maxRefinements: exhaustivePass ? 5 : 3,
           preferredArtist: row.artist,
           allowDeepSearch: true,
         });
@@ -234,10 +236,20 @@ export async function runMeloBotArchivePilotJob(job) {
     if (!results.length && searchError) throw searchError;
     const matches = results.filter(candidate => candidateMatches(candidate, row));
     if (!matches.length) {
+      if (!exhaustivePass) {
+        await db.query(`
+          UPDATE melobot_archive_pilot
+             SET status='retry', completed_at=NULL,
+                 last_error='Fast pass found no exact candidate; queued for exhaustive pass',
+                 updated_at=NOW()
+           WHERE source_url=$1
+        `, [row.source_url]);
+        return { status: 'retry', artist: row.artist, title: row.title, reason: 'fast_pass_miss' };
+      }
       await db.query(`
         UPDATE melobot_archive_pilot
            SET status='no_confident_match', completed_at=NOW(),
-               last_error='No exact MeloBot artist/title candidate', updated_at=NOW()
+               last_error='No exact MeloBot artist/title candidate after exhaustive pass', updated_at=NOW()
          WHERE source_url=$1
       `, [row.source_url]);
       return { status: 'no_confident_match', artist: row.artist, title: row.title };
