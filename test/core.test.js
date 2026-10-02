@@ -5930,3 +5930,49 @@ test('phrase-level transliteration tolerance still rejects a different title wit
   assert.equal(trackTitleIdentityCompatible('مرگ', 'Maryam'), false);
   assert.equal(trackTitleIdentityCompatible('گل عشق', 'Gole Yakh'), false);
 });
+
+
+test('DeepCatalog stats separate trusted identity-v2 media from legacy untrusted file_ids', async () => {
+  const originalQuery = db.query;
+  const sqlCalls = [];
+  db.query = async (sql) => {
+    const text = String(sql);
+    sqlCalls.push(text);
+    if (text.includes('FROM deep_tracks')) {
+      return { rows: [{ tracks: '1', lyrics: '0', covers: '0', release_dates: '0' }] };
+    }
+    if (text.includes('FROM deep_track_media')) {
+      return {
+        rows: [{
+          media: '2',
+          hq: '2',
+          normal: '0',
+          unverified: '1',
+          legacy_untrusted: '7',
+        }],
+      };
+    }
+    if (text.includes('FROM crawl_tasks')) {
+      return { rows: [{ queued: '0', running: '0', done: '0', failed: '0' }] };
+    }
+    if (text.includes('FROM deep_albums')) {
+      return { rows: [{ albums: '0' }] };
+    }
+    if (text.includes('FROM deep_artist_tracks')) {
+      return { rows: [{ recent_rows: '0', top_rows: '0', legacy_rows: '0' }] };
+    }
+    throw new Error('Unexpected SQL in stats trust regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const stats = await catalog.stats();
+    assert.equal(stats.media.media, 2);
+    assert.equal(stats.media.legacy_untrusted, 7);
+    const mediaSql = sqlCalls.find(sql => sql.includes('FROM deep_track_media')) || '';
+    assert.match(mediaSql, /source LIKE 'identity-v2:%'/);
+    assert.match(mediaSql, /legacy_untrusted/);
+  } finally {
+    db.query = originalQuery;
+  }
+});
