@@ -38,6 +38,13 @@ export function normalizeText(value = '') {
     .trim();
 }
 
+export function identityNormalizeText(value = '') {
+  return normalizeText(value)
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .trim();
+}
+
 export function stableSourceTrackVariant(value = '') {
   const cleaned = cleanText(value)
     .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
@@ -68,13 +75,13 @@ export function artistCreditParts(value = '') {
 }
 
 export function artistCreditMatchesContext(credit = '', artist = '') {
-  const target = normalizeText(artist);
-  const actual = normalizeText(credit);
+  const target = identityNormalizeText(artist);
+  const actual = identityNormalizeText(credit);
   if (!target || !actual) return false;
   if (target === actual) return true;
 
-  const wantedParts = artistCreditParts(artist);
-  const actualParts = artistCreditParts(credit);
+  const wantedParts = artistCreditParts(artist).map(identityNormalizeText);
+  const actualParts = artistCreditParts(credit).map(identityNormalizeText);
   if (!wantedParts.length || !actualParts.length) return false;
 
   if (wantedParts.length === 1) {
@@ -84,13 +91,13 @@ export function artistCreditMatchesContext(credit = '', artist = '') {
 }
 
 export function artistCreditCompatible(requested = '', actual = '') {
-  const requestedText = normalizeText(requested);
-  const actualText = normalizeText(actual);
+  const requestedText = identityNormalizeText(requested);
+  const actualText = identityNormalizeText(actual);
   if (!requestedText || !actualText) return false;
   if (requestedText === actualText) return true;
 
-  const requestedParts = artistCreditParts(requested);
-  const actualParts = artistCreditParts(actual);
+  const requestedParts = artistCreditParts(requested).map(identityNormalizeText);
+  const actualParts = artistCreditParts(actual).map(identityNormalizeText);
   if (!requestedParts.length || !actualParts.length) return false;
 
   const partMatches = (left, right) => {
@@ -248,7 +255,7 @@ export function trackTitleIdentity(value = '') {
     .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
     .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
     .trim();
-  return normalizeText(stripped);
+  return identityNormalizeText(stripped);
 }
 
 function trackTitleVariantKinds(value = '') {
