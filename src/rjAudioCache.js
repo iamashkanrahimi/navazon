@@ -22,18 +22,44 @@ let lastError = null;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+function createStartLimiter(intervalMs) {
+  let chain = Promise.resolve();
+  let lastStartAt = 0;
+
+  return async function waitForStartSlot() {
+    const scheduled = chain.then(async () => {
+      const waitMs = Math.max(0, lastStartAt + intervalMs - Date.now());
+      if (waitMs > 0) await sleep(waitMs);
+      lastStartAt = Date.now();
+    });
+    chain = scheduled.catch(() => {});
+    await scheduled;
+  };
+}
+
 function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function directCandidates(slug = '') {
+function directCandidates(slug = '', sourceId = '') {
   const encoded = encodeURIComponent(clean(slug));
   if (!encoded) return [];
+
+  const numericId = /^\d+$/.test(String(sourceId || '').trim())
+    ? Number(sourceId)
+    : null;
+
+  // The live archive sample has a clean host boundary around source_id 72k:
+  // older IDs resolve on host1 and newer IDs on host2. This is only a
+  // priority hint; the opposite host remains an immediate fallback.
+  const preferredHost = numericId && numericId < 72500 ? 'host1' : 'host2';
+  const alternateHost = preferredHost === 'host1' ? 'host2' : 'host1';
+
   return [
-    { quality: 320, host: 'host2', url: `https://host2.rj-mw1.com/media/mp3/mp3-320/${encoded}.mp3` },
-    { quality: 320, host: 'host1', url: `https://host1.rj-mw1.com/media/mp3/mp3-320/${encoded}.mp3` },
-    { quality: 256, host: 'host2', url: `https://host2.rj-mw1.com/media/mp3/mp3-256/${encoded}.mp3` },
-    { quality: 256, host: 'host1', url: `https://host1.rj-mw1.com/media/mp3/mp3-256/${encoded}.mp3` },
+    { quality: 320, host: preferredHost, url: `https://${preferredHost}.rj-mw1.com/media/mp3/mp3-320/${encoded}.mp3` },
+    { quality: 320, host: alternateHost, url: `https://${alternateHost}.rj-mw1.com/media/mp3/mp3-320/${encoded}.mp3` },
+    { quality: 256, host: preferredHost, url: `https://${preferredHost}.rj-mw1.com/media/mp3/mp3-256/${encoded}.mp3` },
+    { quality: 256, host: alternateHost, url: `https://${alternateHost}.rj-mw1.com/media/mp3/mp3-256/${encoded}.mp3` },
   ];
 }
 
@@ -316,11 +342,12 @@ async function progress(db) {
   return summary;
 }
 
-async function processRow(db, row) {
+async function processRow(db, row, waitForStartSlot) {
   const errors = [];
-  for (const candidate of directCandidates(row.source_slug)) {
+  for (const candidate of directCandidates(row.source_slug, row.source_id)) {
     let message = null;
     try {
+      await waitForStartSlot();
       message = await bot.sendAudio(config.mediaCacheChatId, candidate.url, {
         disable_notification: true,
       });
@@ -352,6 +379,57 @@ async function processRow(db, row) {
   return { ok: false, errors };
 }
 
+async function workerLoop(archiveDb, workerId, waitForStartSlot) {
+  while (!stopped && config.rjAudioCacheEnabled) {
+    let row = null;
+    try {
+      row = await claimNext(archiveDb);
+      if (!row) {
+        await sleep(5_000);
+        continue;
+      }
+
+      const result = await processRow(archiveDb, row, waitForStartSlot);
+      processedThisProcess += 1;
+      if (result.ok) {
+        cachedThisProcess += 1;
+        lastCachedAt = new Date().toISOString();
+        lastError = null;
+        console.log('[rj audio cache] cached', JSON.stringify({
+          workerId,
+          artist: row.artist,
+          title: row.title,
+          quality: result.candidate.quality,
+          host: result.candidate.host,
+          duration: result.duration,
+        }));
+      } else {
+        failedThisProcess += 1;
+        lastError = result.errors?.[result.errors.length - 1] || 'direct URL failure';
+        console.warn('[rj audio cache] miss', JSON.stringify({
+          workerId,
+          artist: row.artist,
+          title: row.title,
+          attempts: row.attempts,
+          error: lastError,
+        }));
+      }
+
+      if (processedThisProcess > 0 && processedThisProcess % 250 === 0) {
+        await progress(archiveDb);
+      }
+    } catch (err) {
+      lastError = String(err?.message || err);
+      console.error('[rj audio cache]', workerId, lastError);
+      if (row) {
+        try { await markFailure(archiveDb, row, [lastError]); } catch (markErr) {
+          console.error('[rj audio cache mark failure]', markErr?.message || markErr);
+        }
+      }
+    }
+  }
+}
+
 async function loop() {
   const archiveDb = getArchiveDb();
   if (!archiveDb) {
@@ -364,60 +442,50 @@ async function loop() {
   }
 
   await ensureSchema(archiveDb);
+
+  // A deploy terminates the previous process, so any rows it left in
+  // "processing" can be safely returned to retry immediately.
+  await archiveDb.query(`
+    UPDATE rj_audio_cache
+       SET status='retry',
+           next_attempt_at=NOW(),
+           last_error=COALESCE(last_error,'recovered after worker restart'),
+           updated_at=NOW()
+     WHERE status='processing'
+  `);
+
   await syncExistingCanonicalRows(archiveDb);
   const initial = await progress(archiveDb);
+
+  let chatType = 'unknown';
+  try {
+    chatType = String((await bot.getChat(config.mediaCacheChatId))?.type || 'unknown');
+  } catch (err) {
+    console.warn('[rj audio cache] getChat', err.message);
+  }
+
+  // Telegram documents ~1 message/sec for one private chat and 20/min for
+  // groups. Keep the pipeline under the relevant chat-level ceiling.
+  const groupLike = chatType === 'group' || chatType === 'supergroup';
+  const sendIntervalMs = groupLike
+    ? Math.max(3100, config.rjAudioCacheSendIntervalMs)
+    : Math.max(1100, config.rjAudioCacheSendIntervalMs);
+  const waitForStartSlot = createStartLimiter(sendIntervalMs);
+  const concurrency = config.rjAudioCacheConcurrency;
+
   console.log('[rj audio cache] worker started', JSON.stringify({
     total: Object.values(initial).reduce((sum, value) => sum + Number(value || 0), 0),
-    delayMs: config.rjAudioCacheDelayMs,
+    concurrency,
+    sendIntervalMs,
+    chatType,
     maxAttempts: config.rjAudioCacheMaxAttempts,
   }));
 
-  while (!stopped && config.rjAudioCacheEnabled) {
-    let row = null;
-    try {
-      row = await claimNext(archiveDb);
-      if (!row) {
-        await sleep(30_000);
-        continue;
-      }
-
-      const result = await processRow(archiveDb, row);
-      processedThisProcess += 1;
-      if (result.ok) {
-        cachedThisProcess += 1;
-        lastCachedAt = new Date().toISOString();
-        lastError = null;
-        console.log('[rj audio cache] cached', JSON.stringify({
-          artist: row.artist,
-          title: row.title,
-          quality: result.candidate.quality,
-          host: result.candidate.host,
-          duration: result.duration,
-        }));
-      } else {
-        failedThisProcess += 1;
-        lastError = result.errors?.[result.errors.length - 1] || 'direct URL failure';
-        console.warn('[rj audio cache] miss', JSON.stringify({
-          artist: row.artist,
-          title: row.title,
-          attempts: row.attempts,
-          error: lastError,
-        }));
-      }
-
-      if (processedThisProcess % 100 === 0) await progress(archiveDb);
-    } catch (err) {
-      lastError = String(err?.message || err);
-      console.error('[rj audio cache]', lastError);
-      if (row) {
-        try { await markFailure(archiveDb, row, [lastError]); } catch (markErr) {
-          console.error('[rj audio cache mark failure]', markErr?.message || markErr);
-        }
-      }
-    }
-
-    await sleep(config.rjAudioCacheDelayMs);
-  }
+  await Promise.all(
+    Array.from({ length: concurrency }, (_, index) =>
+      workerLoop(archiveDb, index + 1, waitForStartSlot)
+    )
+  );
 
   console.log('[rj audio cache] worker stopped');
 }
@@ -440,6 +508,8 @@ export function getRjAudioCacheRuntimeStatus() {
     processedThisProcess,
     cachedThisProcess,
     failedThisProcess,
+    concurrency: config.rjAudioCacheConcurrency,
+    sendIntervalMs: config.rjAudioCacheSendIntervalMs,
     lastCachedAt,
     lastError,
   };
