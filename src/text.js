@@ -238,7 +238,7 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
     if (!a || !b) return false;
     if (a === b) return true;
     const maxLen = Math.max(a.length, b.length);
-    const allowed = maxLen >= 6 ? 1 : 0;
+    const allowed = maxLen >= 4 ? 1 : 0;
     return smallEditDistance(a, b) <= allowed;
   });
 }
