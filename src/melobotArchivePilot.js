@@ -67,10 +67,10 @@ export async function seedMeloBotArchivePilot(sourceQueue) {
   await ensureSchema();
   await db.query(`
     INSERT INTO melobot_archive_pilot (
-      source_url, artist, title, expected_duration_seconds, query
+      source_url, artist, title, expected_duration_seconds, query, pilot_version
     )
     SELECT source_url, artist, title, expected_duration_seconds,
-           BTRIM(artist || ' ' || title)
+           BTRIM(artist || ' ' || title), $2
     FROM ahangify_archive_media a
     WHERE a.status IN ('no_confident_match','failed')
       AND a.file_id IS NULL
@@ -113,7 +113,7 @@ export async function seedMeloBotArchivePilot(sourceQueue) {
         ELSE melobot_archive_pilot.completed_at
       END,
       updated_at = NOW()
-  `, [config.melobotArchivePilotCount]);
+  `, [config.melobotArchivePilotCount, PILOT_VERSION]);
 
   const { rows } = await db.query(`
     SELECT source_url
