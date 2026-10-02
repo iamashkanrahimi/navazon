@@ -100,21 +100,20 @@ export function artistCreditCompatible(requested = '', actual = '') {
   const actualParts = artistCreditParts(actual).map(identityNormalizeText);
   if (!requestedParts.length || !actualParts.length) return false;
 
-  const partMatches = (left, right) => {
-    if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
-  };
+  const partMatches = (left, right) =>
+    left === right || crossScriptIdentityCompatible(left, right);
 
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
-    );
+  if (requestedParts.length === 1) {
+    return actualParts.some(right => partMatches(requestedParts[0], right));
   }
 
-  return actualParts.some(right => partMatches(requestedParts[0], right));
+  const remaining = [...actualParts];
+  for (const left of requestedParts) {
+    const index = remaining.findIndex(right => partMatches(left, right));
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+  }
+  return true;
 }
 
 export function titleCreditsArtist(title = '', artist = '') {
