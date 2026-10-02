@@ -27,8 +27,15 @@ export async function initDb() {
       last_served_at TIMESTAMPTZ
     );
 
+    ALTER TABLE track_cache
+      ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE track_cache
+      ADD COLUMN IF NOT EXISTS superseded_by TEXT;
+
     CREATE INDEX IF NOT EXISTS track_cache_key_pattern_idx
       ON track_cache (track_key text_pattern_ops);
+    CREATE INDEX IF NOT EXISTS track_cache_active_idx
+      ON track_cache (active, updated_at DESC);
     CREATE INDEX IF NOT EXISTS track_cache_updated_idx
       ON track_cache (updated_at DESC);
 
