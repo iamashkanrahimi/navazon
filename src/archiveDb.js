@@ -9,7 +9,7 @@ export function getArchiveDb() {
   if (!archiveDb) {
     archiveDb = new Pool({
       connectionString: config.archiveDatabaseUrl,
-      max: 2,
+      max: 6,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 15_000,
       keepAlive: true,

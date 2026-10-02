@@ -6,10 +6,10 @@ import { sourceQueue } from './jobs.js';
 import { getState, setState, getStats, getLastUserActivity } from './state.js';
 import { createNonOverlappingScheduler } from './crawlerScheduler.js';
 import { runDirectUrlTelegramPilot } from './directUrlPilot.js';
-import { runMtprotoSelfForwardPilot } from './mtprotoSelfForwardPilot.js';
 import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { startRjAudioCacheWorker, stopRjAudioCacheWorker, getRjAudioCacheRuntimeStatus, getRjAudioCacheSummary } from './rjAudioCache.js';
+import { ensureRjExtraCacheLanes } from './rjCacheLanes.js';
 import { closeArchiveDb } from './archiveDb.js';
 import { seedAhangifyBestPilot } from './ahangifyPilot.js';
 import {
@@ -250,9 +250,9 @@ server.listen(config.port,'0.0.0.0',async () => {
     }
     startMediaCacheWorker();
     try {
-      await runMtprotoSelfForwardPilot();
+      await ensureRjExtraCacheLanes();
     } catch (err) {
-      console.error('[mtproto self-forward pilot startup]', err?.stack || err?.message || err);
+      console.error('[rj cache lanes startup]', err?.stack || err?.message || err);
     }
     startRjAudioCacheWorker();
     try {
