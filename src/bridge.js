@@ -2,6 +2,7 @@ function mediaFromBotMessage(message) {
   if (message.audio) {
     return {
       kind: 'audio',
+      messageId: message.message_id || undefined,
       fileId: message.audio.file_id,
       fileUniqueId: message.audio.file_unique_id,
       title: message.audio.title || undefined,
@@ -14,6 +15,7 @@ function mediaFromBotMessage(message) {
   if (message.document) {
     return {
       kind: 'document',
+      messageId: message.message_id || undefined,
       fileId: message.document.file_id,
       fileUniqueId: message.document.file_unique_id,
       fileName: message.document.file_name || undefined,
@@ -25,6 +27,7 @@ function mediaFromBotMessage(message) {
     const best = message.photo[message.photo.length - 1];
     return {
       kind: 'photo',
+      messageId: message.message_id || undefined,
       fileId: best.file_id,
       fileUniqueId: best.file_unique_id,
       width: best.width || undefined,
