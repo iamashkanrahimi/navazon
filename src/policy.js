@@ -1,7 +1,7 @@
 import { config } from './config.js';
 
 const ORIGINS = new Set(['iranian', 'foreign', 'unknown']);
-const POLICIES = new Set(['global', 'iran_only', 'unknown']);
+const POLICIES = new Set(['global', 'iran_only', 'blocked_copyright', 'unknown']);
 const REASONS = new Set(['copyright', 'regional', 'source_policy', 'unknown', 'none']);
 
 function enumValue(value, allowed, fallback) {
@@ -41,6 +41,12 @@ export function mergeAvailability(track = {}, patch = {}) {
 
 export function canDeliverTrack(track = {}, userRegion = 'unknown') {
   const item = applyPolicyDefaults(track);
+
+  // Copyright blocks are independent of regional enforcement. We keep the
+  // Track and any archived media, but never deliver it while this policy is active.
+  if (item.availabilityPolicy === 'blocked_copyright') {
+    return { allowed: false, reason: 'copyright', track: item };
+  }
 
   if (!config.regionEnforcementEnabled) {
     return { allowed: true, reason: 'enforcement_disabled', track: item };
