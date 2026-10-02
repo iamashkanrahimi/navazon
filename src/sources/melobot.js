@@ -255,39 +255,7 @@ function titleIdentity(value = '') {
 }
 
 function artistIdentityCompatible(requested = '', actual = '') {
-  const a = normalize(requested);
-  const b = normalize(actual);
-  if (!a || !b) return false;
-  if (a === b) return true;
-
-  // Split the original credit before normalization. normalizeText deliberately
-  // removes punctuation such as "&", so splitting the normalized value loses
-  // collaboration boundaries and makes reordered credits impossible to match.
-  const requestedParts = artistIdentityParts(requested);
-  const actualParts = artistIdentityParts(actual);
-  const partMatches = (left, right) => {
-    if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    // Do not conflate short stage names/surnames with longer unrelated
-    // identities (Farhad vs Farhad Ravanbakhsh, Bahram vs Reza Bahram).
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
-  };
-
-  // A requested collaboration must not silently collapse to one of its
-  // artists. This was the source of false resolutions for tracks such as
-  // "Ali Sorena & Bahram". A single requested primary artist may still match
-  // a source credit that includes extra featured artists.
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
-    );
-  }
-
-  return requestedParts.some(left =>
-    actualParts.some(right => partMatches(left, right))
-  );
+  return artistCreditCompatible(requested, actual);
 }
 
 function describeTargetMessage(message = {}) {
