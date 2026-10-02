@@ -4,7 +4,7 @@ import { searchMeloBot, resolveMeloBotTrackCandidate, downloadMeloBotTrackQualit
 import { forwardHiddenToOurBot } from './mtproto.js';
 import { normalizeText, artistCreditCompatible, trackTitleIdentityCompatible } from './text.js';
 
-const PILOT_VERSION = 'melobot-gap-v2-50';
+const PILOT_VERSION = 'melobot-gap-v3-200';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 
 async function ensureSchema() {
@@ -140,8 +140,9 @@ export async function seedMeloBotArchivePilot(sourceQueue) {
     WHERE a.status IN ('no_confident_match','failed')
       AND a.file_id IS NULL
     ORDER BY
-      CASE WHEN a.expected_duration_seconds IS NOT NULL THEN 0 ELSE 1 END,
-      a.source_url
+      -- Deterministic but well-distributed sample across the unresolved archive,
+      -- rather than taking the first alphabetical/source rows.
+      md5(a.source_url || ':' || a.artist || ':' || a.title)
     LIMIT $1
     ON CONFLICT (source_url) DO UPDATE SET
       pilot_version = EXCLUDED.pilot_version,

@@ -38,7 +38,7 @@ export const config = {
 
   melobotUsername: (process.env.MELOBOT_USERNAME || 'melobot').replace(/^@/, ''),
   melobotArchivePilotEnabled: boolEnv('MELOBOT_ARCHIVE_PILOT_ENABLED', false),
-  melobotArchivePilotCount: Math.max(1, Math.min(50, Number(process.env.MELOBOT_ARCHIVE_PILOT_COUNT || 50))),
+  melobotArchivePilotCount: Math.max(1, Math.min(200, Number(process.env.MELOBOT_ARCHIVE_PILOT_COUNT || 50))),
   ahangifyUsername: (process.env.AHANGIFY_USERNAME || 'ahangifybot').replace(/^@/, ''),
   ahangifyBestPilotEnabled: boolEnv('AHANGIFY_BEST_PILOT_ENABLED', false),
   ahangifyBestPilotCount: Math.max(1, Math.min(50, Number(process.env.AHANGIFY_BEST_PILOT_COUNT || 50))),
