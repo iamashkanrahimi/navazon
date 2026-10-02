@@ -272,7 +272,8 @@ export function trackTitleIdentityCompatible(requested = '', actual = '') {
     if (!rightKinds.has(kind)) return false;
   }
 
-  return left === right || left.includes(right) || right.includes(left);
+  if (left === right) return true;
+  return crossScriptIdentityCompatible(left, right);
 }
 
 export function trackMediaIdentityMatches(track = {}, media = {}) {
@@ -287,32 +288,12 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
   // Without performer metadata there is no evidence that can promote them.
   if (track?.artistInferred && !performer) return false;
 
-  const scriptFamily = value => {
-    const text = String(value || '');
-    if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
-    if (/[a-z]/iu.test(text)) return 'latin';
-    return '';
-  };
-  const crossScript = (left, right) => {
-    const a = scriptFamily(left);
-    const b = scriptFamily(right);
-    return Boolean(a && b && a !== b);
-  };
-
-  if (expectedTitle && mediaTitle) {
-    if (
-      !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
-      && !crossScript(expectedTitleRaw, mediaTitleRaw)
-    ) {
-      return false;
-    }
-
-    const expectedVariants = trackTitleVariantKinds(expectedTitleRaw);
-    const actualVariants = trackTitleVariantKinds(mediaTitleRaw);
-    if (expectedVariants.size !== actualVariants.size) return false;
-    for (const kind of expectedVariants) {
-      if (!actualVariants.has(kind)) return false;
-    }
+  if (
+    expectedTitle
+    && mediaTitle
+    && !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
+  ) {
+    return false;
   }
 
   if (!expectedArtist || !performer) return true;
@@ -323,10 +304,7 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
     return true;
   }
 
-  // Persian/Arabic-script catalog rows often carry Latin Telegram metadata.
-  // Without a transliteration oracle, treat cross-script metadata as unknown
-  // rather than falsely rejecting a valid file; same-script mismatches fail.
-  return crossScript(expectedArtist, performer);
+  return crossScriptIdentityCompatible(expectedArtist, performer);
 }
 
 export function hasAlbumIntent(query = '') {
