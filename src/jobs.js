@@ -96,6 +96,9 @@ function isUsableArtistContext(context = {}) {
 const BULK_JOB_TYPES = new Set(['download_top', 'download_recent', 'download_album']);
 
 function sourceJobPriority(job = {}) {
+  // Keep user-facing work first, but let the bounded MeloBot archive pilot
+  // drain ahead of ordinary background crawling.
+  if (job.type === 'melobot_archive_pilot') return 70;
   if (BACKGROUND_JOB_TYPES.has(job.type)) return 0;
   if (BULK_JOB_TYPES.has(job.type)) return 80;
 
