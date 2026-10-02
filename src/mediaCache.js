@@ -9,6 +9,7 @@ let workerPromise = null;
 let processedThisProcess = 0;
 let lastError = null;
 let lastCachedAt = null;
+let waitingForAudio = false;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -23,15 +24,25 @@ export function pickBestPhoto(message) {
   }, null);
 }
 
-async function claimNext(db) {
+async function claimNext(db, { recoveryOnly = false } = {}) {
   const { rows } = await db.query(`
     WITH picked AS (
       SELECT source_url
       FROM media_images m
       WHERE (
-        m.status = 'pending'
-        OR (m.status = 'retry' AND COALESCE(m.next_attempt_at, now()) <= now())
-        OR (m.status = 'processing' AND m.updated_at < now() - interval '15 minutes')
+        (
+          $1::boolean
+          AND m.status = 'failed'
+          AND m.attempts < 4
+        )
+        OR (
+          NOT $1::boolean
+          AND (
+            m.status = 'pending'
+            OR (m.status = 'retry' AND COALESCE(m.next_attempt_at, now()) <= now())
+            OR (m.status = 'processing' AND m.updated_at < now() - interval '15 minutes')
+          )
+        )
       )
       AND (
         EXISTS (
@@ -63,8 +74,89 @@ async function claimNext(db) {
       FROM picked
      WHERE m.source_url=picked.source_url
     RETURNING m.*
-  `);
+  `, [Boolean(recoveryOnly)]);
   return rows[0] || null;
+}
+
+async function audioCacheHasWork(db) {
+  try {
+    const { rows } = await db.query(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM rj_audio_cache
+        WHERE status IN ('pending', 'processing', 'retry')
+        LIMIT 1
+      ) AS busy
+    `);
+    return Boolean(rows[0]?.busy);
+  } catch (err) {
+    console.warn('[media cache recovery] audio status unavailable', err?.message || err);
+    return true;
+  }
+}
+
+function imageKind(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { ext: 'jpg', mime: 'image/jpeg' };
+  }
+  if (
+    buffer[0] === 0x89
+    && buffer[1] === 0x50
+    && buffer[2] === 0x4e
+    && buffer[3] === 0x47
+  ) {
+    return { ext: 'png', mime: 'image/png' };
+  }
+  if (
+    buffer.toString('ascii', 0, 4) === 'RIFF'
+    && buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return { ext: 'webp', mime: 'image/webp' };
+  }
+  return null;
+}
+
+async function fetchImageForUpload(sourceUrl) {
+  const response = await fetch(sourceUrl, {
+    redirect: 'follow',
+    headers: {
+      accept: 'image/*,*/*;q=0.5',
+      'user-agent': 'NavazonMediaRecovery/1.0',
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    throw new Error(`image fetch HTTP ${response.status}`);
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw new Error('image fetch returned empty body');
+  if (buffer.length > 10 * 1024 * 1024) {
+    throw new Error(`image fetch too large: ${buffer.length}`);
+  }
+
+  const kind = imageKind(buffer);
+  if (!kind) {
+    const contentType = response.headers.get('content-type') || 'unknown';
+    throw new Error(`image fetch returned unsupported content: ${contentType}`);
+  }
+
+  return {
+    buffer,
+    filename: `navazon-recovery.${kind.ext}`,
+  };
+}
+
+async function recoverPhoto(row) {
+  const fetched = await fetchImageForUpload(row.source_url);
+  return bot.sendPhotoBuffer(
+    config.mediaCacheChatId,
+    fetched.buffer,
+    fetched.filename,
+    { disable_notification: true },
+    { max429WaitSeconds: 0 }
+  );
 }
 
 async function markCached(db, row, message, photo) {
@@ -93,8 +185,30 @@ async function markCached(db, row, message, photo) {
   ]);
 }
 
-async function markFailed(db, row, err) {
-  const terminal = Number(row.attempts || 0) >= 3;
+async function markFailed(db, row, err, { recoveryOnly = false } = {}) {
+  const retryAfter = Number(err?.code) === 429
+    ? Math.max(1, Number(err?.parameters?.retry_after || 1))
+    : null;
+
+  if (retryAfter != null) {
+    await db.query(`
+      UPDATE media_images
+         SET status='retry',
+             attempts=GREATEST(attempts-1, 0),
+             last_error=$2,
+             next_attempt_at=now() + ($3::int * interval '1 second'),
+             updated_at=now()
+       WHERE source_url=$1
+    `, [
+      row.source_url,
+      String(err?.message || err).slice(0, 1000),
+      Math.ceil(retryAfter) + 3,
+    ]);
+    return;
+  }
+
+  const maxAttempts = recoveryOnly ? 4 : 3;
+  const terminal = Number(row.attempts || 0) >= maxAttempts;
   await db.query(`
     UPDATE media_images
        SET status=$2,
@@ -126,19 +240,38 @@ async function loop() {
     return;
   }
 
-  console.log('[media cache] worker started');
-  while (!stopped && config.mediaCacheEnabled) {
+  const recoveryOnly = !config.mediaCacheEnabled && config.mediaCacheRecoveryEnabled;
+  console.log('[media cache] worker started', JSON.stringify({
+    mode: recoveryOnly ? 'deferred-recovery' : 'normal',
+  }));
+
+  while (!stopped && (config.mediaCacheEnabled || config.mediaCacheRecoveryEnabled)) {
     let row;
     try {
-      row = await claimNext(db);
+      if (recoveryOnly) {
+        waitingForAudio = await audioCacheHasWork(db);
+        if (waitingForAudio) {
+          await sleep(60_000);
+          continue;
+        }
+        waitingForAudio = false;
+      }
+
+      row = await claimNext(db, { recoveryOnly });
       if (!row) {
+        if (recoveryOnly) {
+          console.log('[media cache recovery] complete');
+          break;
+        }
         await sleep(30_000);
         continue;
       }
 
-      const message = await bot.sendPhoto(config.mediaCacheChatId, row.source_url, {
-        disable_notification: true,
-      });
+      const message = recoveryOnly
+        ? await recoverPhoto(row)
+        : await bot.sendPhoto(config.mediaCacheChatId, row.source_url, {
+            disable_notification: true,
+          });
       const photo = pickBestPhoto(message);
       if (!photo?.file_id) throw new Error('Telegram sendPhoto returned no PhotoSize');
       await markCached(db, row, message, photo);
@@ -151,7 +284,7 @@ async function loop() {
       lastError = String(err?.message || err);
       console.warn('[media cache]', lastError);
       if (row) {
-        try { await markFailed(db, row, err); } catch (markErr) {
+        try { await markFailed(db, row, err, { recoveryOnly }); } catch (markErr) {
           console.error('[media cache mark failed]', markErr?.message || markErr);
         }
       }
@@ -163,7 +296,9 @@ async function loop() {
 }
 
 export function startMediaCacheWorker() {
-  if (!config.mediaCacheEnabled || workerPromise) return workerPromise;
+  if ((!config.mediaCacheEnabled && !config.mediaCacheRecoveryEnabled) || workerPromise) {
+    return workerPromise;
+  }
   stopped = false;
   workerPromise = loop().finally(() => { workerPromise = null; });
   return workerPromise;
@@ -176,6 +311,9 @@ export function stopMediaCacheWorker() {
 export function getMediaCacheRuntimeStatus() {
   return {
     enabled: config.mediaCacheEnabled,
+    recoveryEnabled: config.mediaCacheRecoveryEnabled,
+    recoveryOnly: !config.mediaCacheEnabled && config.mediaCacheRecoveryEnabled,
+    waitingForAudio,
     running: Boolean(workerPromise) && !stopped,
     processedThisProcess,
     lastCachedAt,
