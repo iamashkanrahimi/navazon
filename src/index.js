@@ -14,6 +14,10 @@ import {
   stopAhangifyArchivePump,
   getAhangifyArchiveSummary,
 } from './ahangifyArchive.js';
+import {
+  seedMeloBotArchivePilot,
+  getMeloBotArchivePilotSummary,
+} from './melobotArchivePilot.js';
 
 const startedAt = Date.now();
 await setState('service_started_at',{ at: startedAt });
@@ -195,6 +199,11 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await getStats(),null,2)); return;
     }
+    if (req.method === 'GET' && url.pathname === '/admin/melobot-archive-pilot') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await getMeloBotArchivePilotSummary(),null,2)); return;
+    }
     if (req.method === 'GET' && url.pathname === '/admin/ahangify-archive') {
       if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
@@ -233,6 +242,14 @@ server.listen(config.port,'0.0.0.0',async () => {
       }
     } catch (err) {
       console.error('[ahangify archive startup]', err?.stack || err?.message || err);
+    }
+    try {
+      const melobotPilot = await seedMeloBotArchivePilot(sourceQueue);
+      if (melobotPilot?.enabled) {
+        console.log('[melobot archive pilot] startup', JSON.stringify(melobotPilot));
+      }
+    } catch (err) {
+      console.error('[melobot archive pilot startup]', err?.stack || err?.message || err);
     }
     try {
       const pilot = await seedAhangifyBestPilot(sourceQueue);
