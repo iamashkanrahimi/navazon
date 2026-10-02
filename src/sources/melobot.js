@@ -952,10 +952,11 @@ async function collectMeloBotAlbumPages(client, initial, {
   };
 }
 
-export async function searchMeloBotTyped(client, query, {
-  maxRefinements = 3,
-  timeoutMs = config.searchTimeoutMs,
-} = {}) {
+export async function searchMeloBotTyped(client, query, options = {}) {
+  const {
+    maxRefinements = 3,
+    timeoutMs = config.searchTimeoutMs,
+  } = options;
   const requested = clean(query);
   const remaining = sourceBudget(timeoutMs, config.searchTimeoutMs);
   if (!requested) throw new Error('MeloBot search query is empty.');
@@ -1001,7 +1002,22 @@ export async function searchMeloBotTyped(client, query, {
     if (seenTransitions.has(surfaceKey)) break;
     seenTransitions.add(surfaceKey);
 
-    const refinement = chooseMeloBotSearchRefinement(result.messages, requested);
+    let refinement = chooseMeloBotSearchRefinement(result.messages, requested);
+
+    // Archive/exact searches often land on an artist-picker surface where the
+    // song itself is not listed. Prefer the requested artist (not a featured
+    // artist token from the query), then use MeloBot's own deep-search route.
+    if (options?.preferredArtist) {
+      const exactArtistButton = findArtistButtonFor(result.messages, options.preferredArtist);
+      if (exactArtistButton) refinement = exactArtistButton;
+    }
+
+    if (!refinement && options?.allowDeepSearch) {
+      refinement = findButton(result.messages, text =>
+        /(?:نتیجه|آهنگ).*(?:در\s*لیست\s*نیست|جستجوی\s*عمیق)/u.test(clean(text))
+        || /جستجوی\s*عمیق/u.test(clean(text))
+      );
+    }
     if (!refinement) break;
 
     if (isArtistPickerButton(refinement)) {
