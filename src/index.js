@@ -5,6 +5,7 @@ import { handleUpdate } from './updates.js';
 import { sourceQueue } from './jobs.js';
 import { getState, setState, getStats, getLastUserActivity } from './state.js';
 import { createNonOverlappingScheduler } from './crawlerScheduler.js';
+import { runDirectUrlTelegramPilot } from './directUrlPilot.js';
 import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { closeArchiveDb } from './archiveDb.js';
@@ -229,6 +230,11 @@ server.listen(config.port,'0.0.0.0',async () => {
     return;
   }
   void (async () => {
+    try {
+      await runDirectUrlTelegramPilot();
+    } catch (err) {
+      console.error('[direct url pilot startup]', err?.stack || err?.message || err);
+    }
     try {
       await runArchiveImportIfEnabled();
     } catch (err) {
