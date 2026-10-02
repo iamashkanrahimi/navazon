@@ -40,27 +40,29 @@ export class FileCache {
   async get(track) {
     if (!hasCacheableTrackIdentity(track)) return null;
     const key = trackCacheKey(track);
-    let result = await db.query(
-      'SELECT track_key, track, media FROM track_cache WHERE track_key = $1',
-      [key]
-    );
+    const artist = normalize(track?.artist || '');
+    const title = normalize(track?.title || '');
+    const prefix = `${artist}|${title}|%`;
 
-    if (!result.rowCount) {
-      const artist = normalize(track?.artist || '');
-      const title = normalize(track?.title || '');
-      if (artist || title) {
-        const prefix = `${artist}|${title}|%`;
-        result = await db.query(`
-          SELECT track_key, track, media
-          FROM track_cache
-          WHERE track_key LIKE $1
-          ORDER BY
-            CASE WHEN COALESCE(track->>'source','') = $2 THEN 0 ELSE 1 END,
-            updated_at DESC
-          LIMIT 1
-        `, [prefix, String(track?.source || '')]);
-      }
-    }
+    // Radio Javan direct media is canonical once verified. This query always
+    // checks the whole Artist/Title identity family instead of returning an
+    // exact older MeloBot/Ahangify variant first.
+    const result = await db.query(`
+      SELECT track_key, track, media
+      FROM track_cache
+      WHERE track_key LIKE $1
+        AND active = TRUE
+      ORDER BY
+        CASE
+          WHEN COALESCE(track->>'source','') = 'radiojavan'
+           AND COALESCE(media->>'verifiedDirect','false') = 'true' THEN 0
+          WHEN track_key = $2 THEN 1
+          WHEN COALESCE(track->>'source','') = $3 THEN 2
+          ELSE 3
+        END,
+        updated_at DESC
+      LIMIT 1
+    `, [prefix, key, String(track?.source || '')]);
 
     if (!result.rowCount) return null;
     const row = result.rows[0];
@@ -124,6 +126,47 @@ export class FileCache {
         source_fetch_count = track_cache.source_fetch_count + EXCLUDED.source_fetch_count,
         updated_at = NOW()
     `, [key, JSON.stringify(compact), JSON.stringify(media), sourceFetch ? 1 : 0]);
+
+    const artist = normalize(policy.artist || '');
+    const title = normalize(policy.title || '');
+    const prefix = `${artist}|${title}|%`;
+    const canonicalRj = (
+      String(policy.source || '') === 'radiojavan'
+      && media?.verifiedDirect === true
+    );
+
+    if (canonicalRj) {
+      // Keep historical source rows for audit/recovery, but make them
+      // impossible to serve while a verified Radio Javan direct copy exists.
+      await db.query(`
+        UPDATE track_cache
+        SET active = (track_key = $2),
+            superseded_by = CASE WHEN track_key = $2 THEN NULL ELSE $2 END,
+            updated_at = CASE WHEN track_key = $2 THEN NOW() ELSE updated_at END
+        WHERE track_key LIKE $1
+      `, [prefix, key]);
+      return;
+    }
+
+    // A later MeloBot/Ahangify write must never reactivate itself over an
+    // already-verified Radio Javan canonical file.
+    const canonical = await db.query(`
+      SELECT track_key
+      FROM track_cache
+      WHERE track_key LIKE $1
+        AND COALESCE(track->>'source','') = 'radiojavan'
+        AND COALESCE(media->>'verifiedDirect','false') = 'true'
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `, [prefix]);
+    const canonicalKey = canonical.rows[0]?.track_key || null;
+    if (canonicalKey && canonicalKey !== key) {
+      await db.query(`
+        UPDATE track_cache
+        SET active = FALSE, superseded_by = $2
+        WHERE track_key = $1
+      `, [key, canonicalKey]);
+    }
   }
 
   async recordSourceFetch(track) {
