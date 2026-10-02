@@ -1691,6 +1691,43 @@ async function openTrackMenuWithCandidate(
       return refined;
     }
 
+    // MeloBot occasionally accepts an exact track reply-keyboard click but
+    // the resulting Track menu update is missed by Telegram/GramJS. A single
+    // idempotent re-click of the *same strictly resolved track button* is safe:
+    // it cannot change artist/title identity and avoids turning a transient
+    // update race into a failed archive job.
+    if (!remaining.expired()) {
+      await sleep(180);
+      const retrySelected = await sendAndCollect(client, liveCandidate.rawText, {
+        timeoutMs: stepTimeout(2400),
+        quietMs: 500,
+        stopWhen: m => hasTrackActionMenu([m]),
+        stopWhenBatch: messages => hasTrackActionMenu(messages),
+        waitForTarget: true,
+        reconcileOnTimeout: true,
+      });
+      if (hasTrackActionMenu(retrySelected.messages)) {
+        const retriedCandidate = {
+          ...liveCandidate,
+          sourceStateVersion: retrySelected.stateVersion,
+        };
+        rememberLiveTrackSurface(
+          client,
+          retriedCandidate,
+          retrySelected.messages,
+          retrySelected.stateVersion
+        );
+        console.log(
+          `[melobot.track_menu] route=resolved_reclick track=${JSON.stringify(trackLabel(liveCandidate))}`
+        );
+        return {
+          messages: retrySelected.messages,
+          candidate: retriedCandidate,
+          route: 'resolved_reclick',
+        };
+      }
+    }
+
     throw meloError(
       'MELOBOT_TRACK_MENU_TIMEOUT',
       `MeloBot track menu did not arrive for: ${trackLabel(liveCandidate)} surface=${describeMeloBotSurface(selected.messages)}`
