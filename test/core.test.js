@@ -5839,3 +5839,34 @@ test('title identity does not collapse real prefix-like query names', () => {
   assert.equal(trackTitleIdentityCompatible('Love Theme from Kiss', 'Love'), false);
   assert.equal(trackTitleIdentityCompatible('Deli', 'Delam'), false);
 });
+
+
+test('Artist identity never uses multi-word substring containment', () => {
+  assert.equal(artistCreditCompatible('Ali Sorena', 'Ali Sorena X'), false);
+  assert.equal(artistCreditCompatible('Ali Sorena X', 'Ali Sorena'), false);
+  assert.equal(artistCreditCompatible('Shahin Pourahmad', 'Shahin Pourahmad Band'), false);
+  assert.equal(artistCreditCompatible('Farhad', 'Farhad Ravanbakhsh'), false);
+});
+
+test('Artist identity preserves exact collaboration members and reordered credits', () => {
+  assert.equal(artistCreditCompatible('Shayea & Sadegh', 'Sadegh & Shayea'), true);
+  assert.equal(artistCreditCompatible('Ali Sorena & Bahram', 'Bahram & Ali Sorena'), true);
+  assert.equal(artistCreditCompatible('Shayea', 'Shayea & Sadegh'), true);
+  assert.equal(artistCreditCompatible('Shayea & Sadegh', 'Shayea'), false);
+});
+
+test('Artist identity preserves conservative Persian-Latin transliterations', () => {
+  assert.equal(artistCreditCompatible('رضا بهرام', 'Reza Bahram'), true);
+  assert.equal(artistCreditCompatible('علی سورنا', 'Ali Sorena'), true);
+  assert.equal(artistCreditCompatible('علی سورنا', 'Ali Sorena X'), false);
+});
+
+test('same-title media cannot pass by extending a multi-word Artist name', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'Ali Sorena', title: 'Maryam' },
+      { performer: 'Ali Sorena X', title: 'Maryam' }
+    ),
+    false
+  );
+});
