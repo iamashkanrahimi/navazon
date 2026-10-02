@@ -33,6 +33,7 @@ export const config = {
   archiveImportOnce: boolEnv('ARCHIVE_IMPORT_ONCE', false),
 
   mediaCacheEnabled: boolEnv('MEDIA_CACHE_ENABLED', false),
+  mediaCacheRecoveryEnabled: boolEnv('MEDIA_CACHE_RECOVERY_ENABLED', false),
   mediaCacheChatId: (process.env.MEDIA_CACHE_CHAT_ID || '').trim(),
   mediaCacheDelayMs: Math.max(2000, Number(process.env.MEDIA_CACHE_DELAY_MS || 2000)),
 

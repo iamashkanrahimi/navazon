@@ -18,16 +18,19 @@ let workerPromise = null;
 let processedThisProcess = 0;
 let cachedThisProcess = 0;
 let failedThisProcess = 0;
+let rateLimitedThisProcess = 0;
 let lastCachedAt = null;
 let lastError = null;
+let floodBackoffUntil = null;
 let activeLaneSummary = [];
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function createLaneScheduler(lanes = []) {
   let chain = Promise.resolve();
+  let globalNotBefore = 0;
 
-  return async function acquireLane() {
+  async function acquireLane() {
     let selected = null;
     const scheduled = chain.then(async () => {
       selected = lanes.reduce((best, lane) => {
@@ -38,19 +41,53 @@ function createLaneScheduler(lanes = []) {
       }, null);
       if (!selected) throw new Error('No Telegram cache lane available');
 
-      const waitMs = Math.max(0, Number(selected.nextStartAt || 0) - Date.now());
-      if (waitMs > 0) await sleep(waitMs);
+      while (true) {
+        const waitUntil = Math.max(
+          Number(selected.nextStartAt || 0),
+          Number(globalNotBefore || 0)
+        );
+        const waitMs = Math.max(0, waitUntil - Date.now());
+        if (waitMs > 0) await sleep(waitMs);
+
+        // A Telegram 429 can extend the global gate while this acquire is
+        // already sleeping. Re-check before handing the lane to a worker.
+        if (Date.now() < globalNotBefore) continue;
+        break;
+      }
+
       selected.nextStartAt = Date.now() + selected.intervalMs;
     });
 
     chain = scheduled.catch(() => {});
     await scheduled;
     return selected;
+  }
+
+  function deferAll(retryAfterSeconds = 1) {
+    const delayMs = Math.max(1, Math.ceil(Number(retryAfterSeconds) || 1)) * 1000 + 1500;
+    const until = Date.now() + delayMs;
+    globalNotBefore = Math.max(globalNotBefore, until);
+    for (const lane of lanes) {
+      lane.nextStartAt = Math.max(Number(lane.nextStartAt || 0), globalNotBefore);
+    }
+    return globalNotBefore;
+  }
+
+  return {
+    acquireLane,
+    deferAll,
+    getBackoffUntil: () => globalNotBefore,
   };
 }
 
 function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function retryAfterSeconds(err) {
+  if (Number(err?.code) !== 429) return null;
+  const value = Number(err?.parameters?.retry_after || 1);
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 1;
 }
 
 function directCandidates(slug = '', sourceId = '') {
@@ -341,9 +378,29 @@ async function markCached(
 
 }
 
-async function markFailure(db, row, errors) {
-  const terminal = Number(row.attempts || 0) >= config.rjAudioCacheMaxAttempts;
+async function markFailure(
+  db,
+  row,
+  errors,
+  { rateLimited = false, retryAfter = null } = {}
+) {
   const message = errors.filter(Boolean).join(' | ').slice(0, 1800) || 'No direct URL candidate succeeded';
+
+  if (rateLimited) {
+    const delaySeconds = Math.max(5, Math.ceil(Number(retryAfter) || 1) + 3);
+    await db.query(`
+      UPDATE rj_audio_cache
+         SET status='retry',
+             attempts=GREATEST(attempts-1, 0),
+             last_error=$2,
+             next_attempt_at=NOW() + ($3::int * INTERVAL '1 second'),
+             updated_at=NOW()
+       WHERE source_url=$1
+    `, [row.source_url, message, delaySeconds]);
+    return;
+  }
+
+  const terminal = Number(row.attempts || 0) >= config.rjAudioCacheMaxAttempts;
   await db.query(`
     UPDATE rj_audio_cache
        SET status=$2,
@@ -366,16 +423,21 @@ async function progress(db) {
   return summary;
 }
 
-async function processRow(db, row, acquireLane) {
+async function processRow(db, row, laneScheduler) {
   const errors = [];
   for (const candidate of directCandidates(row.source_slug, row.source_id)) {
     let message = null;
     let lane = null;
     try {
-      lane = await acquireLane();
-      message = await bot.sendAudio(lane.chatId, candidate.url, {
-        disable_notification: true,
-      });
+      lane = await laneScheduler.acquireLane();
+      message = await bot.sendAudio(
+        lane.chatId,
+        candidate.url,
+        { disable_notification: true },
+        // Surface 429 immediately. The RJ scheduler owns the long flood wait
+        // so all lanes pause together instead of each worker retrying early.
+        { max429WaitSeconds: 0 }
+      );
       const verification = verifyTelegramAudio(row, message);
       if (!verification.ok) {
         errors.push(`${candidate.host}/${candidate.quality}: ${verification.reason}`);
@@ -404,18 +466,36 @@ async function processRow(db, row, acquireLane) {
         duration: verification.actualDuration,
       };
     } catch (err) {
+      const retryAfter = retryAfterSeconds(err);
       errors.push(`${candidate.host}/${candidate.quality}: ${String(err?.message || err).slice(0, 350)}`);
+
       if (message?.message_id && lane) {
         await bot.deleteMessage(lane.chatId, message.message_id).catch(() => null);
+      }
+
+      if (retryAfter != null) {
+        const backoffUntilMs = laneScheduler.deferAll(retryAfter);
+        floodBackoffUntil = new Date(backoffUntilMs).toISOString();
+        await markFailure(db, row, errors, {
+          rateLimited: true,
+          retryAfter,
+        });
+        return {
+          ok: false,
+          rateLimited: true,
+          retryAfter,
+          backoffUntil: floodBackoffUntil,
+          errors,
+        };
       }
     }
   }
 
   await markFailure(db, row, errors);
-  return { ok: false, errors };
+  return { ok: false, rateLimited: false, errors };
 }
 
-async function workerLoop(archiveDb, workerId, acquireLane) {
+async function workerLoop(archiveDb, workerId, laneScheduler) {
   while (!stopped && config.rjAudioCacheEnabled) {
     let row = null;
     try {
@@ -425,7 +505,7 @@ async function workerLoop(archiveDb, workerId, acquireLane) {
         continue;
       }
 
-      const result = await processRow(archiveDb, row, acquireLane);
+      const result = await processRow(archiveDb, row, laneScheduler);
       processedThisProcess += 1;
       if (result.ok) {
         cachedThisProcess += 1;
@@ -439,6 +519,16 @@ async function workerLoop(archiveDb, workerId, acquireLane) {
           host: result.candidate.host,
           duration: result.duration,
           lane: result.lane,
+        }));
+      } else if (result.rateLimited) {
+        rateLimitedThisProcess += 1;
+        lastError = result.errors?.[result.errors.length - 1] || 'telegram rate limit';
+        console.warn('[rj audio cache] rate limited', JSON.stringify({
+          workerId,
+          artist: row.artist,
+          title: row.title,
+          retryAfter: result.retryAfter,
+          backoffUntil: result.backoffUntil,
         }));
       } else {
         failedThisProcess += 1;
@@ -539,7 +629,7 @@ async function loop() {
     ephemeral: lane.ephemeral,
   }));
 
-  const acquireLane = createLaneScheduler(lanes);
+  const laneScheduler = createLaneScheduler(lanes);
   const concurrency = Math.max(config.rjAudioCacheConcurrency, lanes.length * 6);
 
   console.log('[rj audio cache] worker started', JSON.stringify({
@@ -551,7 +641,7 @@ async function loop() {
 
   await Promise.all(
     Array.from({ length: concurrency }, (_, index) =>
-      workerLoop(archiveDb, index + 1, acquireLane)
+      workerLoop(archiveDb, index + 1, laneScheduler)
     )
   );
 
@@ -576,6 +666,11 @@ export function getRjAudioCacheRuntimeStatus() {
     processedThisProcess,
     cachedThisProcess,
     failedThisProcess,
+    rateLimitedThisProcess,
+    floodBackoffUntil,
+    floodBackoffActive: Boolean(
+      floodBackoffUntil && Date.parse(floodBackoffUntil) > Date.now()
+    ),
     concurrency: config.rjAudioCacheConcurrency,
     sendIntervalMs: config.rjAudioCacheSendIntervalMs,
     lanes: activeLaneSummary,
