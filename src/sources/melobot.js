@@ -1009,20 +1009,24 @@ export async function searchMeloBotTyped(client, query, options = {}) {
     seenTransitions.add(surfaceKey);
 
     let refinement = chooseMeloBotSearchRefinement(result.messages, requested);
+    const deepSearchButton = options?.allowDeepSearch
+      ? findButton(result.messages, text =>
+          /(?:نتیجه|آهنگ).*(?:در\s*لیست\s*نیست|جستجوی\s*عمیق)/u.test(clean(text))
+          || /جستجوی\s*عمیق/u.test(clean(text))
+        )
+      : null;
 
-    // Archive/exact searches often land on an artist-picker surface where the
-    // song itself is not listed. Prefer the requested artist (not a featured
-    // artist token from the query), then use MeloBot's own deep-search route.
+    // Exact archive recovery must not get trapped on an artist picker. If the
+    // requested artist is explicitly available, that transition is strongest.
+    // Otherwise MeloBot's own "result not in list / deep search" control is
+    // safer and more useful than a generic high-scoring artist/refinement
+    // button (which may be a featured artist from the title).
     if (options?.preferredArtist) {
       const exactArtistButton = findArtistButtonFor(result.messages, options.preferredArtist);
       if (exactArtistButton) refinement = exactArtistButton;
-    }
-
-    if (!refinement && options?.allowDeepSearch) {
-      refinement = findButton(result.messages, text =>
-        /(?:نتیجه|آهنگ).*(?:در\s*لیست\s*نیست|جستجوی\s*عمیق)/u.test(clean(text))
-        || /جستجوی\s*عمیق/u.test(clean(text))
-      );
+      else if (deepSearchButton) refinement = deepSearchButton;
+    } else if (deepSearchButton) {
+      refinement = deepSearchButton;
     }
     if (!refinement) break;
 
