@@ -647,6 +647,9 @@ export class DeepCatalog {
         source = EXCLUDED.source,
         verified_quality = TRUE,
         updated_at = NOW()
+      WHERE
+        COALESCE(deep_track_media.source,'') <> 'identity-v2:radiojavan'
+        OR EXCLUDED.source = 'identity-v2:radiojavan'
     `, [
       trackKey,
       quality,
