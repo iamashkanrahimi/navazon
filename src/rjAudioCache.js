@@ -473,17 +473,6 @@ async function loop() {
 
   await ensureSchema(archiveDb);
 
-  // A deploy terminates the previous process, so any rows it left in
-  // "processing" can be safely returned to retry immediately.
-  await archiveDb.query(`
-    UPDATE rj_audio_cache
-       SET status='retry',
-           next_attempt_at=NOW(),
-           last_error=COALESCE(last_error,'recovered after worker restart'),
-           updated_at=NOW()
-     WHERE status='processing'
-  `);
-
   await syncExistingCanonicalRows(archiveDb);
   const initial = await progress(archiveDb);
 
