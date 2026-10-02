@@ -446,9 +446,10 @@ export class DeepCatalog {
         track_key, artist, title, album, duration_seconds,
         popularity_count, popularity_text,
         content_origin, availability_policy,
+        copyright_status, copyright_source, copyright_checked_at,
         source_data, metadata, discovered_at, updated_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,NOW(),NOW()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,NOW(),NOW()
       )
       ON CONFLICT (track_key) DO UPDATE SET
         artist = EXCLUDED.artist,
@@ -465,6 +466,12 @@ export class DeepCatalog {
           WHEN EXCLUDED.availability_policy <> 'unknown' THEN EXCLUDED.availability_policy
           ELSE deep_tracks.availability_policy
         END,
+        copyright_status = CASE
+          WHEN EXCLUDED.copyright_status <> 'unknown' THEN EXCLUDED.copyright_status
+          ELSE deep_tracks.copyright_status
+        END,
+        copyright_source = COALESCE(EXCLUDED.copyright_source, deep_tracks.copyright_source),
+        copyright_checked_at = COALESCE(EXCLUDED.copyright_checked_at, deep_tracks.copyright_checked_at),
         source_data = CASE
           WHEN COALESCE(deep_tracks.source_data->>'source','') = 'melobot'
             AND COALESCE(EXCLUDED.source_data->>'source','') <> 'melobot'
@@ -484,6 +491,9 @@ export class DeepCatalog {
       policy.sourcePopularityText || null,
       policy.contentOrigin || 'unknown',
       policy.availabilityPolicy || 'unknown',
+      clean(extra.copyrightStatus || policy.copyrightStatus || 'unknown') || 'unknown',
+      clean(extra.copyrightSource || policy.copyrightSource || '') || null,
+      extra.copyrightCheckedAt || policy.copyrightCheckedAt || null,
       safeJson(sourceData),
       safeJson(extra.metadata || {}),
     ]);
