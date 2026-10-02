@@ -96,6 +96,11 @@ export function artistCreditCompatible(requested = '', actual = '') {
   if (!requestedText || !actualText) return false;
   if (requestedText === actualText) return true;
 
+  // MeloBot sometimes compacts stage names in its buttons/metadata
+  // (e.g. "25 Band" -> "25Band"). This is still exact identity after
+  // whitespace removal; do not use fuzzy matching here.
+  if (requestedText.replace(/\s+/g, '') === actualText.replace(/\s+/g, '')) return true;
+
   const requestedParts = artistCreditParts(requested).map(identityNormalizeText);
   const actualParts = artistCreditParts(actual).map(identityNormalizeText);
   if (!requestedParts.length || !actualParts.length) return false;
