@@ -469,3 +469,34 @@ export async function deleteMessagesById(client, ids = []) {
     revoke: true,
   }));
 }
+
+
+export async function createPrivateCacheMegagroup(client, title, about = '') {
+  const created = await client.invoke(new Api.channels.CreateChannel({
+    title: String(title || 'Navazon Cache'),
+    about: String(about || 'Private Navazon cache lane'),
+    megagroup: true,
+  }));
+  const channel = (created?.chats || []).find(Boolean);
+  if (!channel) throw new Error('Telegram did not return the created cache group');
+
+  const inputChannel = await client.getInputEntity(channel);
+  const botPeer = await client.getInputEntity(config.botUsername);
+
+  try {
+    await client.invoke(new Api.channels.InviteToChannel({
+      channel: inputChannel,
+      users: [botPeer],
+    }));
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (!/USER_ALREADY_PARTICIPANT/i.test(msg)) throw err;
+  }
+
+  const peerId = String(await client.getPeerId(inputChannel));
+  return {
+    title: String(title || ''),
+    peerId,
+    channelId: String(channel.id || ''),
+  };
+}
