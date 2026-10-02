@@ -404,3 +404,31 @@ export async function forwardHiddenManyToOurBot(client, sourcePeer, messageIds =
     dropMediaCaptions: true,
   }));
 }
+
+
+export async function sendExternalMediaToOurBot(client, url, caption = '') {
+  const toPeer = await client.getInputEntity(config.botUsername);
+  return client.invoke(new Api.messages.SendMedia({
+    peer: toPeer,
+    media: new Api.InputMediaDocumentExternal({ url }),
+    message: String(caption || ''),
+    randomId: randomLong(),
+  }));
+}
+
+export async function sendExternalMediaBatchToOurBot(client, items = []) {
+  const cleanItems = (items || [])
+    .filter(item => item?.url)
+    .slice(0, 10);
+  if (!cleanItems.length) return null;
+
+  const toPeer = await client.getInputEntity(config.botUsername);
+  return client.invoke(new Api.messages.SendMultiMedia({
+    peer: toPeer,
+    multiMedia: cleanItems.map(item => new Api.InputSingleMedia({
+      media: new Api.InputMediaDocumentExternal({ url: item.url }),
+      randomId: randomLong(),
+      message: String(item.caption || ''),
+    })),
+  }));
+}
