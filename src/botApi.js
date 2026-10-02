@@ -105,18 +105,18 @@ export class BotApi {
   }
 
   async sendPhotoBuffer(chatId, buffer, filename = 'image.jpg', extra = {}, callOptions = {}) {
-    const form = new FormData();
-    form.set('chat_id', String(chatId));
-    form.set('photo', new Blob([buffer]), filename);
-    for (const [key, value] of Object.entries(extra || {})) {
-      if (value == null) continue;
-      form.set(key, typeof value === 'string' ? value : JSON.stringify(value));
-    }
-
     const maxAttempts = Math.max(1, Number(callOptions.maxAttempts || 3));
     const max429WaitSeconds = Math.max(0, Number(callOptions.max429WaitSeconds ?? 8));
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const form = new FormData();
+      form.set('chat_id', String(chatId));
+      form.set('photo', new Blob([buffer]), filename);
+      for (const [key, value] of Object.entries(extra || {})) {
+        if (value == null) continue;
+        form.set(key, typeof value === 'string' ? value : JSON.stringify(value));
+      }
+
       let res;
       try {
         res = await fetch(`${this.base}/sendPhoto`, {
