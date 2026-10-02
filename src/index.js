@@ -8,6 +8,7 @@ import { createNonOverlappingScheduler } from './crawlerScheduler.js';
 import { runDirectUrlTelegramPilot } from './directUrlPilot.js';
 import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
+import { startRjAudioCacheWorker, stopRjAudioCacheWorker, getRjAudioCacheRuntimeStatus, getRjAudioCacheSummary } from './rjAudioCache.js';
 import { closeArchiveDb } from './archiveDb.js';
 import { seedAhangifyBestPilot } from './ahangifyPilot.js';
 import {
@@ -156,6 +157,7 @@ const server = http.createServer(async (req,res) => {
         sourceQueue:sourceQueue.size(),
         mtproto:true,
         mediaCache:getMediaCacheRuntimeStatus(),
+        rjAudioCache:getRjAudioCacheRuntimeStatus(),
       }));
       return;
     }
@@ -210,6 +212,11 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await getAhangifyArchiveSummary(),null,2)); return;
     }
+    if (req.method === 'GET' && url.pathname === '/admin/rj-audio-cache') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await getRjAudioCacheSummary(),null,2)); return;
+    }
     res.writeHead(404).end('not found');
   } catch (err) {
     console.error('[http]',err.message);
@@ -241,6 +248,7 @@ server.listen(config.port,'0.0.0.0',async () => {
       console.error('[archive import]', err?.stack || err?.message || err);
     }
     startMediaCacheWorker();
+    startRjAudioCacheWorker();
     try {
       const archiveWorker = await startAhangifyArchivePump(sourceQueue);
       if (archiveWorker?.enabled) {
@@ -278,6 +286,7 @@ async function shutdown(signal) {
   console.log(`${signal}: shutting down...`);
   crawlerScheduler.stop();
   stopMediaCacheWorker();
+  stopRjAudioCacheWorker();
   stopAhangifyArchivePump();
   server.close();
   try { await tg.disconnect(); } catch {}
