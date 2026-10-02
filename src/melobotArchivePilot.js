@@ -56,10 +56,38 @@ function forwardedMatches(media, row) {
   return durationOk !== false && contradictions === 0 && (titleOk === true || artistOk === true);
 }
 
-async function capture(audioMessage, row) {
-  const wait = bridge.expectMediaMatching(media => forwardedMatches(media, row), 15000);
-  await forwardHiddenToOurBot(tg, config.melobotUsername, audioMessage.id);
+async function captureOnce(audioMessage, row, timeoutMs = 15000) {
+  const wait = bridge.expectMediaMatching(media => forwardedMatches(media, row), timeoutMs);
+  try {
+    await forwardHiddenToOurBot(tg, config.melobotUsername, audioMessage.id);
+  } catch (err) {
+    // The bridge waiter must be allowed to settle before another transfer is
+    // attempted; otherwise a synchronous forwarding failure can leave the
+    // single bridge slot occupied until its timeout.
+    await wait.catch(() => null);
+    throw err;
+  }
   return wait;
+}
+
+async function capture(audioMessage, row) {
+  try {
+    return await captureOnce(audioMessage, row, 15000);
+  } catch (err) {
+    if (!/Timed out waiting for the forwarded file/i.test(String(err?.message || err))) {
+      throw err;
+    }
+
+    // Telegram occasionally accepts the MTProto forward while the delivery bot
+    // never observes it. Re-forwarding the same already-verified MeloBot audio
+    // is idempotent for archive capture and avoids re-running search/download.
+    console.warn('[melobot archive pilot] bridge timeout; retrying verified forward', {
+      artist: row.artist,
+      title: row.title,
+      messageId: Number(audioMessage?.id || 0),
+    });
+    return captureOnce(audioMessage, row, 15000);
+  }
 }
 
 export async function seedMeloBotArchivePilot(sourceQueue) {
