@@ -5916,3 +5916,17 @@ test('MeloBot resolver still accepts reordered exact collaboration credits after
   assert.equal(resolved.artist, 'Sadegh & Shayea');
   assert.equal(resolved.title, 'Deli');
 });
+
+
+test('multi-word Persian Track titles tolerate ordinary Latin transliteration differences', () => {
+  assert.equal(trackTitleIdentityCompatible('یه روز خوب میاد', 'Ye Rooze Khoob Miad'), true);
+  assert.equal(trackTitleIdentityCompatible('گل عشق', 'Gole Eshgh'), true);
+  assert.equal(trackTitleIdentityCompatible('دوست دارم', 'Dooset Daram'), true);
+  assert.equal(trackTitleIdentityCompatible('ماه پیشونی', 'Maah Pishooni'), true);
+});
+
+test('phrase-level transliteration tolerance still rejects a different title with equal token count', () => {
+  assert.equal(trackTitleIdentityCompatible('یه روز خوب میاد', 'Ye Rooze Bad Miad'), false);
+  assert.equal(trackTitleIdentityCompatible('مرگ', 'Maryam'), false);
+  assert.equal(trackTitleIdentityCompatible('گل عشق', 'Gole Yakh'), false);
+});
