@@ -276,6 +276,13 @@ export function trackTitleIdentityCompatible(requested = '', actual = '') {
   return crossScriptIdentityCompatible(left, right);
 }
 
+export function hasMediaIdentityEvidence(media = {}) {
+  return Boolean(
+    cleanText(media?.performer || '')
+    && cleanText(media?.title || '')
+  );
+}
+
 export function trackMediaIdentityMatches(track = {}, media = {}) {
   const expectedArtist = cleanText(track?.artist || '');
   const expectedTitleRaw = cleanText(track?.title || '');
