@@ -176,7 +176,7 @@ const PERSIAN_CONSONANT_MAP = new Map([
 ]);
 const PERSIAN_VOWELISH = new Set(['ا','آ','أ','إ','ع','ء','ؤ','ئ']);
 
-function scriptFamily(value = '') {
+function identityScriptFamily(value = '') {
   const text = String(value || '');
   if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
   if (/[a-z]/iu.test(text)) return 'latin';
@@ -187,7 +187,7 @@ function consonantTokenSkeleton(token = '') {
   const source = cleanText(token).toLowerCase();
   if (!source) return '';
 
-  if (scriptFamily(source) === 'arabic') {
+  if (identityScriptFamily(source) === 'arabic') {
     const chars = [...source];
     let out = '';
     for (let index = 0; index < chars.length; index += 1) {
@@ -224,8 +224,8 @@ function smallEditDistance(left = '', right = '') {
 }
 
 export function crossScriptIdentityCompatible(left = '', right = '') {
-  const leftFamily = scriptFamily(left);
-  const rightFamily = scriptFamily(right);
+  const leftFamily = identityScriptFamily(left);
+  const rightFamily = identityScriptFamily(right);
   if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
 
   const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
