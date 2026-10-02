@@ -65,6 +65,7 @@ const {
   DeepCatalog,
   deepTrackKey,
   hasDurableTrackIdentity,
+  MEDIA_IDENTITY_SOURCE_PREFIX,
   isSuspendedBackgroundMediaTaskKind,
 } = await import('../src/deepCatalog.js');
 const { CatalogStore } = await import('../src/catalog.js');
@@ -121,6 +122,8 @@ const {
   trackMediaIdentityMatches,
   trackBelongsToArtistContext,
   trackTitleIdentityCompatible,
+  crossScriptIdentityCompatible,
+  hasMediaIdentityEvidence,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -5606,6 +5609,165 @@ test('FileCache set rejects explicit same-title audio from another Artist before
         performer: 'Mehrdad Asemani',
         title: 'Maryam',
       }
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('cross-script identity accepts real Persian transliterations but rejects unrelated Artists', () => {
+  assert.equal(crossScriptIdentityCompatible('رضا بهرام', 'Reza Bahram'), true);
+  assert.equal(crossScriptIdentityCompatible('علی سورنا', 'Ali Sorena'), true);
+  assert.equal(crossScriptIdentityCompatible('محمد علیزاده', 'Mohammad Alizadeh'), true);
+  assert.equal(crossScriptIdentityCompatible('محسن چاوشی', 'Mohsen Chavoshi'), true);
+
+  assert.equal(crossScriptIdentityCompatible('علی سورنا', 'Yas'), false);
+  assert.equal(crossScriptIdentityCompatible('یاس', 'Ali Sorena'), false);
+  assert.equal(crossScriptIdentityCompatible('رضا بهرام', 'Mehrdad Asemani'), false);
+});
+
+test('Track title identity is exact after normalization and never uses prefix containment', () => {
+  assert.equal(trackTitleIdentityCompatible('Love', 'Love Story'), false);
+  assert.equal(trackTitleIdentityCompatible('Maryam', 'Maryam 2'), false);
+  assert.equal(trackTitleIdentityCompatible('Marg', 'Marg Bar'), false);
+  assert.equal(trackTitleIdentityCompatible('یار', 'Yar'), true);
+  assert.equal(trackTitleIdentityCompatible('مریم', 'Maryam'), true);
+});
+
+test('cross-script media requires phonetic Artist compatibility, not merely different scripts', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'علی سورنا', title: 'مریم' },
+      { performer: 'Ali Sorena', title: 'Maryam' }
+    ),
+    true
+  );
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'علی سورنا', title: 'مریم' },
+      { performer: 'Mehrdad Asemani', title: 'Maryam' }
+    ),
+    false
+  );
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'یاس', title: 'مرگ' },
+      { performer: 'Ali Sorena', title: 'Marg' }
+    ),
+    false
+  );
+});
+
+test('media identity evidence requires both performer and title', () => {
+  assert.equal(hasMediaIdentityEvidence({ performer: 'Ali Sorena', title: 'Maryam' }), true);
+  assert.equal(hasMediaIdentityEvidence({ performer: 'Ali Sorena' }), false);
+  assert.equal(hasMediaIdentityEvidence({ title: 'Maryam' }), false);
+  assert.equal(hasMediaIdentityEvidence({}), false);
+});
+
+test('FileCache treats legacy rows without audio identity metadata as stale', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|',
+          track: { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+          media: { fileId: 'old-unverifiable-file' },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in stale FileCache regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('deep media reads only identity-v2 rows and ignores pre-fix file_ids', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    calls.push({ sql: String(sql), params });
+    return { rowCount: 0, rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.getMediaMap(
+      [{ artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' }],
+      'hq'
+    );
+
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].sql, /source LIKE \$3/);
+    assert.equal(calls[0].params[2], MEDIA_IDENTITY_SOURCE_PREFIX + '%');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('deep media writes mark only metadata-verified file_ids as identity-v2 trusted', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    calls.push({ sql: String(sql), params });
+    return { rowCount: 1, rows: [] };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    catalog.upsertTrack = async () => 'ali sorena|maryam';
+    catalog.completeTaskByKey = async () => {};
+
+    await catalog.setMedia(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      'hq',
+      {
+        fileId: 'verified-file',
+        performer: 'Ali Sorena',
+        title: 'Maryam',
+        kind: 'audio',
+      },
+      { source: 'melobot' }
+    );
+
+    const insert = calls.find(call => call.sql.includes('INSERT INTO deep_track_media'));
+    assert.ok(insert);
+    assert.equal(insert.params[8], MEDIA_IDENTITY_SOURCE_PREFIX + 'melobot');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('deep media refuses otherwise explicit file_ids when performer/title evidence is missing', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Unverifiable media must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setMedia(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      'hq',
+      { fileId: 'ambiguous-file', kind: 'audio' },
+      { source: 'melobot' }
     );
     assert.equal(calls.length, 0);
   } finally {
