@@ -5870,3 +5870,49 @@ test('same-title media cannot pass by extending a multi-word Artist name', () =>
     false
   );
 });
+
+
+test('explicit MeloBot resolver rejects same-title Artist-name prefix collisions', async () => {
+  const wrong = fakeBotMessage(
+    'نتیجه جستجو',
+    ['🎵 Ali Sorena X, Maryam x 10k']
+  );
+  const client = new FakeTelegramClient({
+    'Ali Sorena Maryam': [[wrong]],
+    Maryam: [[wrong]],
+  });
+
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      {
+        source: 'melobot',
+        artist: 'Ali Sorena',
+        title: 'Maryam',
+      },
+      { timeoutMs: 1200, forceIdentity: true }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+  assert.equal(client.sent[0], 'Ali Sorena Maryam');
+});
+
+test('MeloBot resolver still accepts reordered exact collaboration credits after strict Artist matching', async () => {
+  const row = '🎵 Sadegh & Shayea, Deli x 1M';
+  const client = new FakeTelegramClient({
+    Deli: [[fakeBotMessage('نتیجه جستجو', [row])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Shayea & Sadegh',
+      title: 'Deli',
+    },
+    { timeoutMs: 1000, forceIdentity: true }
+  );
+
+  assert.equal(resolved.artist, 'Sadegh & Shayea');
+  assert.equal(resolved.title, 'Deli');
+});
