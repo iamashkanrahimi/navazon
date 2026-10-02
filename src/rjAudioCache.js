@@ -3,6 +3,7 @@ import { getArchiveDb } from './archiveDb.js';
 import { BotApi } from './botApi.js';
 import { FileCache } from './cache.js';
 import { DeepCatalog } from './deepCatalog.js';
+import { getRjExtraCacheLanes } from './rjCacheLanes.js';
 import {
   artistCreditCompatible,
   trackTitleIdentityCompatible,
@@ -132,6 +133,7 @@ async function ensureSchema(db) {
       telegram_file_id TEXT,
       telegram_file_unique_id TEXT,
       telegram_message_id BIGINT,
+      telegram_chat_id TEXT,
       file_size BIGINT,
       actual_duration_seconds INTEGER,
       observed_title TEXT,
@@ -147,6 +149,8 @@ async function ensureSchema(db) {
 
     ALTER TABLE rj_audio_cache
       ADD COLUMN IF NOT EXISTS canonicalized_at TIMESTAMPTZ;
+    ALTER TABLE rj_audio_cache
+      ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
 
     CREATE INDEX IF NOT EXISTS rj_audio_cache_status_idx
       ON rj_audio_cache (status, next_attempt_at, updated_at);
@@ -288,7 +292,7 @@ async function markCached(
   candidate,
   message,
   verification,
-  { retainMessage = true } = {}
+  { retainMessage = true, chatId = null } = {}
 ) {
   const audio = verification.audio;
   await writeCanonicalProduction(row, candidate, audio);
@@ -301,11 +305,12 @@ async function markCached(
            telegram_file_id=$5,
            telegram_file_unique_id=$6,
            telegram_message_id=$7,
-           file_size=$8,
-           actual_duration_seconds=$9,
-           observed_title=$10,
-           observed_performer=$11,
-           verification=$12::jsonb,
+           telegram_chat_id=$8,
+           file_size=$9,
+           actual_duration_seconds=$10,
+           observed_title=$11,
+           observed_performer=$12,
+           verification=$13::jsonb,
            last_error=NULL,
            next_attempt_at=NULL,
            cached_at=NOW(),
@@ -320,6 +325,7 @@ async function markCached(
     audio.file_id,
     audio.file_unique_id || null,
     retainMessage ? (message.message_id || null) : null,
+    retainMessage ? String(chatId || '') || null : null,
     Number(audio.file_size || 0) || null,
     Number(audio.duration || 0) || null,
     clean(audio.title) || null,
@@ -381,6 +387,7 @@ async function processRow(db, row, acquireLane) {
 
       await markCached(db, row, candidate, message, verification, {
         retainMessage: !lane.ephemeral,
+        chatId: lane.chatId,
       });
 
       if (lane.ephemeral && message?.message_id) {
@@ -476,6 +483,7 @@ async function loop() {
   await syncExistingCanonicalRows(archiveDb);
   const initial = await progress(archiveDb);
 
+  const extraLanes = await getRjExtraCacheLanes();
   const laneSpecs = [
     {
       name: 'cache',
@@ -487,6 +495,11 @@ async function loop() {
       chatId: String(config.proxyUserId || ''),
       ephemeral: true,
     },
+    ...extraLanes.map((lane, index) => ({
+      name: lane?.name || `extra-${index + 1}`,
+      chatId: String(lane?.chatId || ''),
+      ephemeral: false,
+    })),
   ].filter((lane, index, all) =>
     lane.chatId
     && all.findIndex(other => other.chatId === lane.chatId) === index
