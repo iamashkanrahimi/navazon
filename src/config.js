@@ -36,6 +36,13 @@ export const config = {
   mediaCacheChatId: (process.env.MEDIA_CACHE_CHAT_ID || '').trim(),
   mediaCacheDelayMs: Math.max(2000, Number(process.env.MEDIA_CACHE_DELAY_MS || 2000)),
 
+  rjAudioCacheEnabled: boolEnv('RJ_AUDIO_CACHE_ENABLED', false),
+  rjAudioCacheDelayMs: Math.max(900, Number(process.env.RJ_AUDIO_CACHE_DELAY_MS || 1100)),
+  rjAudioCacheMaxAttempts: Math.max(
+    1,
+    Math.min(3, Number(process.env.RJ_AUDIO_CACHE_MAX_ATTEMPTS || 2))
+  ),
+
   melobotUsername: (process.env.MELOBOT_USERNAME || 'melobot').replace(/^@/, ''),
   melobotArchivePilotEnabled: boolEnv('MELOBOT_ARCHIVE_PILOT_ENABLED', false),
   melobotArchivePilotCount: Math.max(1, Math.min(12500, Number(process.env.MELOBOT_ARCHIVE_PILOT_COUNT || 50))),
