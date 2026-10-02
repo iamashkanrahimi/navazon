@@ -37,6 +37,7 @@ export const config = {
   mediaCacheDelayMs: Math.max(2000, Number(process.env.MEDIA_CACHE_DELAY_MS || 2000)),
 
   rjAudioCacheEnabled: boolEnv('RJ_AUDIO_CACHE_ENABLED', false),
+  rjMtprotoPilotEnabled: boolEnv('RJ_MTPROTO_PILOT_ENABLED', false),
   rjAudioCacheDelayMs: Math.max(900, Number(process.env.RJ_AUDIO_CACHE_DELAY_MS || 1100)),
   rjAudioCacheConcurrency: Math.max(
     1,

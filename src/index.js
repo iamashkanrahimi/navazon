@@ -6,6 +6,7 @@ import { sourceQueue } from './jobs.js';
 import { getState, setState, getStats, getLastUserActivity } from './state.js';
 import { createNonOverlappingScheduler } from './crawlerScheduler.js';
 import { runDirectUrlTelegramPilot } from './directUrlPilot.js';
+import { runMtprotoExternalMediaPilot } from './mtprotoExternalPilot.js';
 import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { startRjAudioCacheWorker, stopRjAudioCacheWorker, getRjAudioCacheRuntimeStatus, getRjAudioCacheSummary } from './rjAudioCache.js';
@@ -248,6 +249,11 @@ server.listen(config.port,'0.0.0.0',async () => {
       console.error('[archive import]', err?.stack || err?.message || err);
     }
     startMediaCacheWorker();
+    try {
+      await runMtprotoExternalMediaPilot();
+    } catch (err) {
+      console.error('[mtproto external pilot startup]', err?.stack || err?.message || err);
+    }
     startRjAudioCacheWorker();
     try {
       const archiveWorker = await startAhangifyArchivePump(sourceQueue);
