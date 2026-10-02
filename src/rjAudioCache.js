@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { getArchiveDb } from './archiveDb.js';
 import { BotApi } from './botApi.js';
 import { FileCache } from './cache.js';
+import { DeepCatalog } from './deepCatalog.js';
 import {
   artistCreditCompatible,
   trackTitleIdentityCompatible,
@@ -9,6 +10,7 @@ import {
 
 const bot = new BotApi(config.botToken);
 const productionCache = new FileCache();
+const productionDeepCatalog = new DeepCatalog();
 
 let stopped = false;
 let workerPromise = null;
@@ -102,8 +104,12 @@ async function ensureSchema(db) {
       next_attempt_at TIMESTAMPTZ,
       started_at TIMESTAMPTZ,
       cached_at TIMESTAMPTZ,
+      canonicalized_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE rj_audio_cache
+      ADD COLUMN IF NOT EXISTS canonicalized_at TIMESTAMPTZ;
 
     CREATE INDEX IF NOT EXISTS rj_audio_cache_status_idx
       ON rj_audio_cache (status, next_attempt_at, updated_at);
@@ -167,8 +173,81 @@ async function claimNext(db) {
   return rows[0] || null;
 }
 
+async function writeCanonicalProduction(row, candidate, audio) {
+  const track = {
+    artist: row.artist,
+    title: row.title,
+    source: 'radiojavan',
+    rawText: row.source_url,
+  };
+  const media = {
+    kind: 'audio',
+    fileId: audio.file_id || audio.fileId,
+    fileUniqueId: audio.file_unique_id || audio.fileUniqueId || null,
+    title: row.title,
+    performer: row.artist,
+    duration: Number(audio.duration || audio.actual_duration_seconds || 0) || null,
+    fileSize: Number(audio.file_size || audio.fileSize || 0) || null,
+    bitrate: Number(candidate.quality || row.direct_quality || 0) || null,
+    directUrl: candidate.url || row.direct_url || null,
+    verifiedDirect: true,
+    acquisition: 'radiojavan_direct',
+  };
+
+  if (!media.fileId) throw new Error('Radio Javan canonical media missing file_id');
+
+  await productionCache.set(track, media, { sourceFetch: true });
+  await productionDeepCatalog.setMedia(track, 'hq', media, {
+    source: 'radiojavan',
+    bitrate: media.bitrate || undefined,
+    fileSize: media.fileSize || undefined,
+    satisfiedBy: 'radiojavan_direct',
+  });
+}
+
+async function syncExistingCanonicalRows(db) {
+  let synced = 0;
+  while (true) {
+    const { rows } = await db.query(`
+      SELECT *
+      FROM rj_audio_cache
+      WHERE status='cached'
+        AND telegram_file_id IS NOT NULL
+        AND canonicalized_at IS NULL
+      ORDER BY cached_at NULLS LAST, source_url
+      LIMIT 250
+    `);
+    if (!rows.length) break;
+
+    for (const row of rows) {
+      try {
+        await writeCanonicalProduction(row, {
+          quality: row.direct_quality,
+          url: row.direct_url,
+        }, {
+          file_id: row.telegram_file_id,
+          file_unique_id: row.telegram_file_unique_id,
+          file_size: row.file_size,
+          duration: row.actual_duration_seconds,
+        });
+        await db.query(
+          'UPDATE rj_audio_cache SET canonicalized_at=NOW(), updated_at=NOW() WHERE source_url=$1',
+          [row.source_url]
+        );
+        synced += 1;
+      } catch (err) {
+        console.warn('[rj audio cache canonical sync]', row.artist, row.title, err.message);
+        return synced;
+      }
+    }
+  }
+  if (synced) console.log('[rj audio cache] canonical backfill', synced);
+  return synced;
+}
+
 async function markCached(db, row, candidate, message, verification) {
   const audio = verification.audio;
+  await writeCanonicalProduction(row, candidate, audio);
   await db.query(`
     UPDATE rj_audio_cache
        SET status='cached',
@@ -186,6 +265,7 @@ async function markCached(db, row, candidate, message, verification) {
            last_error=NULL,
            next_attempt_at=NULL,
            cached_at=NOW(),
+           canonicalized_at=NOW(),
            updated_at=NOW()
      WHERE source_url=$1
   `, [
@@ -209,25 +289,6 @@ async function markCached(db, row, candidate, message, verification) {
     }),
   ]);
 
-  // Make the newly acquired file immediately useful to Navazon's normal
-  // download path. Identity here comes from the exact Radio Javan source row;
-  // observed embedded metadata is kept separately above for auditing.
-  await productionCache.set({
-    artist: row.artist,
-    title: row.title,
-    source: 'radiojavan',
-    rawText: row.source_url,
-  }, {
-    kind: 'audio',
-    fileId: audio.file_id,
-    fileUniqueId: audio.file_unique_id || null,
-    title: row.title,
-    performer: row.artist,
-    duration: Number(audio.duration || 0) || null,
-    fileSize: Number(audio.file_size || 0) || null,
-    bitrate: candidate.quality,
-    directUrl: candidate.url,
-  }, { sourceFetch: true });
 }
 
 async function markFailure(db, row, errors) {
@@ -303,6 +364,7 @@ async function loop() {
   }
 
   await ensureSchema(archiveDb);
+  await syncExistingCanonicalRows(archiveDb);
   const initial = await progress(archiveDb);
   console.log('[rj audio cache] worker started', JSON.stringify({
     total: Object.values(initial).reduce((sum, value) => sum + Number(value || 0), 0),
@@ -397,6 +459,7 @@ export async function getRjAudioCacheSummary() {
       COUNT(*) FILTER (WHERE status='failed')::int AS failed,
       COUNT(*) FILTER (WHERE status='cached' AND direct_quality=320)::int AS cached_320,
       COUNT(*) FILTER (WHERE status='cached' AND direct_quality=256)::int AS cached_256,
+      COUNT(*) FILTER (WHERE status='cached' AND canonicalized_at IS NOT NULL)::int AS canonicalized,
       MAX(cached_at) AS latest_cached_at
     FROM rj_audio_cache
   `);
