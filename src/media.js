@@ -10,6 +10,10 @@ import {
   shouldUseSearchRelevanceFallback,
   primarySearchQueries,
   acceptsShortenedPrimarySearch,
+  artistCreditCompatible,
+  titleCreditsArtist,
+  trackMediaIdentityMatches,
+  trackTitleIdentityCompatible,
 } from './text.js';
 import {
   searchMeloBot,
@@ -54,6 +58,15 @@ export function canonicalTrackFromAudioMetadata(track = {}, media = {}) {
   });
 }
 
+export function assertMediaIdentityMatchesTrack(track = {}, media = {}) {
+  if (trackMediaIdentityMatches(track, media)) return true;
+  const err = new Error(
+    `Source media identity mismatch: expected ${track?.artist || '?'} — ${track?.title || '?'}; got ${media?.performer || '?'} — ${media?.title || '?'}`
+  );
+  err.code = 'SOURCE_MEDIA_IDENTITY_MISMATCH';
+  throw err;
+}
+
 export function assertDeliveryAllowed(track, userRegion = 'unknown') {
   const decision = canDeliverTrack(track,userRegion);
   if (!decision.allowed) {
@@ -93,6 +106,7 @@ export async function bridgeSourceMessage(
   );
   await forwardHiddenToOurBot(tg,sourceUsername,audioMessage.id);
   const media = await mediaPromise;
+  assertMediaIdentityMatchesTrack(track, media);
 
   const originalTrack = { ...track };
   const durableTrack = canonicalTrackFromAudioMetadata(track, media);
@@ -111,6 +125,7 @@ export async function bridgeSourceMessage(
         evidence: 'telegram_audio_metadata',
       });
     } catch (err) {
+      if (err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH') throw err;
       console.warn('[track alias learn]', err.message);
     }
     Object.assign(track, durableTrack);
@@ -203,13 +218,18 @@ function chooseAhangifyMatch(results, track) {
       ? 0
       : title === wantedTitle
         ? 2
-        : (title && (title.includes(wantedTitle) || wantedTitle.includes(title)) ? 1 : 0);
+        : trackTitleIdentityCompatible(track?.title || '', parsed.title || '')
+          ? 1
+          : 0;
 
     const artistScore = !wantedArtist
       ? 0
-      : artist === wantedArtist
+      : (
+          artistCreditCompatible(track?.artist || '', parsed.artist || '')
+          || titleCreditsArtist(parsed.title || '', track?.artist || '')
+        )
         ? 2
-        : (artist && (artist.includes(wantedArtist) || wantedArtist.includes(artist)) ? 1 : 0);
+        : 0;
 
     if (wantedTitle && titleScore === 0) continue;
     if (wantedArtist && artistScore === 0) continue;
@@ -279,9 +299,9 @@ export async function downloadTrackWithSources(
     }
   }
 
-  const fallbackQuery = track?.artistInferred
-    ? (track.title || originalQuery)
-    : ([track.artist,track.title].filter(Boolean).join(' ') || originalQuery);
+  const fallbackQuery = [track?.artist, track?.title].filter(Boolean).join(' ')
+    || track?.title
+    || originalQuery;
   if (remaining.expired()) {
     throw new Error('Interactive fallback search budget exhausted.');
   }

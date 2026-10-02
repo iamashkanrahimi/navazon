@@ -83,6 +83,176 @@ export function artistCreditMatchesContext(credit = '', artist = '') {
   return wantedParts.every(part => actualParts.includes(part));
 }
 
+export function artistCreditCompatible(requested = '', actual = '') {
+  const requestedText = normalizeText(requested);
+  const actualText = normalizeText(actual);
+  if (!requestedText || !actualText) return false;
+  if (requestedText === actualText) return true;
+
+  const requestedParts = artistCreditParts(requested);
+  const actualParts = artistCreditParts(actual);
+  if (!requestedParts.length || !actualParts.length) return false;
+
+  const partMatches = (left, right) => {
+    if (left === right) return true;
+    const leftTokens = left.split(' ').filter(Boolean);
+    const rightTokens = right.split(' ').filter(Boolean);
+    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
+    return left.includes(right) || right.includes(left);
+  };
+
+  if (requestedParts.length > 1) {
+    return requestedParts.every(left =>
+      actualParts.some(right => partMatches(left, right))
+    );
+  }
+
+  return actualParts.some(right => partMatches(requestedParts[0], right));
+}
+
+export function titleCreditsArtist(title = '', artist = '') {
+  const source = cleanText(title);
+  if (!source || !artist) return false;
+
+  const credits = [];
+  const re = /\b(?:feat\.?|ft\.?|featuring)\s+([^()[\]]+?)(?=\)|\]|$|\s+[–—-]\s+)/giu;
+  for (const match of source.matchAll(re)) {
+    const credit = cleanText(match[1]);
+    if (credit) credits.push(credit);
+  }
+
+  return credits.some(credit => artistCreditCompatible(artist, credit));
+}
+
+export function trackBelongsToArtistContext(track = {}, artist = '') {
+  const contextArtist = cleanText(artist);
+  const trackArtist = cleanText(track?.artist || '');
+  const title = cleanText(track?.title || '');
+  if (!contextArtist || !title) return false;
+  if (!trackArtist) return false;
+
+  return artistCreditCompatible(contextArtist, trackArtist)
+    || titleCreditsArtist(title, contextArtist);
+}
+
+const TRACK_VARIANT_ALIASES = new Map([
+  ['remix', 'remix'],
+  ['ریمیکس', 'remix'],
+  ['mix', 'mix'],
+  ['edit', 'edit'],
+  ['version', 'version'],
+  ['ورژن', 'version'],
+  ['نسخه', 'version'],
+  ['live', 'live'],
+  ['لایو', 'live'],
+  ['زنده', 'live'],
+  ['acoustic', 'acoustic'],
+  ['unplugged', 'acoustic'],
+  ['آکوستیک', 'acoustic'],
+  ['instrumental', 'instrumental'],
+  ['بیکلام', 'instrumental'],
+  ['بی‌کلام', 'instrumental'],
+  ['remaster', 'remaster'],
+  ['remastered', 'remaster'],
+  ['rework', 'rework'],
+  ['sped', 'sped'],
+  ['slowed', 'slowed'],
+  ['karaoke', 'karaoke'],
+  ['demo', 'demo'],
+  ['radio', 'radio'],
+  ['extended', 'extended'],
+  ['club', 'club'],
+  ['cover', 'cover'],
+  ['original', 'original'],
+]);
+const TRACK_VARIANT_WORDS = new Set(TRACK_VARIANT_ALIASES.keys());
+
+export function trackTitleIdentity(value = '') {
+  const stripped = cleanText(value)
+    .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
+    .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+    .trim();
+  return normalizeText(stripped);
+}
+
+function trackTitleVariantKinds(value = '') {
+  const out = new Set();
+  for (const token of trackTitleIdentity(value).split(' ').filter(Boolean)) {
+    const kind = TRACK_VARIANT_ALIASES.get(token);
+    if (kind) out.add(kind);
+  }
+  return out;
+}
+
+export function trackTitleIdentityCompatible(requested = '', actual = '') {
+  const left = trackTitleIdentity(requested);
+  const right = trackTitleIdentity(actual);
+  if (!left || !right) return false;
+
+  const leftKinds = trackTitleVariantKinds(requested);
+  const rightKinds = trackTitleVariantKinds(actual);
+  if (leftKinds.size !== rightKinds.size) return false;
+  for (const kind of leftKinds) {
+    if (!rightKinds.has(kind)) return false;
+  }
+
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+export function trackMediaIdentityMatches(track = {}, media = {}) {
+  const expectedArtist = cleanText(track?.artist || '');
+  const expectedTitleRaw = cleanText(track?.title || '');
+  const expectedTitle = normalizeText(expectedTitleRaw);
+  const performer = cleanText(media?.performer || '');
+  const mediaTitleRaw = cleanText(media?.title || '');
+  const mediaTitle = normalizeText(mediaTitleRaw);
+
+  // Page/Album rows with an inferred Artist are not durable identity yet.
+  // Without performer metadata there is no evidence that can promote them.
+  if (track?.artistInferred && !performer) return false;
+
+  const scriptFamily = value => {
+    const text = String(value || '');
+    if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
+    if (/[a-z]/iu.test(text)) return 'latin';
+    return '';
+  };
+  const crossScript = (left, right) => {
+    const a = scriptFamily(left);
+    const b = scriptFamily(right);
+    return Boolean(a && b && a !== b);
+  };
+
+  if (expectedTitle && mediaTitle) {
+    if (
+      !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
+      && !crossScript(expectedTitleRaw, mediaTitleRaw)
+    ) {
+      return false;
+    }
+
+    const expectedVariants = trackTitleVariantKinds(expectedTitleRaw);
+    const actualVariants = trackTitleVariantKinds(mediaTitleRaw);
+    if (expectedVariants.size !== actualVariants.size) return false;
+    for (const kind of expectedVariants) {
+      if (!actualVariants.has(kind)) return false;
+    }
+  }
+
+  if (!expectedArtist || !performer) return true;
+  if (
+    artistCreditCompatible(expectedArtist, performer)
+    || titleCreditsArtist(mediaTitleRaw || expectedTitleRaw, expectedArtist)
+  ) {
+    return true;
+  }
+
+  // Persian/Arabic-script catalog rows often carry Latin Telegram metadata.
+  // Without a transliteration oracle, treat cross-script metadata as unknown
+  // rather than falsely rejecting a valid file; same-script mismatches fail.
+  return crossScript(expectedArtist, performer);
+}
+
 export function hasAlbumIntent(query = '') {
   const tokens = normalizeText(query).split(' ').filter(Boolean);
   return tokens.some(token => ALBUM_INTENT_WORDS.has(token));
@@ -140,12 +310,6 @@ export function shouldUseLiveAlbumDiscovery(query = '') {
 const SEARCH_NOISE_WORDS = new Set([
   'ft', 'feat', 'featuring', 'with', 'and', 'vs',
   'the', 'a', 'an',
-]);
-
-const TRACK_VARIANT_WORDS = new Set([
-  'remix', 'mix', 'edit', 'version', 'live', 'acoustic', 'instrumental',
-  'remaster', 'remastered', 'rework', 'sped', 'slowed', 'karaoke',
-  'ریمیکس', 'لایو', 'آکوستیک', 'بیکلام', 'بی‌کلام',
 ]);
 
 export function unrequestedTrackVariantWords(query = '', track = {}) {

@@ -2,6 +2,10 @@ import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
 import {
   artistCreditMatchesContext,
+  artistCreditCompatible,
+  trackBelongsToArtistContext,
+  trackMediaIdentityMatches,
+  trackTitleIdentityCompatible,
   cleanText,
   normalizeText,
 } from './text.js';
@@ -14,7 +18,16 @@ export function deepNormalize(value = '') {
   return normalizeText(value);
 }
 
+export function hasDurableTrackIdentity(track = {}) {
+  return Boolean(
+    !track?.artistInferred
+    && deepNormalize(track?.artist || '')
+    && deepNormalize(track?.title || '')
+  );
+}
+
 export function deepTrackKey(track = {}) {
+  if (!hasDurableTrackIdentity(track)) return '';
   return `${deepNormalize(track.artist)}|${deepNormalize(track.title)}`;
 }
 
@@ -54,6 +67,22 @@ function safeJson(value) {
   return JSON.stringify(value ?? {});
 }
 
+function aliasTargetCompatible(aliasTrack = {}, canonicalTrack = {}, evidence = 'unknown') {
+  const sameIdentity = artistCreditCompatible(
+    aliasTrack?.artist || '',
+    canonicalTrack?.artist || ''
+  ) && trackTitleIdentityCompatible(
+    aliasTrack?.title || '',
+    canonicalTrack?.title || ''
+  );
+  if (sameIdentity) return true;
+  if (evidence !== 'telegram_audio_metadata') return false;
+  return trackMediaIdentityMatches(aliasTrack, {
+    performer: canonicalTrack?.artist || '',
+    title: canonicalTrack?.title || '',
+  });
+}
+
 export class DeepCatalog {
   async setTrackAlias(aliasTrack = {}, canonicalTrack = {}, {
     source = null,
@@ -64,6 +93,11 @@ export class DeepCatalog {
     if (!aliasKey || aliasKey === '|' || !canonicalKey || canonicalKey === '|') return canonicalTrack;
     if (aliasKey === canonicalKey) return canonicalTrack;
     if (aliasTrack?.artistInferred || canonicalTrack?.artistInferred) return canonicalTrack;
+    if (!aliasTargetCompatible(aliasTrack, canonicalTrack, evidence)) {
+      const err = new Error('Track alias identity mismatch');
+      err.code = 'TRACK_ALIAS_IDENTITY_MISMATCH';
+      throw err;
+    }
 
     const existingCanonical = await db.query(
       'SELECT 1 FROM deep_tracks WHERE track_key = $1 LIMIT 1',
@@ -105,6 +139,8 @@ export class DeepCatalog {
     const aliasResult = await db.query(`
       SELECT
         a.canonical_track_key,
+        a.source AS alias_source,
+        a.evidence AS alias_evidence,
         t.artist,
         t.title,
         t.source_data,
@@ -120,7 +156,24 @@ export class DeepCatalog {
     const known = aliasResult.rows[0];
     if (known) {
       const sourceData = known.source_data || {};
-      return applyPolicyDefaults({
+      const compatible = aliasTargetCompatible(
+        track,
+        { artist: known.artist, title: known.title },
+        known.alias_evidence || 'unknown'
+      );
+
+      if (!compatible) {
+        console.warn(
+          '[track alias rejected]',
+          track?.artist,
+          track?.title,
+          '=>',
+          known.artist,
+          known.title,
+          known.alias_evidence || 'unknown'
+        );
+      } else {
+        return applyPolicyDefaults({
         ...track,
         artist: known.artist,
         title: known.title,
@@ -138,8 +191,9 @@ export class DeepCatalog {
           ? track.rawText
           : (sourceData.rawText || track.rawText),
         cmd: sourceData.cmd || track.cmd,
-        artistInferred: false,
-      });
+          artistInferred: false,
+        });
+      }
     }
 
     if (!learnFromCache) return track;
@@ -156,6 +210,42 @@ export class DeepCatalog {
       const performer = clean(row.media?.performer || '');
       const mediaTitle = clean(row.media?.title || '');
       if (!performer || !mediaTitle) continue;
+
+      const expectedTitle = normalizeText(track?.title || '');
+      const actualTitle = normalizeText(mediaTitle);
+      const titleCompatible = Boolean(
+        expectedTitle
+        && actualTitle
+        && (
+          expectedTitle === actualTitle
+          || expectedTitle.includes(actualTitle)
+          || actualTitle.includes(expectedTitle)
+        )
+      );
+      const trustedAhangifyMetadataAlias = Boolean(
+        track?.source === 'ahangify'
+        && row.track?.source === 'ahangify'
+      );
+      if (
+        !trustedAhangifyMetadataAlias
+        && (
+          !titleCompatible
+          || (
+            track?.artist
+            && !artistCreditCompatible(track.artist, performer)
+          )
+        )
+      ) {
+        console.warn(
+          '[track alias cache mismatch]',
+          track?.artist,
+          track?.title,
+          '!=',
+          performer,
+          mediaTitle
+        );
+        continue;
+      }
 
       const candidate = applyPolicyDefaults({
         ...track,
@@ -194,10 +284,18 @@ export class DeepCatalog {
           })
         : candidate;
 
-      await this.setTrackAlias(track, resolved, {
-        source: row.track?.source || track.source || null,
-        evidence: 'telegram_audio_metadata',
-      });
+      try {
+        await this.setTrackAlias(track, resolved, {
+          source: row.track?.source || track.source || null,
+          evidence: 'telegram_audio_metadata',
+        });
+      } catch (err) {
+        if (err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH') {
+          console.warn('[track alias learn rejected]', track?.artist, track?.title);
+          continue;
+        }
+        throw err;
+      }
       return resolved;
     }
 
@@ -208,6 +306,19 @@ export class DeepCatalog {
     const out = [];
     const seen = new Set();
     for (const track of tracks || []) {
+      if (!hasDurableTrackIdentity(track)) {
+        const transientKey = [
+          'transient',
+          deepNormalize(track?.artist || ''),
+          deepNormalize(track?.title || ''),
+          deepNormalize(track?.rawText || track?.cmd || ''),
+        ].join('|');
+        if (!deepNormalize(track?.title || '') || seen.has(transientKey)) continue;
+        seen.add(transientKey);
+        out.push(track);
+        continue;
+      }
+
       let resolved = track;
       try {
         resolved = await this.resolveTrackAlias(track);
@@ -433,7 +544,10 @@ export class DeepCatalog {
     if (!albumKey) return;
 
     const sourceTracks = tracks || [];
-    const durableTracks = sourceTracks.filter(track => !track?.artistInferred);
+    const durableTracks = sourceTracks.filter(track =>
+      !track?.artistInferred
+      && trackBelongsToArtistContext(track, artist)
+    );
 
     await db.query('DELETE FROM deep_album_tracks WHERE album_key = $1', [albumKey]);
     await db.query(`
@@ -481,6 +595,14 @@ export class DeepCatalog {
   }
 
   async setMedia(track, quality, media = {}, extra = {}) {
+    // Durable media must never be keyed by an inferred Artist identity.
+    // Resolve/canonicalize first; otherwise common titles can poison file_id
+    // cache entries for a different performer.
+    if (track?.artistInferred) return;
+    if (!trackMediaIdentityMatches(track, media || {})) {
+      console.warn('[deep media write rejected]', track?.artist, track?.title);
+      return;
+    }
     const trackKey = await this.upsertTrack(track);
     if (!trackKey || !media.fileId) return;
     await db.query(`
@@ -517,6 +639,7 @@ export class DeepCatalog {
 
   async getMediaMap(tracks = [], quality = 'hq') {
     const keys = [...new Set((tracks || [])
+      .filter(track => !track?.artistInferred)
       .map(track => deepTrackKey(track))
       .filter(key => key && key !== '|'))];
 
@@ -876,7 +999,7 @@ export class DeepCatalog {
   async getAlbumTracksByKey(albumKey) {
     if (!albumKey) return [];
     const result = await db.query(`
-      SELECT t.*, dat.position
+      SELECT t.*, dat.position, da.artist AS album_artist
       FROM deep_album_tracks dat
       JOIN deep_tracks t ON t.track_key = dat.track_key
       JOIN deep_albums da ON da.album_key = dat.album_key
@@ -884,7 +1007,7 @@ export class DeepCatalog {
         AND da.metadata @> '{"trackListVersion":1}'::jsonb
       ORDER BY dat.position ASC NULLS LAST
     `, [albumKey]);
-    return result.rows.map(row => ({
+    const tracks = result.rows.map(row => ({
       artist: row.artist,
       title: row.title,
       album: row.album || undefined,
@@ -896,7 +1019,18 @@ export class DeepCatalog {
       ...(row.source_data || {}),
       source: row.source_data?.source || 'melobot',
       rawText: row.source_data?.rawText || undefined,
+      _albumArtist: row.album_artist,
     }));
+
+    if (
+      tracks.some(track =>
+        !trackBelongsToArtistContext(track, track._albumArtist || '')
+      )
+    ) {
+      return [];
+    }
+
+    return tracks.map(({ _albumArtist, ...track }) => track);
   }
 
   async completeTaskByKey(taskKey, summary = {}) {

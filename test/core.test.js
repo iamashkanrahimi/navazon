@@ -60,10 +60,11 @@ const {
   collectNewMessages,
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
-const { trackCacheKey } = await import('../src/cache.js');
+const { FileCache, trackCacheKey } = await import('../src/cache.js');
 const {
   DeepCatalog,
   deepTrackKey,
+  hasDurableTrackIdentity,
   isSuspendedBackgroundMediaTaskKind,
 } = await import('../src/deepCatalog.js');
 const { CatalogStore } = await import('../src/catalog.js');
@@ -115,6 +116,11 @@ const {
   primarySearchQueries,
   acceptsShortenedPrimarySearch,
   artistCreditMatchesContext,
+  artistCreditCompatible,
+  titleCreditsArtist,
+  trackMediaIdentityMatches,
+  trackBelongsToArtistContext,
+  trackTitleIdentityCompatible,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -2205,7 +2211,7 @@ test('inferred featured-artist rows resolve to the explicit primary artist by ti
     source: 'melobot',
   };
   const client = new FakeTelegramClient({
-    'Khalesaneh (feat. T-Dey)': [[
+    'T-Dey Khalesaneh (feat. T-Dey)': [[
       fakeBotMessage(
         'نتیجه جستجو',
         ['🎵 Sadegh, Khalesaneh (feat. T-Dey) x 1.2M']
@@ -4808,4 +4814,801 @@ test('bulk download summaries use the final friendly copy', () => {
     bulkDownloadSummary(8, 0),
     'همه‌ی 8 آهنگ آماده شد.'
   );
+});
+
+
+test('inferred Artist context rejects an exact same-title Track from another Artist', async () => {
+  const inferred = {
+    ...parseTrackButton('🎵 Maryam', 'Ali Sorena'),
+    source: 'melobot',
+  };
+  const wrong = fakeBotMessage(
+    'نتیجه جستجو',
+    ['🎵 Mehrdad Asemani, Maryam x 10k']
+  );
+  const client = new FakeTelegramClient({
+    'Ali Sorena Maryam': [[wrong]],
+    Maryam: [[wrong]],
+  });
+
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      inferred,
+      { timeoutMs: 1200, forceIdentity: true }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+  assert.equal(client.sent[0], 'Ali Sorena Maryam');
+});
+
+test('inferred Artist context rejects other real collision examples such as Marg and Teryagh', async () => {
+  for (const item of [
+    { title: 'Marg', wrongArtist: 'Yas' },
+    { title: 'Teryagh', wrongArtist: 'Mohsen Chavoshi' },
+  ]) {
+    const inferred = {
+      ...parseTrackButton(`🎵 ${item.title}`, 'Ali Sorena'),
+      source: 'melobot',
+    };
+    const wrong = fakeBotMessage(
+      'نتیجه جستجو',
+      [`🎵 ${item.wrongArtist}, ${item.title} x 10k`]
+    );
+    const client = new FakeTelegramClient({
+      [`Ali Sorena ${item.title}`]: [[wrong]],
+      [item.title]: [[wrong]],
+    });
+
+    await assert.rejects(
+      () => resolveMeloBotTrackCandidate(
+        client,
+        inferred,
+        { timeoutMs: 1200, forceIdentity: true }
+      ),
+      err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED',
+      item.title
+    );
+  }
+});
+
+test('identity helpers allow a true featured credit but reject unrelated short-name collisions', () => {
+  assert.equal(artistCreditCompatible('Ali Sorena', 'Ali Sorena'), true);
+  assert.equal(artistCreditCompatible('Yas', 'Yaser Binam'), false);
+  assert.equal(titleCreditsArtist('Khalesaneh (feat. T-Dey)', 'T-Dey'), true);
+  assert.equal(titleCreditsArtist('Maryam', 'Ali Sorena'), false);
+});
+
+test('bulk matcher never pairs a same-title audio file from the wrong performer', () => {
+  const wrong = matchBulkAudioToTracks(
+    [{ artist: 'Ali Sorena', title: 'Maryam', artistInferred: true }],
+    [{ performer: 'Mehrdad Asemani', title: 'Maryam' }]
+  );
+  assert.deepEqual(wrong, []);
+
+  const correct = matchBulkAudioToTracks(
+    [{ artist: 'Ali Sorena', title: 'Maryam', artistInferred: true }],
+    [{ performer: 'Ali Sorena', title: 'Maryam' }]
+  );
+  assert.equal(correct.length, 1);
+});
+
+test('bulk matcher preserves legitimate featured-Artist rows', () => {
+  const matches = matchBulkAudioToTracks(
+    [{ artist: 'T-Dey', title: 'Khalesaneh (feat. T-Dey)', artistInferred: true }],
+    [{ performer: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' }]
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('media identity validation blocks cross-Artist audio before cache or delivery', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
+      { performer: 'Mehrdad Asemani', title: 'Maryam' }
+    ),
+    false
+  );
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'T-Dey', title: 'Khalesaneh (feat. T-Dey)', artistInferred: true },
+      { performer: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' }
+    ),
+    true
+  );
+});
+
+test('media identity validation keeps legitimate Persian-to-Latin metadata compatible', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'رضا بهرام', title: 'یار' },
+      { performer: 'Reza Bahram', title: 'Yar' }
+    ),
+    true
+  );
+});
+
+test('cache metadata from another Artist cannot teach a durable Track alias', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('FROM track_aliases a')) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (text.includes('FROM track_cache')) {
+      return {
+        rows: [{
+          track: { source: 'melobot' },
+          media: { performer: 'Mehrdad Asemani', title: 'Maryam' },
+        }],
+        rowCount: 1,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const source = { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' };
+    const resolved = await catalog.resolveTrackAlias(source);
+    assert.equal(resolved.artist, 'Ali Sorena');
+    assert.equal(resolved.title, 'Maryam');
+    assert.equal(
+      calls.some(call => call.sql.includes('INSERT INTO track_aliases')),
+      false
+    );
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('Album context membership accepts collaborations/features but rejects unrelated same-title Artists', () => {
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
+      'Ali Sorena'
+    ),
+    true
+  );
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Sadegh', title: 'Khalesaneh (feat. T-Dey)' },
+      'T-Dey'
+    ),
+    true
+  );
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Mehrdad Asemani', title: 'Maryam' },
+      'Ali Sorena'
+    ),
+    false
+  );
+});
+
+test('legacy Catalog Album cache fails closed when one stored Track belongs to another Artist', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('SELECT name, data FROM artists')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          name: 'Ali Sorena',
+          data: {
+            name: 'Ali Sorena',
+            albums: {
+              testalbum: {
+                title: 'TestAlbum',
+                trackListVersion: 1,
+                updatedAt: new Date().toISOString(),
+                tracks: [
+                  { artist: 'Ali Sorena', title: 'Kavir', source: 'melobot' },
+                  { artist: 'Mehrdad Asemani', title: 'Maryam', source: 'melobot' },
+                ],
+              },
+            },
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in Album cache regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new CatalogStore();
+    const tracks = await catalog.getAlbumTracks(
+      'Ali Sorena',
+      'TestAlbum',
+      24 * 60 * 60 * 1000
+    );
+    assert.equal(tracks, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('legacy Catalog Album cache preserves a legitimate featured-primary Track', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('SELECT name, data FROM artists')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          name: 'T-Dey',
+          data: {
+            name: 'T-Dey',
+            albums: {
+              testalbum: {
+                title: 'TestAlbum',
+                trackListVersion: 1,
+                updatedAt: new Date().toISOString(),
+                tracks: [
+                  {
+                    artist: 'Sadegh',
+                    title: 'Khalesaneh (feat. T-Dey)',
+                    source: 'melobot',
+                  },
+                ],
+              },
+            },
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in featured Album cache regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new CatalogStore();
+    const tracks = await catalog.getAlbumTracks(
+      'T-Dey',
+      'TestAlbum',
+      24 * 60 * 60 * 1000
+    );
+    assert.equal(tracks.length, 1);
+    assert.equal(tracks[0].artist, 'Sadegh');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('deep Album relation fails closed instead of returning a polluted partial Album', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM deep_album_tracks dat')) {
+      return {
+        rowCount: 2,
+        rows: [
+          {
+            artist: 'Ali Sorena',
+            title: 'Kavir',
+            album_artist: 'Ali Sorena',
+            source_data: { source: 'melobot' },
+            position: 1,
+          },
+          {
+            artist: 'Mehrdad Asemani',
+            title: 'Maryam',
+            album_artist: 'Ali Sorena',
+            source_data: { source: 'melobot' },
+            position: 2,
+          },
+        ],
+      };
+    }
+    throw new Error('Unexpected SQL in deep Album regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const tracks = await catalog.getAlbumTracksByKey('ali sorena|testalbum');
+    assert.deepEqual(tracks, []);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('deep media cache ignores inferred Artist keys for both reads and writes', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    calls.push({ sql: String(sql), params });
+    if (String(sql).includes('FROM deep_track_media')) {
+      return { rows: [], rowCount: 0 };
+    }
+    throw new Error('Unexpected SQL in inferred media cache regression: ' + String(sql).slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+      artistInferred: true,
+    };
+    const explicit = {
+      artist: 'Ali Sorena',
+      title: 'Kavir',
+      source: 'melobot',
+    };
+
+    await catalog.setMedia(
+      inferred,
+      'hq',
+      { fileId: 'wrong-file-id', kind: 'audio' },
+      { source: 'melobot' }
+    );
+    assert.equal(calls.length, 0);
+
+    await catalog.getMediaMap([inferred, explicit], 'hq');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].params[1], ['ali sorena|kavir']);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('durable Track identity is impossible while Artist is still inferred', () => {
+  const inferred = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    artistInferred: true,
+    rawText: '🎵 Maryam',
+  };
+  assert.equal(hasDurableTrackIdentity(inferred), false);
+  assert.equal(deepTrackKey(inferred), '');
+
+  const explicit = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    artistInferred: false,
+  };
+  assert.equal(hasDurableTrackIdentity(explicit), true);
+  assert.equal(deepTrackKey(explicit), 'ali sorena|maryam');
+});
+
+test('all DeepCatalog durable writers become no-ops for inferred Artist identity', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('No database write/read should occur for inferred identity');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      artistInferred: true,
+      source: 'melobot',
+      rawText: '🎵 Maryam',
+    };
+
+    assert.equal(await catalog.upsertTrack(inferred), null);
+    await catalog.setCover(inferred, { fileId: 'cover-file' });
+    await catalog.setLyrics(inferred, 'lyrics');
+    await catalog.markNoLyrics(inferred);
+    await catalog.setMetadata(inferred, { popularityCount: 10 });
+    await catalog.setCapabilities(inferred, { hasHq: true });
+    await catalog.setMedia(inferred, 'hq', { fileId: 'audio-file' });
+    assert.deepEqual(await catalog.getTrackDetails(inferred), null);
+    assert.deepEqual(await catalog.getRecentCapabilityFailures(inferred), {});
+    await catalog.clearCapability(inferred, 'hasHq');
+    await catalog.markCapabilityFailure(inferred, 'hasHq', 'test');
+    await catalog.clearCapabilityFailure(inferred, 'hasHq');
+
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('transient inferred rows survive canonicalization without becoming durable DB identity', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Transient canonicalization must not hit DB');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      artistInferred: true,
+      rawText: '🎵 Maryam',
+      source: 'melobot',
+    };
+    const rows = await catalog.canonicalizeKnownTracks([inferred, { ...inferred }]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Maryam');
+    assert.equal(rows[0].artistInferred, true);
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('legacy same-script poisoned alias is ignored at read time', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+    if (text.includes('FROM track_aliases a')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          canonical_track_key: 'mehrdad asemani|maryam',
+          alias_source: 'melobot',
+          alias_evidence: 'telegram_audio_metadata',
+          artist: 'Mehrdad Asemani',
+          title: 'Maryam',
+          source_data: { source: 'melobot' },
+          duration_seconds: 180,
+          popularity_count: null,
+          popularity_text: null,
+        }],
+      };
+    }
+    if (text.includes('FROM track_cache')) {
+      return { rowCount: 0, rows: [] };
+    }
+    throw new Error('Unexpected SQL in poisoned alias read regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const source = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    };
+    const resolved = await catalog.resolveTrackAlias(source);
+    assert.equal(resolved.artist, 'Ali Sorena');
+    assert.equal(resolved.title, 'Maryam');
+    assert.equal(
+      calls.some(call => call.sql.includes('FROM track_cache')),
+      true
+    );
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('trusted Telegram metadata alias can still bridge Persian catalog identity to Latin canonical identity', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_aliases a')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          canonical_track_key: 'reza bahram|yar',
+          alias_source: 'ahangify',
+          alias_evidence: 'telegram_audio_metadata',
+          artist: 'Reza Bahram',
+          title: 'Yar',
+          source_data: { source: 'melobot' },
+          duration_seconds: 214,
+          popularity_count: 1200000,
+          popularity_text: '1.2M',
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in trusted transliteration alias regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const resolved = await catalog.resolveTrackAlias({
+      artist: 'رضا بهرام',
+      title: 'یار',
+      source: 'ahangify',
+    }, { learnFromCache: false });
+    assert.equal(resolved.artist, 'Reza Bahram');
+    assert.equal(resolved.title, 'Yar');
+    assert.equal(resolved.artistInferred, false);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('FileCache refuses inferred identities before touching the database', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('FileCache must not query inferred identity');
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const inferred = {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      artistInferred: true,
+      source: 'melobot',
+    };
+    assert.equal(await cacheStore.get(inferred), null);
+    await cacheStore.set(inferred, { fileId: 'bad-file' });
+    await cacheStore.recordSourceFetch(inferred);
+    await cacheStore.recordServe(inferred);
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache rejects a legacy same-title row whose media performer is another Artist', async () => {
+  const originalQuery = db.query;
+  let calls = 0;
+  db.query = async (sql) => {
+    calls += 1;
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|',
+          track: {
+            artist: 'Ali Sorena',
+            title: 'Maryam',
+            source: 'melobot',
+          },
+          media: {
+            fileId: 'wrong-file-id',
+            performer: 'Mehrdad Asemani',
+            title: 'Maryam',
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in FileCache identity regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+    assert.equal(calls, 1);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache preserves a legitimate Persian-to-Latin metadata row', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'رضا بهرام|یار|',
+          track: {
+            artist: 'رضا بهرام',
+            title: 'یار',
+            source: 'ahangify',
+          },
+          media: {
+            fileId: 'good-file-id',
+            performer: 'Reza Bahram',
+            title: 'Yar',
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in FileCache transliteration regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'رضا بهرام',
+      title: 'یار',
+      source: 'ahangify',
+    });
+    assert.equal(cached.fileId, 'good-file-id');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('setTrackAlias itself refuses same-title cross-Artist poisoning before DB access', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Alias mismatch must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await assert.rejects(
+      () => catalog.setTrackAlias(
+        { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+        { artist: 'Mehrdad Asemani', title: 'Maryam', source: 'melobot' },
+        { source: 'melobot', evidence: 'telegram_audio_metadata' }
+      ),
+      err => err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH'
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('Track title identity never collapses Original, Remix, Live, Acoustic or Unplugged variants', () => {
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song (Remix)'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Live'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Acoustic'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Unplugged'), false);
+  assert.equal(trackTitleIdentityCompatible('Song Remix', 'Song Remix (feat. Artist B)'), true);
+  assert.equal(trackTitleIdentityCompatible('Song (feat. Artist B)', 'Song'), true);
+});
+
+test('cross-script media keeps equivalent remix intent but rejects Original to Remix', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'رضا بهرام', title: 'یار ریمیکس' },
+      { performer: 'Reza Bahram', title: 'Yar Remix' }
+    ),
+    true
+  );
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'رضا بهرام', title: 'یار' },
+      { performer: 'Reza Bahram', title: 'Yar Remix' }
+    ),
+    false
+  );
+});
+
+test('bulk matcher refuses same-Artist audio when only the wrong Track variant is available', () => {
+  const matches = matchBulkAudioToTracks(
+    [{ artist: 'Ali Sorena', title: 'Maryam' }],
+    [{ performer: 'Ali Sorena', title: 'Maryam Remix' }]
+  );
+  assert.deepEqual(matches, []);
+});
+
+test('FileCache refuses a same-Artist wrong-variant legacy file_id', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|',
+          track: {
+            artist: 'Ali Sorena',
+            title: 'Maryam',
+            source: 'melobot',
+          },
+          media: {
+            fileId: 'wrong-remix-file',
+            performer: 'Ali Sorena',
+            title: 'Maryam Remix',
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in FileCache variant regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('setTrackAlias refuses same-Artist Original to Remix alias poisoning', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Variant mismatch must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await assert.rejects(
+      () => catalog.setTrackAlias(
+        { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+        { artist: 'Ali Sorena', title: 'Maryam Remix', source: 'melobot' },
+        { source: 'melobot', evidence: 'telegram_audio_metadata' }
+      ),
+      err => err?.code === 'TRACK_ALIAS_IDENTITY_MISMATCH'
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('inferred Track cannot be promoted from audio that has no performer metadata', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'Ali Sorena', title: 'Maryam', artistInferred: true },
+      { title: 'Maryam', fileId: 'ambiguous-file' }
+    ),
+    false
+  );
+});
+
+test('DeepCatalog setMedia rejects explicit same-title audio from another Artist before DB access', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Conflicting media must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setMedia(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      'hq',
+      {
+        fileId: 'wrong-file',
+        performer: 'Mehrdad Asemani',
+        title: 'Maryam',
+      },
+      { source: 'melobot' }
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache set rejects explicit same-title audio from another Artist before DB access', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Conflicting FileCache write must fail before DB access');
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    await cacheStore.set(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      {
+        fileId: 'wrong-file',
+        performer: 'Mehrdad Asemani',
+        title: 'Maryam',
+      }
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
 });

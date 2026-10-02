@@ -1,6 +1,10 @@
 import { db } from './db.js';
 import { applyPolicyDefaults } from './policy.js';
-import { normalizeText, stableSourceTrackVariant } from './text.js';
+import {
+  normalizeText,
+  stableSourceTrackVariant,
+  trackMediaIdentityMatches,
+} from './text.js';
 
 function normalize(value = '') {
   return normalizeText(value);
@@ -21,10 +25,19 @@ export function trackCacheKey(track = {}) {
   return `${artist}|${title}|${stableVariant(track)}`;
 }
 
+function hasCacheableTrackIdentity(track = {}) {
+  return Boolean(
+    !track?.artistInferred
+    && normalize(track?.artist || '')
+    && normalize(track?.title || '')
+  );
+}
+
 export class FileCache {
   async load() {}
 
   async get(track) {
+    if (!hasCacheableTrackIdentity(track)) return null;
     const key = trackCacheKey(track);
     let result = await db.query(
       'SELECT track_key, track, media FROM track_cache WHERE track_key = $1',
@@ -49,15 +62,36 @@ export class FileCache {
     }
 
     if (!result.rowCount) return null;
+    const row = result.rows[0];
+    const identityProbe = {
+      performer: row.media?.performer || row.track?.artist || '',
+      title: row.media?.title || row.track?.title || '',
+    };
+    if (!trackMediaIdentityMatches(track, identityProbe)) {
+      console.warn(
+        '[file cache identity mismatch]',
+        track?.artist,
+        track?.title,
+        '!=',
+        identityProbe.performer,
+        identityProbe.title
+      );
+      return null;
+    }
     return {
-      ...result.rows[0].media,
-      ...result.rows[0].track,
-      _cacheKey: result.rows[0].track_key,
+      ...row.media,
+      ...row.track,
+      _cacheKey: row.track_key,
     };
   }
 
   async set(track, media, { sourceFetch = true } = {}) {
     const policy = applyPolicyDefaults(track);
+    if (!hasCacheableTrackIdentity(policy)) return;
+    if (!trackMediaIdentityMatches(policy, media || {})) {
+      console.warn('[file cache write rejected]', policy.artist, policy.title);
+      return;
+    }
     const key = trackCacheKey(policy);
     if (!key || key === '||') return;
     const compact = {
@@ -85,6 +119,7 @@ export class FileCache {
   }
 
   async recordSourceFetch(track) {
+    if (!hasCacheableTrackIdentity(track)) return;
     await db.query(
       'UPDATE track_cache SET source_fetch_count = source_fetch_count + 1, updated_at = NOW() WHERE track_key = $1',
       [trackCacheKey(track)]
@@ -92,6 +127,7 @@ export class FileCache {
   }
 
   async recordServe(track, { cacheHit = false, cacheKey = null } = {}) {
+    if (!hasCacheableTrackIdentity(track)) return;
     const key = cacheKey || trackCacheKey(track);
     await db.query(`
       UPDATE track_cache SET
