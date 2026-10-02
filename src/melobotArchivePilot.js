@@ -78,7 +78,41 @@ export async function seedMeloBotArchivePilot(sourceQueue) {
       CASE WHEN a.expected_duration_seconds IS NOT NULL THEN 0 ELSE 1 END,
       a.source_url
     LIMIT $1
-    ON CONFLICT (source_url) DO NOTHING
+    ON CONFLICT (source_url) DO UPDATE SET
+      pilot_version = EXCLUDED.pilot_version,
+      artist = EXCLUDED.artist,
+      title = EXCLUDED.title,
+      expected_duration_seconds = EXCLUDED.expected_duration_seconds,
+      query = EXCLUDED.query,
+      status = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN 'pending'
+        ELSE melobot_archive_pilot.status
+      END,
+      attempts = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN 0
+        ELSE melobot_archive_pilot.attempts
+      END,
+      candidate = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
+        ELSE melobot_archive_pilot.candidate
+      END,
+      file_id = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
+        ELSE melobot_archive_pilot.file_id
+      END,
+      file_unique_id = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
+        ELSE melobot_archive_pilot.file_unique_id
+      END,
+      last_error = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
+        ELSE melobot_archive_pilot.last_error
+      END,
+      completed_at = CASE
+        WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
+        ELSE melobot_archive_pilot.completed_at
+      END,
+      updated_at = NOW()
   `, [config.melobotArchivePilotCount]);
 
   const { rows } = await db.query(`
