@@ -111,4 +111,8 @@ export class BotApi {
   getWebhookInfo() {
     return this.call('getWebhookInfo');
   }
+
+  getChat(chatId) {
+    return this.call('getChat', { chat_id: chatId });
+  }
 }
