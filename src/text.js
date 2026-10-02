@@ -260,6 +260,14 @@ function trackTitleVariantKinds(value = '') {
   return out;
 }
 
+function trackTitleCoreIdentity(value = '') {
+  return trackTitleIdentity(value)
+    .split(' ')
+    .filter(Boolean)
+    .filter(token => !TRACK_VARIANT_WORDS.has(token))
+    .join(' ');
+}
+
 export function trackTitleIdentityCompatible(requested = '', actual = '') {
   const left = trackTitleIdentity(requested);
   const right = trackTitleIdentity(actual);
@@ -272,8 +280,11 @@ export function trackTitleIdentityCompatible(requested = '', actual = '') {
     if (!rightKinds.has(kind)) return false;
   }
 
-  if (left === right) return true;
-  return crossScriptIdentityCompatible(left, right);
+  const leftCore = trackTitleCoreIdentity(requested);
+  const rightCore = trackTitleCoreIdentity(actual);
+  if (!leftCore || !rightCore) return left === right;
+  if (leftCore === rightCore) return true;
+  return crossScriptIdentityCompatible(leftCore, rightCore);
 }
 
 export function hasMediaIdentityEvidence(media = {}) {
