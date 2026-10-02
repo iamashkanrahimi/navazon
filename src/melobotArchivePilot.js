@@ -4,7 +4,7 @@ import { searchMeloBot, resolveMeloBotTrackCandidate, downloadMeloBotTrackQualit
 import { forwardHiddenToOurBot } from './mtproto.js';
 import { normalizeText, artistCreditCompatible, trackTitleIdentityCompatible } from './text.js';
 
-const PILOT_VERSION = 'melobot-gap-v1-50';
+const PILOT_VERSION = 'melobot-gap-v2-50';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 
 async function ensureSchema() {
@@ -107,7 +107,28 @@ export async function runMeloBotArchivePilotJob(job) {
   const row = claimed.rows[0];
 
   try {
-    const results = await searchMeloBot(tg, row.query, { timeoutMs: 7000, maxRefinements: 3 });
+    const queries = [
+      row.query,
+      [row.title, row.artist].filter(Boolean).join(' '),
+      row.title,
+    ].filter((value, index, all) => value && all.indexOf(value) === index);
+
+    let results = [];
+    let searchError = null;
+    for (const query of queries) {
+      try {
+        results = await searchMeloBot(tg, query, {
+          timeoutMs: 12000,
+          maxRefinements: 5,
+          preferredArtist: row.artist,
+          allowDeepSearch: true,
+        });
+        if (results.some(candidate => candidateMatches(candidate, row))) break;
+      } catch (err) {
+        searchError = err;
+      }
+    }
+    if (!results.length && searchError) throw searchError;
     const matches = results.filter(candidate => candidateMatches(candidate, row));
     if (!matches.length) {
       await db.query(`
@@ -123,14 +144,14 @@ export async function runMeloBotArchivePilotJob(job) {
     for (const candidate of matches.slice(0, 3)) {
       try {
         const resolved = await resolveMeloBotTrackCandidate(tg, candidate, {
-          timeoutMs: 6500,
+          timeoutMs: 9000,
           forceIdentity: true,
         });
         if (!candidateMatches(resolved, row)) continue;
         const result = await downloadMeloBotTrackQuality(tg, resolved, 'hq', {
-          timeoutMs: 15000,
-          menuTimeoutMs: 5000,
-          deliveryTimeoutMs: 8000,
+          timeoutMs: 20000,
+          menuTimeoutMs: 8000,
+          deliveryTimeoutMs: 12000,
         });
         const media = await capture(result.audioMessage, row);
         await db.query(`
