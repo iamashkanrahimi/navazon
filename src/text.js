@@ -38,6 +38,13 @@ export function normalizeText(value = '') {
     .trim();
 }
 
+export function identityNormalizeText(value = '') {
+  return normalizeText(value)
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .trim();
+}
+
 export function stableSourceTrackVariant(value = '') {
   const cleaned = cleanText(value)
     .replace(/^#?\s*[۰-۹٠-٩0-9]+\s+[🎵🎶🎧]\s*/u, '')
@@ -68,13 +75,13 @@ export function artistCreditParts(value = '') {
 }
 
 export function artistCreditMatchesContext(credit = '', artist = '') {
-  const target = normalizeText(artist);
-  const actual = normalizeText(credit);
+  const target = identityNormalizeText(artist);
+  const actual = identityNormalizeText(credit);
   if (!target || !actual) return false;
   if (target === actual) return true;
 
-  const wantedParts = artistCreditParts(artist);
-  const actualParts = artistCreditParts(credit);
+  const wantedParts = artistCreditParts(artist).map(identityNormalizeText);
+  const actualParts = artistCreditParts(credit).map(identityNormalizeText);
   if (!wantedParts.length || !actualParts.length) return false;
 
   if (wantedParts.length === 1) {
@@ -84,13 +91,13 @@ export function artistCreditMatchesContext(credit = '', artist = '') {
 }
 
 export function artistCreditCompatible(requested = '', actual = '') {
-  const requestedText = normalizeText(requested);
-  const actualText = normalizeText(actual);
+  const requestedText = identityNormalizeText(requested);
+  const actualText = identityNormalizeText(actual);
   if (!requestedText || !actualText) return false;
   if (requestedText === actualText) return true;
 
-  const requestedParts = artistCreditParts(requested);
-  const actualParts = artistCreditParts(actual);
+  const requestedParts = artistCreditParts(requested).map(identityNormalizeText);
+  const actualParts = artistCreditParts(actual).map(identityNormalizeText);
   if (!requestedParts.length || !actualParts.length) return false;
 
   const partMatches = (left, right) => {
@@ -167,12 +174,88 @@ const TRACK_VARIANT_ALIASES = new Map([
 ]);
 const TRACK_VARIANT_WORDS = new Set(TRACK_VARIANT_ALIASES.keys());
 
+const PERSIAN_CONSONANT_MAP = new Map([
+  ['ب','b'],['پ','p'],['ت','t'],['ث','s'],['ج','j'],['چ','ch'],
+  ['ح','h'],['خ','kh'],['د','d'],['ذ','z'],['ر','r'],['ز','z'],['ژ','zh'],
+  ['س','s'],['ش','sh'],['ص','s'],['ض','z'],['ط','t'],['ظ','z'],['غ','gh'],
+  ['ف','f'],['ق','gh'],['ک','k'],['ك','k'],['گ','g'],['ل','l'],['م','m'],
+  ['ن','n'],['ه','h'],['ة','h'],['و','v'],['ی','y'],['ي','y'],['ى','y'],
+]);
+const PERSIAN_VOWELISH = new Set(['ا','آ','أ','إ','ع','ء','ؤ','ئ']);
+
+function identityScriptFamily(value = '') {
+  const text = String(value || '');
+  if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
+  if (/[a-z]/iu.test(text)) return 'latin';
+  return '';
+}
+
+function consonantTokenSkeleton(token = '') {
+  const source = cleanText(token).toLowerCase();
+  if (!source) return '';
+
+  if (identityScriptFamily(source) === 'arabic') {
+    const chars = [...source];
+    let out = '';
+    for (let index = 0; index < chars.length; index += 1) {
+      const ch = chars[index];
+      if (PERSIAN_VOWELISH.has(ch)) continue;
+      if ((ch === 'ی' || ch === 'ي' || ch === 'ى') && index === chars.length - 1) continue;
+      if (ch === 'و' && index > 0) continue;
+      out += PERSIAN_CONSONANT_MAP.get(ch) || '';
+    }
+    return out;
+  }
+
+  return normalizeText(source)
+    .replace(/[^a-z0-9]+/giu, '')
+    .replace(/[aeiou]+/giu, '');
+}
+
+function smallEditDistance(left = '', right = '') {
+  if (left === right) return 0;
+  const a = [...left];
+  const b = [...right];
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j += 1) rows[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      rows[i][j] = Math.min(
+        rows[i - 1][j] + 1,
+        rows[i][j - 1] + 1,
+        rows[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+export function crossScriptIdentityCompatible(left = '', right = '') {
+  const leftFamily = identityScriptFamily(left);
+  const rightFamily = identityScriptFamily(right);
+  if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
+  const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
+  if (!leftTokens.length || leftTokens.length !== rightTokens.length) return false;
+
+  return leftTokens.every((token, index) => {
+    const a = consonantTokenSkeleton(token);
+    const b = consonantTokenSkeleton(rightTokens[index]);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const maxLen = Math.max(a.length, b.length);
+    const allowed = maxLen >= 4 ? 1 : 0;
+    return smallEditDistance(a, b) <= allowed;
+  });
+}
+
 export function trackTitleIdentity(value = '') {
   const stripped = cleanText(value)
     .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
     .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
     .trim();
-  return normalizeText(stripped);
+  return identityNormalizeText(stripped);
 }
 
 function trackTitleVariantKinds(value = '') {
@@ -182,6 +265,14 @@ function trackTitleVariantKinds(value = '') {
     if (kind) out.add(kind);
   }
   return out;
+}
+
+function trackTitleCoreIdentity(value = '') {
+  return trackTitleIdentity(value)
+    .split(' ')
+    .filter(Boolean)
+    .filter(token => !TRACK_VARIANT_WORDS.has(token))
+    .join(' ');
 }
 
 export function trackTitleIdentityCompatible(requested = '', actual = '') {
@@ -196,7 +287,18 @@ export function trackTitleIdentityCompatible(requested = '', actual = '') {
     if (!rightKinds.has(kind)) return false;
   }
 
-  return left === right || left.includes(right) || right.includes(left);
+  const leftCore = trackTitleCoreIdentity(requested);
+  const rightCore = trackTitleCoreIdentity(actual);
+  if (!leftCore || !rightCore) return left === right;
+  if (leftCore === rightCore) return true;
+  return crossScriptIdentityCompatible(leftCore, rightCore);
+}
+
+export function hasMediaIdentityEvidence(media = {}) {
+  return Boolean(
+    cleanText(media?.performer || '')
+    && cleanText(media?.title || '')
+  );
 }
 
 export function trackMediaIdentityMatches(track = {}, media = {}) {
@@ -211,32 +313,12 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
   // Without performer metadata there is no evidence that can promote them.
   if (track?.artistInferred && !performer) return false;
 
-  const scriptFamily = value => {
-    const text = String(value || '');
-    if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
-    if (/[a-z]/iu.test(text)) return 'latin';
-    return '';
-  };
-  const crossScript = (left, right) => {
-    const a = scriptFamily(left);
-    const b = scriptFamily(right);
-    return Boolean(a && b && a !== b);
-  };
-
-  if (expectedTitle && mediaTitle) {
-    if (
-      !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
-      && !crossScript(expectedTitleRaw, mediaTitleRaw)
-    ) {
-      return false;
-    }
-
-    const expectedVariants = trackTitleVariantKinds(expectedTitleRaw);
-    const actualVariants = trackTitleVariantKinds(mediaTitleRaw);
-    if (expectedVariants.size !== actualVariants.size) return false;
-    for (const kind of expectedVariants) {
-      if (!actualVariants.has(kind)) return false;
-    }
+  if (
+    expectedTitle
+    && mediaTitle
+    && !trackTitleIdentityCompatible(expectedTitleRaw, mediaTitleRaw)
+  ) {
+    return false;
   }
 
   if (!expectedArtist || !performer) return true;
@@ -247,10 +329,7 @@ export function trackMediaIdentityMatches(track = {}, media = {}) {
     return true;
   }
 
-  // Persian/Arabic-script catalog rows often carry Latin Telegram metadata.
-  // Without a transliteration oracle, treat cross-script metadata as unknown
-  // rather than falsely rejecting a valid file; same-script mismatches fail.
-  return crossScript(expectedArtist, performer);
+  return crossScriptIdentityCompatible(expectedArtist, performer);
 }
 
 export function hasAlbumIntent(query = '') {

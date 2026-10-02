@@ -6,12 +6,26 @@ import {
   trackBelongsToArtistContext,
   trackMediaIdentityMatches,
   trackTitleIdentityCompatible,
+  hasMediaIdentityEvidence,
   cleanText,
   normalizeText,
 } from './text.js';
 
 function clean(value = '') {
   return cleanText(value);
+}
+
+export const MEDIA_IDENTITY_SOURCE_PREFIX = 'identity-v2:';
+
+function trustedMediaSource(source = '') {
+  return MEDIA_IDENTITY_SOURCE_PREFIX + clean(source || 'melobot');
+}
+
+function publicMediaSource(source = '') {
+  const value = clean(source);
+  return value.startsWith(MEDIA_IDENTITY_SOURCE_PREFIX)
+    ? value.slice(MEDIA_IDENTITY_SOURCE_PREFIX.length)
+    : value;
 }
 
 export function deepNormalize(value = '') {
@@ -599,7 +613,10 @@ export class DeepCatalog {
     // Resolve/canonicalize first; otherwise common titles can poison file_id
     // cache entries for a different performer.
     if (track?.artistInferred) return;
-    if (!trackMediaIdentityMatches(track, media || {})) {
+    if (
+      !hasMediaIdentityEvidence(media)
+      || !trackMediaIdentityMatches(track, media || {})
+    ) {
       console.warn('[deep media write rejected]', track?.artist, track?.title);
       return;
     }
@@ -629,7 +646,7 @@ export class DeepCatalog {
       Number(extra.bitrate || 0) || null,
       Number(extra.fileSize || media.fileSize || 0) || null,
       Number(media.duration || extra.duration || 0) || null,
-      extra.source || track.source || 'melobot',
+      trustedMediaSource(extra.source || track.source || 'melobot'),
     ]);
     await this.completeTaskByKey(`track_${quality}:${trackKey}`, {
       satisfiedBy: extra.satisfiedBy || 'media_cache',
@@ -652,8 +669,9 @@ export class DeepCatalog {
       FROM deep_track_media
       WHERE quality = $1
         AND verified_quality = TRUE
+        AND source LIKE $3
         AND track_key = ANY($2::text[])
-    `, [quality, keys]);
+    `, [quality, keys, MEDIA_IDENTITY_SOURCE_PREFIX + '%']);
 
     for (const item of result.rows) {
       out.set(item.track_key, {
@@ -663,7 +681,7 @@ export class DeepCatalog {
         bitrate: item.bitrate,
         fileSize: item.file_size ? Number(item.file_size) : undefined,
         duration: item.duration_seconds || undefined,
-        source: item.source || undefined,
+        source: publicMediaSource(item.source) || undefined,
         quality: item.quality,
       });
     }
@@ -808,7 +826,8 @@ export class DeepCatalog {
         FROM deep_track_media
         WHERE track_key = $1
           AND verified_quality = TRUE
-      `, [trackKey]),
+          AND source LIKE $2
+      `, [trackKey, MEDIA_IDENTITY_SOURCE_PREFIX + '%']),
       db.query(`
         SELECT a.album_key, a.artist, a.title, a.track_count
         FROM deep_album_tracks dat
@@ -830,7 +849,7 @@ export class DeepCatalog {
         bitrate: item.bitrate,
         fileSize: item.file_size ? Number(item.file_size) : undefined,
         duration: item.duration_seconds || undefined,
-        source: item.source || undefined,
+        source: publicMediaSource(item.source) || undefined,
       };
     }
 
@@ -1058,8 +1077,9 @@ export class DeepCatalog {
       FROM deep_track_media
       WHERE quality = $1
         AND verified_quality = TRUE
+        AND source LIKE $3
         AND track_key = ANY($2::text[])
-    `, [quality, keys]);
+    `, [quality, keys, MEDIA_IDENTITY_SOURCE_PREFIX + '%']);
     const present = new Set(result.rows.map(row => row.track_key));
     return keyed.filter(item => !present.has(item.key)).map(item => item.track);
   }

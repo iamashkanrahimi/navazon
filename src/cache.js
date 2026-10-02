@@ -4,6 +4,7 @@ import {
   normalizeText,
   stableSourceTrackVariant,
   trackMediaIdentityMatches,
+  hasMediaIdentityEvidence,
 } from './text.js';
 
 function normalize(value = '') {
@@ -63,9 +64,13 @@ export class FileCache {
 
     if (!result.rowCount) return null;
     const row = result.rows[0];
+    if (!hasMediaIdentityEvidence(row.media || {})) {
+      console.warn('[file cache stale identity]', track?.artist, track?.title);
+      return null;
+    }
     const identityProbe = {
-      performer: row.media?.performer || row.track?.artist || '',
-      title: row.media?.title || row.track?.title || '',
+      performer: row.media.performer,
+      title: row.media.title,
     };
     if (!trackMediaIdentityMatches(track, identityProbe)) {
       console.warn(
@@ -88,7 +93,10 @@ export class FileCache {
   async set(track, media, { sourceFetch = true } = {}) {
     const policy = applyPolicyDefaults(track);
     if (!hasCacheableTrackIdentity(policy)) return;
-    if (!trackMediaIdentityMatches(policy, media || {})) {
+    if (
+      !hasMediaIdentityEvidence(media)
+      || !trackMediaIdentityMatches(policy, media || {})
+    ) {
       console.warn('[file cache write rejected]', policy.artist, policy.title);
       return;
     }
