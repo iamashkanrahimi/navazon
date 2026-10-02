@@ -70,6 +70,43 @@ async function captureOnce(audioMessage, row, timeoutMs = 15000) {
   return wait;
 }
 
+function archiveQueryVariants(row) {
+  const artist = clean(row.artist);
+  const title = clean(row.title);
+  const out = [];
+  const add = value => {
+    const query = clean(value);
+    if (query && !out.includes(query)) out.push(query);
+  };
+
+  add(row.query);
+  add([title, artist].filter(Boolean).join(' '));
+
+  // Search-only simplification: MeloBot frequently indexes the base title but
+  // omits featured credits from its search text. Final candidate/media
+  // acceptance still validates against the original row identity.
+  const baseTitle = clean(
+    title
+      .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
+      .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/iu, '')
+  );
+  if (baseTitle && baseTitle !== title) {
+    add([artist, baseTitle].filter(Boolean).join(' '));
+    add([baseTitle, artist].filter(Boolean).join(' '));
+    add(baseTitle);
+  }
+
+  // Some source rows use "Vs." as a collaboration credit while MeloBot may
+  // index it as "vs" or simply with the punctuation removed.
+  if (/\bvs\.?\b/iu.test(artist)) {
+    const plainVsArtist = clean(artist.replace(/\bvs\.?\b/giu, 'vs'));
+    add([plainVsArtist, baseTitle || title].filter(Boolean).join(' '));
+  }
+
+  add(title);
+  return out;
+}
+
 async function capture(audioMessage, row) {
   try {
     return await captureOnce(audioMessage, row, 15000);
@@ -169,11 +206,7 @@ export async function runMeloBotArchivePilotJob(job) {
   const row = claimed.rows[0];
 
   try {
-    const queries = [
-      row.query,
-      [row.title, row.artist].filter(Boolean).join(' '),
-      row.title,
-    ].filter((value, index, all) => value && all.indexOf(value) === index);
+    const queries = archiveQueryVariants(row);
 
     let results = [];
     let searchError = null;
