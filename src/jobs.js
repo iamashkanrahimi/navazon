@@ -1509,6 +1509,12 @@ export const sourceQueue = new SerialQueue(async job => {
       try {
         const result = await runMeloBotArchivePilotJob(job);
         console.log('[melobot archive pilot job]', JSON.stringify(result));
+        if (result?.status === 'retry') {
+          // Put difficult rows at the back of the same priority lane. Easy
+          // recoveries across the full archive finish first; the second claim
+          // automatically runs the exhaustive query strategy.
+          sourceQueue.push({ type: 'melobot_archive_pilot', sourceUrl: job.sourceUrl });
+        }
       } catch (err) {
         console.warn('[melobot archive pilot job]', err.message);
       }
