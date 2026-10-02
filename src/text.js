@@ -75,19 +75,7 @@ export function artistCreditParts(value = '') {
 }
 
 export function artistCreditMatchesContext(credit = '', artist = '') {
-  const target = identityNormalizeText(artist);
-  const actual = identityNormalizeText(credit);
-  if (!target || !actual) return false;
-  if (target === actual) return true;
-
-  const wantedParts = artistCreditParts(artist).map(identityNormalizeText);
-  const actualParts = artistCreditParts(credit).map(identityNormalizeText);
-  if (!wantedParts.length || !actualParts.length) return false;
-
-  if (wantedParts.length === 1) {
-    return actualParts.includes(wantedParts[0]);
-  }
-  return wantedParts.every(part => actualParts.includes(part));
+  return artistCreditCompatible(artist, credit);
 }
 
 export function artistCreditCompatible(requested = '', actual = '') {
@@ -100,21 +88,20 @@ export function artistCreditCompatible(requested = '', actual = '') {
   const actualParts = artistCreditParts(actual).map(identityNormalizeText);
   if (!requestedParts.length || !actualParts.length) return false;
 
-  const partMatches = (left, right) => {
-    if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
-  };
+  const partMatches = (left, right) =>
+    left === right || crossScriptIdentityCompatible(left, right);
 
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
-    );
+  if (requestedParts.length === 1) {
+    return actualParts.some(right => partMatches(requestedParts[0], right));
   }
 
-  return actualParts.some(right => partMatches(requestedParts[0], right));
+  const remaining = [...actualParts];
+  for (const left of requestedParts) {
+    const index = remaining.findIndex(right => partMatches(left, right));
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+  }
+  return true;
 }
 
 export function titleCreditsArtist(title = '', artist = '') {
@@ -250,6 +237,26 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
   });
 }
 
+export function crossScriptTitleIdentityCompatible(left = '', right = '') {
+  const leftFamily = identityScriptFamily(left);
+  const rightFamily = identityScriptFamily(right);
+  if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
+  const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
+  if (!leftTokens.length || leftTokens.length !== rightTokens.length) return false;
+
+  const leftSkeleton = leftTokens.map(consonantTokenSkeleton).join('');
+  const rightSkeleton = rightTokens.map(consonantTokenSkeleton).join('');
+  if (!leftSkeleton || !rightSkeleton) return false;
+  if (leftSkeleton === rightSkeleton) return true;
+
+  const maxLen = Math.max(leftSkeleton.length, rightSkeleton.length);
+  if (maxLen < 4) return false;
+  const allowed = Math.min(2, Math.max(1, Math.floor(maxLen * 0.25)));
+  return smallEditDistance(leftSkeleton, rightSkeleton) <= allowed;
+}
+
 export function trackTitleIdentity(value = '') {
   const stripped = cleanText(value)
     .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
@@ -291,7 +298,7 @@ export function trackTitleIdentityCompatible(requested = '', actual = '') {
   const rightCore = trackTitleCoreIdentity(actual);
   if (!leftCore || !rightCore) return left === right;
   if (leftCore === rightCore) return true;
-  return crossScriptIdentityCompatible(leftCore, rightCore);
+  return crossScriptTitleIdentityCompatible(leftCore, rightCore);
 }
 
 export function hasMediaIdentityEvidence(media = {}) {

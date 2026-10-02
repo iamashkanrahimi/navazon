@@ -5839,3 +5839,140 @@ test('title identity does not collapse real prefix-like query names', () => {
   assert.equal(trackTitleIdentityCompatible('Love Theme from Kiss', 'Love'), false);
   assert.equal(trackTitleIdentityCompatible('Deli', 'Delam'), false);
 });
+
+
+test('Artist identity never uses multi-word substring containment', () => {
+  assert.equal(artistCreditCompatible('Ali Sorena', 'Ali Sorena X'), false);
+  assert.equal(artistCreditCompatible('Ali Sorena X', 'Ali Sorena'), false);
+  assert.equal(artistCreditCompatible('Shahin Pourahmad', 'Shahin Pourahmad Band'), false);
+  assert.equal(artistCreditCompatible('Farhad', 'Farhad Ravanbakhsh'), false);
+});
+
+test('Artist identity preserves exact collaboration members and reordered credits', () => {
+  assert.equal(artistCreditCompatible('Shayea & Sadegh', 'Sadegh & Shayea'), true);
+  assert.equal(artistCreditCompatible('Ali Sorena & Bahram', 'Bahram & Ali Sorena'), true);
+  assert.equal(artistCreditCompatible('Shayea', 'Shayea & Sadegh'), true);
+  assert.equal(artistCreditCompatible('Shayea & Sadegh', 'Shayea'), false);
+});
+
+test('Artist identity preserves conservative Persian-Latin transliterations', () => {
+  assert.equal(artistCreditCompatible('رضا بهرام', 'Reza Bahram'), true);
+  assert.equal(artistCreditCompatible('علی سورنا', 'Ali Sorena'), true);
+  assert.equal(artistCreditCompatible('علی سورنا', 'Ali Sorena X'), false);
+});
+
+test('same-title media cannot pass by extending a multi-word Artist name', () => {
+  assert.equal(
+    trackMediaIdentityMatches(
+      { artist: 'Ali Sorena', title: 'Maryam' },
+      { performer: 'Ali Sorena X', title: 'Maryam' }
+    ),
+    false
+  );
+});
+
+
+test('explicit MeloBot resolver rejects same-title Artist-name prefix collisions', async () => {
+  const wrong = fakeBotMessage(
+    'نتیجه جستجو',
+    ['🎵 Ali Sorena X, Maryam x 10k']
+  );
+  const client = new FakeTelegramClient({
+    'Ali Sorena Maryam': [[wrong]],
+    Maryam: [[wrong]],
+  });
+
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      {
+        source: 'melobot',
+        artist: 'Ali Sorena',
+        title: 'Maryam',
+      },
+      { timeoutMs: 1200, forceIdentity: true }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+  assert.equal(client.sent[0], 'Ali Sorena Maryam');
+});
+
+test('MeloBot resolver still accepts reordered exact collaboration credits after strict Artist matching', async () => {
+  const row = '🎵 Sadegh & Shayea, Deli x 1M';
+  const client = new FakeTelegramClient({
+    Deli: [[fakeBotMessage('نتیجه جستجو', [row])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    {
+      source: 'melobot',
+      artist: 'Shayea & Sadegh',
+      title: 'Deli',
+    },
+    { timeoutMs: 1000, forceIdentity: true }
+  );
+
+  assert.equal(resolved.artist, 'Sadegh & Shayea');
+  assert.equal(resolved.title, 'Deli');
+});
+
+
+test('multi-word Persian Track titles tolerate ordinary Latin transliteration differences', () => {
+  assert.equal(trackTitleIdentityCompatible('یه روز خوب میاد', 'Ye Rooze Khoob Miad'), true);
+  assert.equal(trackTitleIdentityCompatible('گل عشق', 'Gole Eshgh'), true);
+  assert.equal(trackTitleIdentityCompatible('دوست دارم', 'Dooset Daram'), true);
+  assert.equal(trackTitleIdentityCompatible('ماه پیشونی', 'Maah Pishooni'), true);
+});
+
+test('phrase-level transliteration tolerance still rejects a different title with equal token count', () => {
+  assert.equal(trackTitleIdentityCompatible('یه روز خوب میاد', 'Ye Rooze Bad Miad'), false);
+  assert.equal(trackTitleIdentityCompatible('مرگ', 'Maryam'), false);
+  assert.equal(trackTitleIdentityCompatible('گل عشق', 'Gole Yakh'), false);
+});
+
+
+test('DeepCatalog stats separate trusted identity-v2 media from legacy untrusted file_ids', async () => {
+  const originalQuery = db.query;
+  const sqlCalls = [];
+  db.query = async (sql) => {
+    const text = String(sql);
+    sqlCalls.push(text);
+    if (text.includes('FROM deep_tracks')) {
+      return { rows: [{ tracks: '1', lyrics: '0', covers: '0', release_dates: '0' }] };
+    }
+    if (text.includes('FROM deep_track_media')) {
+      return {
+        rows: [{
+          media: '2',
+          hq: '2',
+          normal: '0',
+          unverified: '1',
+          legacy_untrusted: '7',
+        }],
+      };
+    }
+    if (text.includes('FROM crawl_tasks')) {
+      return { rows: [{ queued: '0', running: '0', done: '0', failed: '0' }] };
+    }
+    if (text.includes('FROM deep_albums')) {
+      return { rows: [{ albums: '0' }] };
+    }
+    if (text.includes('FROM deep_artist_tracks')) {
+      return { rows: [{ recent_rows: '0', top_rows: '0', legacy_rows: '0' }] };
+    }
+    throw new Error('Unexpected SQL in stats trust regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const stats = await catalog.stats();
+    assert.equal(stats.media.media, 2);
+    assert.equal(stats.media.legacy_untrusted, 7);
+    const mediaSql = sqlCalls.find(sql => sql.includes('FROM deep_track_media')) || '';
+    assert.match(mediaSql, /source LIKE 'identity-v2:%'/);
+    assert.match(mediaSql, /legacy_untrusted/);
+  } finally {
+    db.query = originalQuery;
+  }
+});

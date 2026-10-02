@@ -1349,10 +1349,25 @@ export class DeepCatalog {
       `),
       db.query(`
         SELECT
-          COUNT(*) FILTER (WHERE verified_quality = TRUE)::bigint AS media,
-          COUNT(*) FILTER (WHERE quality = 'hq' AND verified_quality = TRUE)::bigint AS hq,
-          COUNT(*) FILTER (WHERE quality = 'normal' AND verified_quality = TRUE)::bigint AS normal,
-          COUNT(*) FILTER (WHERE verified_quality = FALSE)::bigint AS unverified
+          COUNT(*) FILTER (
+            WHERE verified_quality = TRUE
+              AND source LIKE 'identity-v2:%'
+          )::bigint AS media,
+          COUNT(*) FILTER (
+            WHERE quality = 'hq'
+              AND verified_quality = TRUE
+              AND source LIKE 'identity-v2:%'
+          )::bigint AS hq,
+          COUNT(*) FILTER (
+            WHERE quality = 'normal'
+              AND verified_quality = TRUE
+              AND source LIKE 'identity-v2:%'
+          )::bigint AS normal,
+          COUNT(*) FILTER (WHERE verified_quality = FALSE)::bigint AS unverified,
+          COUNT(*) FILTER (
+            WHERE verified_quality = TRUE
+              AND (source IS NULL OR source NOT LIKE 'identity-v2:%')
+          )::bigint AS legacy_untrusted
         FROM deep_track_media
       `),
       db.query(`
