@@ -237,6 +237,26 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
   });
 }
 
+export function crossScriptTitleIdentityCompatible(left = '', right = '') {
+  const leftFamily = identityScriptFamily(left);
+  const rightFamily = identityScriptFamily(right);
+  if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
+  const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
+  if (!leftTokens.length || leftTokens.length !== rightTokens.length) return false;
+
+  const leftSkeleton = leftTokens.map(consonantTokenSkeleton).join('');
+  const rightSkeleton = rightTokens.map(consonantTokenSkeleton).join('');
+  if (!leftSkeleton || !rightSkeleton) return false;
+  if (leftSkeleton === rightSkeleton) return true;
+
+  const maxLen = Math.max(leftSkeleton.length, rightSkeleton.length);
+  if (maxLen < 4) return false;
+  const allowed = Math.min(2, Math.max(1, Math.floor(maxLen * 0.25)));
+  return smallEditDistance(leftSkeleton, rightSkeleton) <= allowed;
+}
+
 export function trackTitleIdentity(value = '') {
   const stripped = cleanText(value)
     .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
@@ -278,7 +298,7 @@ export function trackTitleIdentityCompatible(requested = '', actual = '') {
   const rightCore = trackTitleCoreIdentity(actual);
   if (!leftCore || !rightCore) return left === right;
   if (leftCore === rightCore) return true;
-  return crossScriptIdentityCompatible(leftCore, rightCore);
+  return crossScriptTitleIdentityCompatible(leftCore, rightCore);
 }
 
 export function hasMediaIdentityEvidence(media = {}) {
