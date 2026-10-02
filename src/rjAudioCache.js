@@ -19,21 +19,32 @@ let cachedThisProcess = 0;
 let failedThisProcess = 0;
 let lastCachedAt = null;
 let lastError = null;
+let activeLaneSummary = [];
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function createStartLimiter(intervalMs) {
+function createLaneScheduler(lanes = []) {
   let chain = Promise.resolve();
-  let lastStartAt = 0;
 
-  return async function waitForStartSlot() {
+  return async function acquireLane() {
+    let selected = null;
     const scheduled = chain.then(async () => {
-      const waitMs = Math.max(0, lastStartAt + intervalMs - Date.now());
+      selected = lanes.reduce((best, lane) => {
+        if (!best) return lane;
+        return Number(lane.nextStartAt || 0) < Number(best.nextStartAt || 0)
+          ? lane
+          : best;
+      }, null);
+      if (!selected) throw new Error('No Telegram cache lane available');
+
+      const waitMs = Math.max(0, Number(selected.nextStartAt || 0) - Date.now());
       if (waitMs > 0) await sleep(waitMs);
-      lastStartAt = Date.now();
+      selected.nextStartAt = Date.now() + selected.intervalMs;
     });
+
     chain = scheduled.catch(() => {});
     await scheduled;
+    return selected;
   };
 }
 
@@ -271,7 +282,14 @@ async function syncExistingCanonicalRows(db) {
   return synced;
 }
 
-async function markCached(db, row, candidate, message, verification) {
+async function markCached(
+  db,
+  row,
+  candidate,
+  message,
+  verification,
+  { retainMessage = true } = {}
+) {
   const audio = verification.audio;
   await writeCanonicalProduction(row, candidate, audio);
   await db.query(`
@@ -301,7 +319,7 @@ async function markCached(db, row, candidate, message, verification) {
     candidate.host,
     audio.file_id,
     audio.file_unique_id || null,
-    message.message_id || null,
+    retainMessage ? (message.message_id || null) : null,
     Number(audio.file_size || 0) || null,
     Number(audio.duration || 0) || null,
     clean(audio.title) || null,
@@ -342,35 +360,46 @@ async function progress(db) {
   return summary;
 }
 
-async function processRow(db, row, waitForStartSlot) {
+async function processRow(db, row, acquireLane) {
   const errors = [];
   for (const candidate of directCandidates(row.source_slug, row.source_id)) {
     let message = null;
+    let lane = null;
     try {
-      await waitForStartSlot();
-      message = await bot.sendAudio(config.mediaCacheChatId, candidate.url, {
+      lane = await acquireLane();
+      message = await bot.sendAudio(lane.chatId, candidate.url, {
         disable_notification: true,
       });
       const verification = verifyTelegramAudio(row, message);
       if (!verification.ok) {
         errors.push(`${candidate.host}/${candidate.quality}: ${verification.reason}`);
         if (message?.message_id) {
-          await bot.deleteMessage(config.mediaCacheChatId, message.message_id).catch(() => null);
+          await bot.deleteMessage(lane.chatId, message.message_id).catch(() => null);
         }
         continue;
       }
 
-      await markCached(db, row, candidate, message, verification);
+      await markCached(db, row, candidate, message, verification, {
+        retainMessage: !lane.ephemeral,
+      });
+
+      if (lane.ephemeral && message?.message_id) {
+        await bot.deleteMessage(lane.chatId, message.message_id).catch(err => {
+          console.warn('[rj audio cache] ephemeral cleanup', lane.name, err.message);
+        });
+      }
+
       return {
         ok: true,
         candidate,
+        lane: lane.name,
         fileId: verification.audio.file_id,
         duration: verification.actualDuration,
       };
     } catch (err) {
       errors.push(`${candidate.host}/${candidate.quality}: ${String(err?.message || err).slice(0, 350)}`);
-      if (message?.message_id) {
-        await bot.deleteMessage(config.mediaCacheChatId, message.message_id).catch(() => null);
+      if (message?.message_id && lane) {
+        await bot.deleteMessage(lane.chatId, message.message_id).catch(() => null);
       }
     }
   }
@@ -379,7 +408,7 @@ async function processRow(db, row, waitForStartSlot) {
   return { ok: false, errors };
 }
 
-async function workerLoop(archiveDb, workerId, waitForStartSlot) {
+async function workerLoop(archiveDb, workerId, acquireLane) {
   while (!stopped && config.rjAudioCacheEnabled) {
     let row = null;
     try {
@@ -389,7 +418,7 @@ async function workerLoop(archiveDb, workerId, waitForStartSlot) {
         continue;
       }
 
-      const result = await processRow(archiveDb, row, waitForStartSlot);
+      const result = await processRow(archiveDb, row, acquireLane);
       processedThisProcess += 1;
       if (result.ok) {
         cachedThisProcess += 1;
@@ -402,6 +431,7 @@ async function workerLoop(archiveDb, workerId, waitForStartSlot) {
           quality: result.candidate.quality,
           host: result.candidate.host,
           duration: result.duration,
+          lane: result.lane,
         }));
       } else {
         failedThisProcess += 1;
@@ -457,33 +487,69 @@ async function loop() {
   await syncExistingCanonicalRows(archiveDb);
   const initial = await progress(archiveDb);
 
-  let chatType = 'unknown';
-  try {
-    chatType = String((await bot.getChat(config.mediaCacheChatId))?.type || 'unknown');
-  } catch (err) {
-    console.warn('[rj audio cache] getChat', err.message);
+  const laneSpecs = [
+    {
+      name: 'cache',
+      chatId: String(config.mediaCacheChatId),
+      ephemeral: false,
+    },
+    {
+      name: 'proxy-private',
+      chatId: String(config.proxyUserId || ''),
+      ephemeral: true,
+    },
+  ].filter((lane, index, all) =>
+    lane.chatId
+    && all.findIndex(other => other.chatId === lane.chatId) === index
+  );
+
+  const lanes = [];
+  for (const spec of laneSpecs) {
+    try {
+      const chatType = String((await bot.getChat(spec.chatId))?.type || 'unknown');
+      const groupLike = (
+        chatType === 'group'
+        || chatType === 'supergroup'
+        || chatType === 'channel'
+      );
+      const intervalMs = groupLike
+        ? 3100
+        : Math.max(1100, config.rjAudioCacheSendIntervalMs);
+      lanes.push({
+        ...spec,
+        chatType,
+        intervalMs,
+        nextStartAt: 0,
+      });
+    } catch (err) {
+      console.warn('[rj audio cache] lane unavailable', spec.name, err.message);
+    }
   }
 
-  // Telegram documents ~1 message/sec for one private chat and 20/min for
-  // groups. Keep the pipeline under the relevant chat-level ceiling.
-  const groupLike = chatType === 'group' || chatType === 'supergroup';
-  const sendIntervalMs = groupLike
-    ? Math.max(3100, config.rjAudioCacheSendIntervalMs)
-    : Math.max(1100, config.rjAudioCacheSendIntervalMs);
-  const waitForStartSlot = createStartLimiter(sendIntervalMs);
-  const concurrency = config.rjAudioCacheConcurrency;
+  if (!lanes.length) {
+    throw new Error('No usable Telegram cache lanes');
+  }
+
+  activeLaneSummary = lanes.map(lane => ({
+    name: lane.name,
+    chatType: lane.chatType,
+    intervalMs: lane.intervalMs,
+    ephemeral: lane.ephemeral,
+  }));
+
+  const acquireLane = createLaneScheduler(lanes);
+  const concurrency = Math.max(config.rjAudioCacheConcurrency, lanes.length * 6);
 
   console.log('[rj audio cache] worker started', JSON.stringify({
     total: Object.values(initial).reduce((sum, value) => sum + Number(value || 0), 0),
     concurrency,
-    sendIntervalMs,
-    chatType,
+    lanes: activeLaneSummary,
     maxAttempts: config.rjAudioCacheMaxAttempts,
   }));
 
   await Promise.all(
     Array.from({ length: concurrency }, (_, index) =>
-      workerLoop(archiveDb, index + 1, waitForStartSlot)
+      workerLoop(archiveDb, index + 1, acquireLane)
     )
   );
 
@@ -510,6 +576,7 @@ export function getRjAudioCacheRuntimeStatus() {
     failedThisProcess,
     concurrency: config.rjAudioCacheConcurrency,
     sendIntervalMs: config.rjAudioCacheSendIntervalMs,
+    lanes: activeLaneSummary,
     lastCachedAt,
     lastError,
   };
