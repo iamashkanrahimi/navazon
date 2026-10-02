@@ -167,6 +167,82 @@ const TRACK_VARIANT_ALIASES = new Map([
 ]);
 const TRACK_VARIANT_WORDS = new Set(TRACK_VARIANT_ALIASES.keys());
 
+const PERSIAN_CONSONANT_MAP = new Map([
+  ['ب','b'],['پ','p'],['ت','t'],['ث','s'],['ج','j'],['چ','ch'],
+  ['ح','h'],['خ','kh'],['د','d'],['ذ','z'],['ر','r'],['ز','z'],['ژ','zh'],
+  ['س','s'],['ش','sh'],['ص','s'],['ض','z'],['ط','t'],['ظ','z'],['غ','gh'],
+  ['ف','f'],['ق','gh'],['ک','k'],['ك','k'],['گ','g'],['ل','l'],['م','m'],
+  ['ن','n'],['ه','h'],['ة','h'],['و','v'],['ی','y'],['ي','y'],['ى','y'],
+]);
+const PERSIAN_VOWELISH = new Set(['ا','آ','أ','إ','ع','ء','ؤ','ئ']);
+
+function scriptFamily(value = '') {
+  const text = String(value || '');
+  if (/[\u0600-\u06ff]/u.test(text)) return 'arabic';
+  if (/[a-z]/iu.test(text)) return 'latin';
+  return '';
+}
+
+function consonantTokenSkeleton(token = '') {
+  const source = cleanText(token).toLowerCase();
+  if (!source) return '';
+
+  if (scriptFamily(source) === 'arabic') {
+    const chars = [...source];
+    let out = '';
+    for (let index = 0; index < chars.length; index += 1) {
+      const ch = chars[index];
+      if (PERSIAN_VOWELISH.has(ch)) continue;
+      if ((ch === 'ی' || ch === 'ي' || ch === 'ى') && index === chars.length - 1) continue;
+      if (ch === 'و' && index > 0) continue;
+      out += PERSIAN_CONSONANT_MAP.get(ch) || '';
+    }
+    return out;
+  }
+
+  return normalizeText(source)
+    .replace(/[^a-z0-9]+/giu, '')
+    .replace(/[aeiou]+/giu, '');
+}
+
+function smallEditDistance(left = '', right = '') {
+  if (left === right) return 0;
+  const a = [...left];
+  const b = [...right];
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j += 1) rows[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      rows[i][j] = Math.min(
+        rows[i - 1][j] + 1,
+        rows[i][j - 1] + 1,
+        rows[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+export function crossScriptIdentityCompatible(left = '', right = '') {
+  const leftFamily = scriptFamily(left);
+  const rightFamily = scriptFamily(right);
+  if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
+  const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
+  if (!leftTokens.length || leftTokens.length !== rightTokens.length) return false;
+
+  return leftTokens.every((token, index) => {
+    const a = consonantTokenSkeleton(token);
+    const b = consonantTokenSkeleton(rightTokens[index]);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const maxLen = Math.max(a.length, b.length);
+    const allowed = maxLen >= 6 ? 1 : 0;
+    return smallEditDistance(a, b) <= allowed;
+  });
+}
+
 export function trackTitleIdentity(value = '') {
   const stripped = cleanText(value)
     .replace(/\s*\((?:feat\.?|ft\.?|featuring)\s+[^)]+\)\s*$/iu, '')
