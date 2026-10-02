@@ -124,6 +124,7 @@ const {
   trackTitleIdentityCompatible,
   crossScriptIdentityCompatible,
   hasMediaIdentityEvidence,
+  identityNormalizeText,
 } = await import('../src/text.js');
 
 function fakeBotMessage(message, buttons = []) {
@@ -5773,4 +5774,68 @@ test('deep media refuses otherwise explicit file_ids when performer/title eviden
   } finally {
     db.query = originalQuery;
   }
+});
+
+
+test('real production-query identity matrix stays strict across collisions and collaborations', () => {
+  const cases = [
+    {
+      expected: { artist: 'Farhad', title: 'Ayneha' },
+      actual: { performer: 'Farhad Ravanbakhsh', title: 'Ayeneh' },
+      ok: false,
+    },
+    {
+      expected: { artist: 'Googoosh', title: 'Hamsafar' },
+      actual: { performer: 'Another Artist', title: 'Hamsafar' },
+      ok: false,
+    },
+    {
+      expected: { artist: 'Troye Sivan', title: 'Party' },
+      actual: { performer: 'Troye Sivan', title: 'Party Remix' },
+      ok: false,
+    },
+    {
+      expected: { artist: 'James Arthur', title: 'Impossible' },
+      actual: { performer: 'Shontelle', title: 'Impossible' },
+      ok: false,
+    },
+    {
+      expected: { artist: 'Shayea & Sadegh', title: 'Deli' },
+      actual: { performer: 'Sadegh & Shayea', title: 'Deli' },
+      ok: true,
+    },
+    {
+      expected: { artist: 'Kiyarash', title: 'Khiaboona (feat. Aaren)' },
+      actual: { performer: 'Kiyarash', title: 'Khiaboona (feat. Aaren)' },
+      ok: true,
+    },
+    {
+      expected: { artist: 'Hichkas', title: 'Hich Kas Vojdan' },
+      actual: { performer: 'Hichkas', title: 'Hich Kas Vojdan' },
+      ok: true,
+    },
+  ];
+
+  for (const item of cases) {
+    assert.equal(
+      trackMediaIdentityMatches(item.expected, item.actual),
+      item.ok,
+      item.expected.artist + ' — ' + item.expected.title
+    );
+  }
+});
+
+test('identity comparisons fold Latin diacritics without changing general normalization keys', () => {
+  assert.equal(identityNormalizeText('A Mí'), 'a mi');
+  assert.equal(trackTitleIdentityCompatible('A Mí', 'A Mi'), true);
+  assert.equal(artistCreditCompatible('Arcángel', 'Arcangel'), true);
+  assert.equal(artistCreditCompatible('Jhené Aiko', 'Jhene Aiko'), true);
+  assert.equal(normalizeText('A Mí'), 'a mí');
+});
+
+test('title identity does not collapse real prefix-like query names', () => {
+  assert.equal(trackTitleIdentityCompatible('Party', 'Party All Night'), false);
+  assert.equal(trackTitleIdentityCompatible('Rush', 'Rush Remix'), false);
+  assert.equal(trackTitleIdentityCompatible('Love Theme from Kiss', 'Love'), false);
+  assert.equal(trackTitleIdentityCompatible('Deli', 'Delam'), false);
 });
