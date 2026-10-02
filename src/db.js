@@ -5,7 +5,7 @@ const { Pool } = pg;
 
 export const db = new Pool({
   connectionString: config.databaseUrl,
-  max: 2,
+  max: 6,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 15_000,
   keepAlive: true,
