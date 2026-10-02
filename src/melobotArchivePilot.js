@@ -4,7 +4,7 @@ import { searchMeloBot, resolveMeloBotTrackCandidate, downloadMeloBotTrackQualit
 import { forwardHiddenToOurBot } from './mtproto.js';
 import { normalizeText, artistCreditCompatible, trackTitleIdentityCompatible } from './text.js';
 
-const PILOT_VERSION = 'melobot-gap-v3-200';
+const PILOT_VERSION = 'melobot-gap-full-v1';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 
 async function ensureSchema() {
@@ -151,30 +151,37 @@ export async function seedMeloBotArchivePilot(sourceQueue) {
       expected_duration_seconds = EXCLUDED.expected_duration_seconds,
       query = EXCLUDED.query,
       status = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN 'success'
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN 'pending'
         ELSE melobot_archive_pilot.status
       END,
       attempts = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN melobot_archive_pilot.attempts
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN 0
         ELSE melobot_archive_pilot.attempts
       END,
       candidate = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN melobot_archive_pilot.candidate
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
         ELSE melobot_archive_pilot.candidate
       END,
       file_id = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN melobot_archive_pilot.file_id
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
         ELSE melobot_archive_pilot.file_id
       END,
       file_unique_id = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN melobot_archive_pilot.file_unique_id
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
         ELSE melobot_archive_pilot.file_unique_id
       END,
       last_error = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN NULL
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
         ELSE melobot_archive_pilot.last_error
       END,
       completed_at = CASE
+        WHEN melobot_archive_pilot.status='success' AND melobot_archive_pilot.file_id IS NOT NULL THEN melobot_archive_pilot.completed_at
         WHEN melobot_archive_pilot.pilot_version IS DISTINCT FROM EXCLUDED.pilot_version THEN NULL
         ELSE melobot_archive_pilot.completed_at
       END,
