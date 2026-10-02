@@ -219,6 +219,11 @@ export function findArtistButtonFor(messages = [], artist = '') {
   const pickers = artistPickerItems(messages);
   const exact = pickers.find(item => normalize(item.name) === target);
   if (exact) return exact.rawText;
+  const compactTarget = target.replace(/\s+/g, '');
+  const compactExact = compactTarget
+    ? pickers.find(item => normalize(item.name).replace(/\s+/g, '') === compactTarget)
+    : null;
+  if (compactExact) return compactExact.rawText;
 
   const parts = artistIdentityParts(artist);
   // A collaboration page must never silently choose one member just because
@@ -259,6 +264,7 @@ function artistIdentityCompatible(requested = '', actual = '') {
   const b = normalize(actual);
   if (!a || !b) return false;
   if (a === b) return true;
+  if (a.replace(/\s+/g, '') === b.replace(/\s+/g, '')) return true;
 
   // Split the original credit before normalization. normalizeText deliberately
   // removes punctuation such as "&", so splitting the normalized value loses
