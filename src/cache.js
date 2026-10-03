@@ -34,6 +34,16 @@ function hasCacheableTrackIdentity(track = {}) {
   );
 }
 
+export function isTrustedRadioJavanMedia(track = {}, media = {}) {
+  if (String(track?.source || '') !== 'radiojavan') return false;
+  return media?.verifiedDirect === true && media?.identityVerified === true;
+}
+
+function cachedMediaMayBeServed(track = {}, media = {}) {
+  if (String(track?.source || '') !== 'radiojavan') return true;
+  return isTrustedRadioJavanMedia(track, media);
+}
+
 export class FileCache {
   async load() {}
 
@@ -52,10 +62,18 @@ export class FileCache {
       FROM track_cache
       WHERE track_key LIKE $1
         AND active = TRUE
+        AND (
+          COALESCE(track->>'source','') <> 'radiojavan'
+          OR (
+            COALESCE(media->>'verifiedDirect','false') = 'true'
+            AND COALESCE(media->>'identityVerified','false') = 'true'
+          )
+        )
       ORDER BY
         CASE
           WHEN COALESCE(track->>'source','') = 'radiojavan'
-           AND COALESCE(media->>'verifiedDirect','false') = 'true' THEN 0
+           AND COALESCE(media->>'verifiedDirect','false') = 'true'
+           AND COALESCE(media->>'identityVerified','false') = 'true' THEN 0
           WHEN track_key = $2 THEN 1
           WHEN COALESCE(track->>'source','') = $3 THEN 2
           ELSE 3
@@ -66,6 +84,10 @@ export class FileCache {
 
     if (!result.rowCount) return null;
     const row = result.rows[0];
+    if (!cachedMediaMayBeServed(row.track || {}, row.media || {})) {
+      console.warn('[file cache untrusted radiojavan]', track?.artist, track?.title);
+      return null;
+    }
     if (!hasMediaIdentityEvidence(row.media || {})) {
       console.warn('[file cache stale identity]', track?.artist, track?.title);
       return null;
@@ -95,6 +117,13 @@ export class FileCache {
   async set(track, media, { sourceFetch = true } = {}) {
     const policy = applyPolicyDefaults(track);
     if (!hasCacheableTrackIdentity(policy)) return;
+    if (
+      String(policy?.source || '') === 'radiojavan'
+      && !isTrustedRadioJavanMedia(policy, media || {})
+    ) {
+      console.warn('[file cache radiojavan write rejected]', policy.artist, policy.title);
+      return;
+    }
     if (
       !hasMediaIdentityEvidence(media)
       || !trackMediaIdentityMatches(policy, media || {})
@@ -130,10 +159,7 @@ export class FileCache {
     const artist = normalize(policy.artist || '');
     const title = normalize(policy.title || '');
     const prefix = `${artist}|${title}|%`;
-    const canonicalRj = (
-      String(policy.source || '') === 'radiojavan'
-      && media?.verifiedDirect === true
-    );
+    const canonicalRj = isTrustedRadioJavanMedia(policy, media || {});
 
     if (canonicalRj) {
       // Keep historical source rows for audit/recovery, but make them
@@ -156,6 +182,7 @@ export class FileCache {
       WHERE track_key LIKE $1
         AND COALESCE(track->>'source','') = 'radiojavan'
         AND COALESCE(media->>'verifiedDirect','false') = 'true'
+        AND COALESCE(media->>'identityVerified','false') = 'true'
       ORDER BY updated_at DESC
       LIMIT 1
     `, [prefix]);
