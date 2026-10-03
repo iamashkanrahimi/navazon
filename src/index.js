@@ -26,6 +26,7 @@ import {
   getRjMtprotoChannelWorkerSummary,
 } from './rjMtprotoChannelWorker.js';
 import { closeArchiveDb } from './archiveDb.js';
+import { runRjLyricsBackfill } from './rjLyricsBackfill.js';
 import {
   startSpotifyMusixmatchPilot,
   getSpotifyMusixmatchPilotRuntimeStatus,
@@ -299,6 +300,14 @@ server.listen(config.port,'0.0.0.0',async () => {
       await runArchiveImportIfEnabled();
     } catch (err) {
       console.error('[archive import]', err?.stack || err?.message || err);
+    }
+    try {
+      const lyricsBackfill = await runRjLyricsBackfill();
+      if (!lyricsBackfill?.skipped) {
+        console.log('[rj lyrics backfill startup]', JSON.stringify(lyricsBackfill));
+      }
+    } catch (err) {
+      console.error('[rj lyrics backfill startup]', err?.stack || err?.message || err);
     }
     startMediaCacheWorker();
     try {
