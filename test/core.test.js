@@ -3810,7 +3810,19 @@ test('single-token zero-coverage source suggestions are filtered instead of cach
     { artist: 'Farhad', title: 'Ayneha' },
     { artist: 'Another', title: 'Farhad Remix' },
   ];
-  assert.equal(keepFullCoverageTracksWhenAvailable('farhad', matching).length, 2);
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('farhad', matching),
+    [matching[0]]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Farhad',
+      [{ artist: 'Farhad Ravanbakhsh', title: 'Ayeneh' }]
+    ),
+    [],
+    'a single-name Artist query must not expand into a longer Artist identity'
+  );
 });
 
 
