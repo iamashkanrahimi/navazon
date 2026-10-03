@@ -118,6 +118,11 @@ export async function initDb() {
 
     CREATE INDEX IF NOT EXISTS deep_tracks_artist_idx ON deep_tracks (artist);
     CREATE INDEX IF NOT EXISTS deep_tracks_updated_idx ON deep_tracks (updated_at DESC);
+    ALTER TABLE deep_tracks
+      ADD COLUMN IF NOT EXISTS lyrics_synced JSONB;
+    ALTER TABLE deep_tracks
+      ADD COLUMN IF NOT EXISTS lyrics_integrity JSONB;
+
     CREATE INDEX IF NOT EXISTS deep_tracks_discovered_idx ON deep_tracks (discovered_at DESC);
 
     CREATE TABLE IF NOT EXISTS track_aliases (
