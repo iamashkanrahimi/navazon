@@ -639,6 +639,22 @@ export async function tryHandleCachedSearch(
   await showResults(sessionId, fresh);
 
   console.log(
+    '[search.result]',
+    JSON.stringify({
+      query,
+      cacheHit: true,
+      tracks: options.slice(0, 5).map(track => ({
+        artist: track?.artist || '',
+        title: track?.title || '',
+        source: track?.source || '',
+      })),
+      albums: albumOptions.slice(0, 5).map(album => ({
+        artist: album?.artist || '',
+        title: album?.title || '',
+      })),
+    })
+  );
+  console.log(
     `[fastpath.local] search cache_hit=true query=${JSON.stringify(query)} total_ms=${Date.now() - startedAt}`
   );
   return true;
@@ -1277,6 +1293,23 @@ export const sourceQueue = new SerialQueue(async job => {
         };
         await sessions.set(sessionId,fresh);
         await showResults(sessionId,fresh);
+
+        console.log(
+          '[search.result]',
+          JSON.stringify({
+            query: job.query,
+            cacheHit: searchCacheHit,
+            tracks: options.slice(0, 5).map(track => ({
+              artist: track?.artist || '',
+              title: track?.title || '',
+              source: track?.source || '',
+            })),
+            albums: albumOptions.slice(0, 5).map(album => ({
+              artist: album?.artist || '',
+              title: album?.title || '',
+            })),
+          })
+        );
 
         if (!albumIntent && !cachedOptions && options.length) {
           try { await catalog.recordSearch(cacheKey,options); } catch (err) {
