@@ -116,13 +116,18 @@ export function artistCreditCompatible(requested = '', actual = '') {
     return left.replace(/\s+/g, '') === right.replace(/\s+/g, '');
   };
 
+  // A collaboration credit is not interchangeable with one of its members.
+  // Artist-page membership has its own broader helper; identity verification
+  // requires the same explicit member set (order may differ).
+  if (requestedParts.length !== actualParts.length) return false;
+
   if (requestedParts.length > 1) {
     return requestedParts.every(left =>
       actualParts.some(right => partMatches(left, right))
     );
   }
 
-  return actualParts.some(right => partMatches(requestedParts[0], right));
+  return partMatches(requestedParts[0], actualParts[0]);
 }
 
 export function titleCreditsArtist(title = '', artist = '') {
