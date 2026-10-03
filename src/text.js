@@ -433,11 +433,14 @@ export function shouldUseLiveAlbumDiscovery(query = '') {
 const SEARCH_NOISE_WORDS = new Set([
   'ft', 'feat', 'featuring', 'with', 'and', 'vs',
   'the', 'a', 'an',
-  // Search-intent/connective words are not Track identity. Keeping them in the
-  // coverage requirement made natural queries such as "آهنگ ... از ..." fail
-  // even when Artist + Title were otherwise exact.
-  'song', 'music', 'download',
+]);
+
+const SEARCH_COMMAND_WORDS = new Set([
+  'download',
   'آهنگ', 'اهنگ', 'موزیک', 'ترانه', 'دانلود',
+]);
+
+const SEARCH_CONNECTIVE_WORDS = new Set([
   'از', 'با', 'همراه', 'همراهی',
 ]);
 
@@ -515,6 +518,55 @@ function crossScriptSearchPhraseCompatible(left = '', right = '') {
   return allowed > 0 && smallEditDistance(leftJoined, rightJoined) <= allowed;
 }
 
+function queryContainsWholeSearchField(query = '', field = '') {
+  const fieldRaw = cleanText(field);
+  const fieldTokens = rawSearchTokens(fieldRaw);
+  if (!fieldRaw || !fieldTokens.length) return false;
+
+  const queryStreams = [
+    rawSearchTokens(query),
+    meaningfulRawSearchTokens(query),
+  ];
+  const seenStreams = new Set();
+
+  for (const queryTokensRaw of queryStreams) {
+    const streamKey = queryTokensRaw.join('\u0000');
+    if (!queryTokensRaw.length || seenStreams.has(streamKey)) continue;
+    seenStreams.add(streamKey);
+
+    const fieldCanonical = fieldTokens.map(canonicalSearchToken);
+    const fieldJoined = fieldCanonical.join(' ');
+    const fieldCompact = fieldCanonical.join('');
+
+    for (let startIndex = 0; startIndex < queryTokensRaw.length; startIndex += 1) {
+      for (let endIndex = startIndex + 1; endIndex <= queryTokensRaw.length; endIndex += 1) {
+        const segmentRaw = queryTokensRaw.slice(startIndex, endIndex);
+        const segmentCanonical = segmentRaw.map(canonicalSearchToken);
+
+        if (
+          segmentCanonical.join(' ') === fieldJoined
+          || segmentCanonical.join('') === fieldCompact
+        ) {
+          return true;
+        }
+
+        if (
+          !segmentCanonical.some(isCanonicalVariantSearchToken)
+          && crossScriptSearchPhraseCompatible(
+            segmentRaw.join(' '),
+            fieldRaw
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+
 export function unrequestedTrackVariantWords(query = '', track = {}) {
   const queryKinds = searchVariantKinds(query);
   const titleTokens = rawSearchTokens(track?.title || '');
@@ -544,15 +596,31 @@ export function primarySearchQueries(query = '') {
   )];
 }
 
-export function meaningfulSearchTokens(query = '') {
-  return rawSearchTokens(query)
+function meaningfulRawSearchTokens(query = '') {
+  let tokens = rawSearchTokens(query)
     .filter(token =>
       token.length >= 2
       && !SEARCH_NOISE_WORDS.has(token)
       && !ALBUM_INTENT_WORDS.has(token)
       && !ALBUM_SUFFIX_WORDS.has(token)
-    )
-    .map(canonicalSearchToken);
+    );
+
+  // Command words are noise when there is an actual identity token beside
+  // them, but remain searchable when they are the whole query/title.
+  const withoutCommands = tokens.filter(token => !SEARCH_COMMAND_WORDS.has(token));
+  if (withoutCommands.length) tokens = withoutCommands;
+
+  // Persian connectives such as "از/با" are only dropped when at least two
+  // other identity tokens remain. This keeps short real titles like "با من"
+  // searchable while fixing natural "Track از Artist" wording.
+  const withoutConnectives = tokens.filter(token => !SEARCH_CONNECTIVE_WORDS.has(token));
+  if (withoutConnectives.length >= 2) tokens = withoutConnectives;
+
+  return tokens;
+}
+
+export function meaningfulSearchTokens(query = '') {
+  return meaningfulRawSearchTokens(query).map(canonicalSearchToken);
 }
 
 function searchTokenCoverage(queryTokens = [], track = {}) {
@@ -798,7 +866,18 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
     // into the same result set. If the source only has alternate versions,
     // keep them rather than turning a useful search into an empty result.
     const cleanFull = full.filter(item => !item.unrequestedVariants?.length);
-    return (cleanFull.length ? cleanFull : full).map(item => item.track);
+    let selected = cleanFull.length ? cleanFull : full;
+
+    // Token coverage alone can make "Ali" look complete inside "Alireza" or
+    // "25 Band" inside "25 Band Tribute". When the query proves at least one
+    // whole Artist field (including compact or conservative cross-script
+    // equivalence), prefer only those rows. Title-only searches remain broad.
+    const wholeArtistMatches = selected.filter(item =>
+      queryContainsWholeSearchField(query, item.track?.artist || '')
+    );
+    if (wholeArtistMatches.length) selected = wholeArtistMatches;
+
+    return selected.map(item => item.track);
   }
 
   // Never keep a partial multi-token result merely because it is the best of
