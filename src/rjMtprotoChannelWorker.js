@@ -222,6 +222,7 @@ async function resetLegacyBotApiClaims(db) {
   const processing = await db.query(`
     UPDATE rj_audio_cache
        SET status='pending',
+           attempts=GREATEST(attempts-1, 0),
            started_at=NULL,
            next_attempt_at=NULL,
            updated_at=NOW()
@@ -233,7 +234,7 @@ async function resetLegacyBotApiClaims(db) {
   const rateLimited = await db.query(`
     UPDATE rj_audio_cache
        SET status='pending',
-           attempts=GREATEST(attempts-1, 0),
+           attempts=0,
            next_attempt_at=NULL,
            updated_at=NOW()
      WHERE status='retry'
