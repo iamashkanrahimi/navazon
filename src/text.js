@@ -49,11 +49,19 @@ function normalizeSearchText(value = '') {
   // ZWNJ/ZWJ are presentation details in Persian search input. Treat
   // "نمی‌خوام" and "نمیخوام" as the same search spelling without changing
   // the stricter canonical/cache identity normalization used elsewhere.
-  // Search is also accent-insensitive for Latin spellings (Beyoncé/Beyonce),
-  // while durable identity continues to use its own stricter normalization.
-  return normalizeText(String(value || '').replace(/[\u200c\u200d]/g, ''))
-    .normalize('NFKD')
-    .replace(/\p{M}+/gu, '')
+  // Fold diacritics only on non-Persian tokens: NFKD on Persian would turn
+  // "آکوستیک" into "اکوستیک" and break explicit variant intent.
+  const normalized = normalizeText(
+    String(value || '').replace(/[\u200c\u200d]/g, '')
+  );
+  return normalized
+    .split(' ')
+    .map(token =>
+      /[\u0600-\u06ff]/u.test(token)
+        ? token
+        : token.normalize('NFKD').replace(/\p{M}+/gu, '')
+    )
+    .join(' ')
     .trim();
 }
 
@@ -263,6 +271,15 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
   const leftFamily = identityScriptFamily(left);
   const rightFamily = identityScriptFamily(right);
   if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftNumbers = normalizeText(left).match(/\d+/g) || [];
+  const rightNumbers = normalizeText(right).match(/\d+/g) || [];
+  if (
+    leftNumbers.length !== rightNumbers.length
+    || leftNumbers.some((value, index) => value !== rightNumbers[index])
+  ) {
+    return false;
+  }
 
   const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
   const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
@@ -613,6 +630,13 @@ function meaningfulRawSearchTokens(query = '') {
       && !ALBUM_INTENT_WORDS.has(token)
       && !ALBUM_SUFFIX_WORDS.has(token)
     );
+
+  // Keep a one-character title/Artist when it is the whole meaningful query
+  // ("X"), but do not promote one-letter fragments inside larger queries
+  // ("Shayea Ma Ft T-Dey").
+  if (tokens.length > 1) {
+    tokens = tokens.filter(token => token.length >= 2);
+  }
 
   // Command words are noise when there is an actual identity token beside
   // them, but remain searchable when they are the whole query/title.
