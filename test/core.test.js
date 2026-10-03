@@ -52,6 +52,7 @@ const {
   findArtistButtonFor,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
+const { verifyRjTelegramAudio: verifyTelegramAudio } = await import('../src/rjAudioIdentity.js');
 const {
   installTelegramInbox,
   primeTelegramInboxBoundary,
@@ -5838,4 +5839,253 @@ test('title identity does not collapse real prefix-like query names', () => {
   assert.equal(trackTitleIdentityCompatible('Rush', 'Rush Remix'), false);
   assert.equal(trackTitleIdentityCompatible('Love Theme from Kiss', 'Love'), false);
   assert.equal(trackTitleIdentityCompatible('Deli', 'Delam'), false);
+});
+
+
+test('Radio Javan verification rejects a wrong performer even when title and duration look correct', () => {
+  const row = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    expected_duration_seconds: 210,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'wrong-artist-file',
+      file_unique_id: 'u1',
+      duration: 210,
+      title: 'Maryam',
+      performer: 'Mehrdad Asemani',
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.titleOk, true);
+  assert.equal(result.artistOk, false);
+  assert.match(result.reason, /performer/i);
+});
+
+test('Radio Javan verification rejects a wrong title even when performer and duration look correct', () => {
+  const row = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    expected_duration_seconds: 210,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'wrong-title-file',
+      file_unique_id: 'u2',
+      duration: 210,
+      title: 'Marg',
+      performer: 'Ali Sorena',
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.titleOk, false);
+  assert.equal(result.artistOk, true);
+  assert.match(result.reason, /title/i);
+});
+
+test('Radio Javan verification still accepts exact identity with missing optional text metadata', () => {
+  const row = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    expected_duration_seconds: 210,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'metadata-light-file',
+      file_unique_id: 'u3',
+      duration: 210,
+      title: '',
+      performer: '',
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.titleOk, null);
+  assert.equal(result.artistOk, null);
+});
+
+test('expanded real-query collision matrix stays fail-closed', () => {
+  const matrix = [
+    ['Ali Sorena', 'Maryam', 'Mehrdad Asemani', 'Maryam', false],
+    ['Ali Sorena', 'Teryagh', 'Mohsen Chavoshi', 'Teryagh', false],
+    ['Ali Sorena', 'Marg', 'Yas', 'Marg', false],
+    ['Farhad', 'Ayneha', 'Farhad Ravanbakhsh', 'Ayeneh', false],
+    ['Sina Derakhshande', 'Dooset Daram', 'Sirvan Khosravi', 'Doost Daram Zendegiro', false],
+    ['Googoosh', 'Hamsafar', 'Another Artist', 'Hamsafar', false],
+    ['James Arthur', 'Impossible', 'Shontelle', 'Impossible', false],
+    ['Troye Sivan', 'Party', 'Troye Sivan', 'Party Remix', false],
+    ['Evan Band', 'Faramooshkar', 'Evan Band', 'Faramooshkar (Remix)', false],
+    ['Reza Bahram', 'Yar', 'Reza Bahram', 'Yar', true],
+    ['رضا بهرام', 'یار', 'Reza Bahram', 'Yar', true],
+    ['علی سورنا', 'مریم', 'Ali Sorena', 'Maryam', true],
+    ['Shayea & Sadegh', 'Deli', 'Sadegh & Shayea', 'Deli', true],
+    ['Kiyarash', 'Khiaboona (feat. Aaren)', 'Kiyarash', 'Khiaboona (feat. Aaren)', true],
+  ];
+
+  for (const [artist, title, performer, mediaTitle, expected] of matrix) {
+    assert.equal(
+      trackMediaIdentityMatches(
+        { artist, title },
+        { performer, title: mediaTitle }
+      ),
+      expected,
+      `${artist} — ${title} <> ${performer} — ${mediaTitle}`
+    );
+  }
+});
+
+test('inferred resolver chooses the correct Artist when wrong same-title rows are mixed with the right one', async () => {
+  const cases = [
+    {
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      wrong: '🎵 Mehrdad Asemani, Maryam x 10k',
+      right: '🎵 Ali Sorena, Maryam x 20k',
+    },
+    {
+      artist: 'Ali Sorena',
+      title: 'Teryagh',
+      wrong: '🎵 Mohsen Chavoshi, Teryagh x 50k',
+      right: '🎵 Ali Sorena, Teryagh x 15k',
+    },
+    {
+      artist: 'Ali Sorena',
+      title: 'Marg',
+      wrong: '🎵 Yas, Marg x 80k',
+      right: '🎵 Ali Sorena, Marg x 12k',
+    },
+    {
+      artist: 'Googoosh',
+      title: 'Hamsafar',
+      wrong: '🎵 Another Artist, Hamsafar x 9k',
+      right: '🎵 Googoosh, Hamsafar x 1.1M',
+    },
+  ];
+
+  for (const item of cases) {
+    const inferred = {
+      ...parseTrackButton(`🎵 ${item.title}`, item.artist),
+      source: 'melobot',
+    };
+    const surface = fakeBotMessage('نتیجه جستجو', [item.wrong, item.right]);
+    const client = new FakeTelegramClient({
+      [`${item.artist} ${item.title}`]: [[surface]],
+    });
+
+    const resolved = await resolveMeloBotTrackCandidate(
+      client,
+      inferred,
+      { timeoutMs: 1200, forceIdentity: true }
+    );
+    assert.equal(resolved.artist, item.artist);
+    assert.equal(resolved.title, item.title);
+  }
+});
+
+
+test('Radio Javan verification accepts conservative Persian-to-Latin identity', () => {
+  const row = {
+    artist: 'رضا بهرام',
+    title: 'یار',
+    expected_duration_seconds: 214,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'cross-script-good',
+      file_unique_id: 'u4',
+      duration: 214,
+      title: 'Yar',
+      performer: 'Reza Bahram',
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.titleOk, true);
+  assert.equal(result.artistOk, true);
+});
+
+test('Radio Javan verification rejects unrelated Persian-to-Latin performer collisions', () => {
+  const row = {
+    artist: 'علی سورنا',
+    title: 'مریم',
+    expected_duration_seconds: 210,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'cross-script-wrong',
+      file_unique_id: 'u5',
+      duration: 210,
+      title: 'Maryam',
+      performer: 'Yas',
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.titleOk, true);
+  assert.equal(result.artistOk, false);
+});
+
+
+test('cross-script identity supports conservative split Persian compound names', () => {
+  assert.equal(
+    crossScriptIdentityCompatible('محمدرضا گلزار', 'Mohammad Reza Golzar'),
+    true
+  );
+  assert.equal(
+    crossScriptIdentityCompatible('علیرضا طلیسچی', 'Ali Reza Talischi'),
+    true
+  );
+
+  assert.equal(
+    crossScriptIdentityCompatible('محمدرضا گلزار', 'Mohammad Alizadeh'),
+    false
+  );
+  assert.equal(
+    crossScriptIdentityCompatible('علیرضا طلیسچی', 'Ali Sorena'),
+    false
+  );
+});
+
+
+test('Radio Javan metadata-light audio needs tight duration evidence', () => {
+  const row = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    expected_duration_seconds: 210,
+  };
+
+  const close = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'close-duration-file',
+      duration: 212,
+      title: '',
+      performer: '',
+    },
+  });
+  assert.equal(close.ok, true);
+
+  const loose = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'loose-duration-file',
+      duration: 215,
+      title: '',
+      performer: '',
+    },
+  });
+  assert.equal(loose.ok, false);
+  assert.match(loose.reason, /insufficient/i);
+});
+
+test('Radio Javan audio with no text metadata and no reference duration is rejected', () => {
+  const result = verifyTelegramAudio(
+    { artist: 'Ali Sorena', title: 'Maryam', expected_duration_seconds: null },
+    {
+      audio: {
+        file_id: 'no-evidence-file',
+        duration: null,
+        title: '',
+        performer: '',
+      },
+    }
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /insufficient/i);
 });
