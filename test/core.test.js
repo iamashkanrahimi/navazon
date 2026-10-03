@@ -111,6 +111,7 @@ const {
   hasAlbumIntent,
   hasSpecificAlbumTitle,
   albumTitleAppearsInQuery,
+  queryContainsWholeSearchField,
   shouldUseLiveAlbumDiscovery,
   meaningfulSearchTokens,
   rankTracksForQuery,
@@ -7008,4 +7009,239 @@ test('RJ local upload selects only fresh allowlisted RJ CDN candidates', async (
     true
   );
   assert.equal(looksLikeAudioHeader(Buffer.from('plain text error page')), false);
+});
+
+
+test('query matrix v4 prefers exact whole titles over longer same-Artist collisions', () => {
+  const exact = { artist: 'Ali Sorena', title: 'Maryam' };
+  const numbered = { artist: 'Ali Sorena', title: 'Maryam 2' };
+  const longer = { artist: 'Ali Sorena', title: 'Maryam Story' };
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Ali Sorena Maryam',
+      [numbered, longer, exact]
+    ),
+    [exact]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Maryam Ali Sorena',
+      [numbered, exact]
+    ),
+    [exact]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'دانلود آهنگ مریم از علی سورنا',
+      [
+        { artist: 'Ali Sorena', title: 'Maryam 2' },
+        exact,
+      ]
+    ),
+    [exact]
+  );
+});
+
+test('query matrix v4 handles natural separators without weakening identity', () => {
+  const collaboration = {
+    artist: 'Ali Sorena & Bahram',
+    title: 'Khoone Khorshid',
+  };
+
+  for (const query of [
+    'Ali Sorena x Bahram Khoone Khorshid',
+    'Khoone Khorshid by Ali Sorena & Bahram',
+    'Khoone Khorshid from Ali Sorena & Bahram',
+  ]) {
+    assert.deepEqual(
+      keepFullCoverageTracksWhenAvailable(
+        query,
+        [
+          { artist: 'Ali Sorena Tribute', title: 'Khoone Khorshid' },
+          collaboration,
+        ]
+      ),
+      [collaboration],
+      query
+    );
+  }
+});
+
+test('query matrix v4 keeps meaningful one-character queries and rejects noise-only queries', () => {
+  const x = { artist: 'Artist', title: 'X' };
+  const unrelated = { artist: 'Other', title: 'Something' };
+
+  assert.deepEqual(meaningfulSearchTokens('X'), ['x']);
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('X', [unrelated, x]),
+    [x]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('the', [unrelated, x]),
+    []
+  );
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('feat', [unrelated, x]),
+    []
+  );
+});
+
+test('query matrix v4 search is Latin-accent insensitive', () => {
+  const beyonce = { artist: 'Beyoncé', title: 'Halo' };
+  const plain = rankTracksForQuery('Beyonce Halo', [beyonce])[0];
+  assert.equal(plain.coverage, plain.total);
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('Beyonce Halo', [beyonce]),
+    [beyonce]
+  );
+
+  const reverse = rankTracksForQuery(
+    'Beyoncé Halo',
+    [{ artist: 'Beyonce', title: 'Halo' }]
+  )[0];
+  assert.equal(reverse.coverage, reverse.total);
+});
+
+test('query matrix v4 album titles use whole-field and cross-script matching', () => {
+  assert.equal(
+    albumTitleAppearsInQuery(
+      'آلبوم بهرام اشتباه خوب',
+      'Eshtebahe Khoob'
+    ),
+    true
+  );
+  assert.equal(
+    albumTitleAppearsInQuery(
+      'آلبوم بهرام اشتباه خوب',
+      'Eshtebahe Khoob 2'
+    ),
+    false
+  );
+  assert.equal(
+    queryContainsWholeSearchField(
+      'album Reza Bahram Eshtebahe Khoob',
+      'Reza Bahram'
+    ),
+    true
+  );
+
+  assert.equal(
+    albumQueryMatches('album Artist Yar', 'Artist', 'Yaram'),
+    false
+  );
+  assert.equal(
+    albumQueryMatches('album Artist Yar', 'Artist', 'Yar'),
+    true
+  );
+});
+
+test('MeloBot Artist picker rejects longer multi-word identity prefixes', () => {
+  const wrong = [
+    fakeBotMessage('picker', ['🗣 Reza Bahram Official']),
+  ];
+  assert.equal(findArtistButtonFor(wrong, 'Reza Bahram'), null);
+
+  const tribute = [
+    fakeBotMessage('picker', ['🗣 Ali Sorena Tribute']),
+  ];
+  assert.equal(findArtistButtonFor(tribute, 'Ali Sorena'), null);
+
+  const transliterated = [
+    fakeBotMessage('picker', ['🗣 Reza Bahram']),
+  ];
+  assert.equal(
+    findArtistButtonFor(transliterated, 'رضا بهرام'),
+    '🗣 Reza Bahram'
+  );
+});
+
+test('MeloBot Track resolver rejects same-title longer Artist impostors', async () => {
+  const wrongRow = '🎵 Reza Bahram Official, Yar';
+  const client = new FakeTelegramClient({
+    'Reza Bahram Yar': [[fakeBotMessage('results', [wrongRow])]],
+    'Yar': [[fakeBotMessage('results', [wrongRow])]],
+  });
+
+  await assert.rejects(
+    () => resolveMeloBotTrackCandidate(
+      client,
+      {
+        source: 'melobot',
+        artist: 'Reza Bahram',
+        title: 'Yar',
+        sourceStateVersion: -1,
+      },
+      { timeoutMs: 1400 }
+    ),
+    err => err?.code === 'MELOBOT_TRACK_RESOLVE_FAILED'
+  );
+});
+
+test('MeloBot Track resolver supports conservative Persian-to-Latin canonical identity', async () => {
+  const row = '🎵 Reza Bahram, Yar';
+  const client = new FakeTelegramClient({
+    'رضا بهرام یار': [[fakeBotMessage('results', [row])]],
+    'یار': [[fakeBotMessage('results', [row])]],
+  });
+
+  const resolved = await resolveMeloBotTrackCandidate(
+    client,
+    {
+      source: 'melobot',
+      artist: 'رضا بهرام',
+      title: 'یار',
+      sourceStateVersion: -1,
+    },
+    { timeoutMs: 1400 }
+  );
+
+  assert.equal(resolved.artist, 'Reza Bahram');
+  assert.equal(resolved.title, 'Yar');
+});
+
+test('Album discovery never seeds a longer unrelated Artist by substring or first-row fallback', async () => {
+  const wrongRow = '🎵 Farhad Ravanbakhsh, Ayeneh';
+  const client = new FakeTelegramClient({
+    Farhad: [[fakeBotMessage('results', [wrongRow])]],
+  });
+
+  await assert.rejects(
+    () => discoverMeloBotAlbumsByArtistQuery(
+      client,
+      'album Farhad',
+      { timeoutMs: 1000 }
+    ),
+    /could not resolve an album listing/i
+  );
+
+  assert.deepEqual(client.sent, ['Farhad']);
+});
+
+test('Album discovery selects only the whole Artist field from a title-specific query', async () => {
+  const goodPicker = '🗣 Bahram';
+  const badPicker = '🗣 Bahram Tribute';
+  const albumButton = '💿 Eshtebahe Khoob (1)';
+  const client = new FakeTelegramClient({
+    'Bahram Eshtebahe Khoob': [[
+      fakeBotMessage('choose artist', [badPicker, goodPicker])
+    ]],
+    [goodPicker]: [[
+      fakeBotMessage('آلبوم های خواننده 1', [albumButton])
+    ]],
+  });
+
+  const result = await discoverMeloBotAlbumsByArtistQuery(
+    client,
+    'album Bahram Eshtebahe Khoob',
+    { timeoutMs: 1600 }
+  );
+
+  assert.equal(result.artist, 'Bahram');
+  assert.equal(result.albums.length, 1);
+  assert.equal(result.albums[0].title, 'Eshtebahe Khoob');
+  assert.deepEqual(client.sent, ['Bahram Eshtebahe Khoob', goodPicker]);
 });
