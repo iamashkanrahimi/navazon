@@ -14,6 +14,12 @@ import {
   runRjMtprotoChannelPilot,
   getRjMtprotoChannelPilotSummary,
 } from './rjMtprotoChannelPilot.js';
+import {
+  startRjMtprotoChannelWorker,
+  stopRjMtprotoChannelWorker,
+  getRjMtprotoChannelWorkerRuntimeStatus,
+  getRjMtprotoChannelWorkerSummary,
+} from './rjMtprotoChannelWorker.js';
 import { closeArchiveDb } from './archiveDb.js';
 import { seedAhangifyBestPilot } from './ahangifyPilot.js';
 import {
@@ -163,6 +169,7 @@ const server = http.createServer(async (req,res) => {
         mtproto:true,
         mediaCache:getMediaCacheRuntimeStatus(),
         rjAudioCache:getRjAudioCacheRuntimeStatus(),
+        rjMtprotoChannel:getRjMtprotoChannelWorkerRuntimeStatus(),
       }));
       return;
     }
@@ -226,6 +233,11 @@ const server = http.createServer(async (req,res) => {
       if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await getRjMtprotoChannelPilotSummary(),null,2)); return;
+    }
+    if (req.method === 'GET' && url.pathname === '/admin/rj-mtproto-channel-worker') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await getRjMtprotoChannelWorkerSummary(),null,2)); return;
     }
     res.writeHead(404).end('not found');
   } catch (err) {
@@ -295,6 +307,7 @@ server.listen(config.port,'0.0.0.0',async () => {
     void runRjMtprotoChannelPilot().catch(err => {
       console.error('[rj channel pilot startup]', err?.stack || err?.message || err);
     });
+    startRjMtprotoChannelWorker();
   } catch (err) {
     console.error('[setWebhook]',err.message);
   }
@@ -305,6 +318,7 @@ async function shutdown(signal) {
   crawlerScheduler.stop();
   stopMediaCacheWorker();
   stopRjAudioCacheWorker();
+  stopRjMtprotoChannelWorker();
   stopAhangifyArchivePump();
   server.close();
   try { await tg.disconnect(); } catch {}
