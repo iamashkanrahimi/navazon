@@ -139,7 +139,17 @@ export function verifyTelegramAudio(row, message) {
     : null;
 
   const textContradictions = [titleOk, artistOk].filter(value => value === false);
-  const ok = durationOk && textContradictions.length === 0;
+  const hasTextEvidence = titleOk === true || artistOk === true;
+  const hasTightDurationEvidence = Boolean(
+    expectedDuration
+    && actualDuration
+    && durationDelta != null
+    && durationDelta <= 3
+  );
+  const hasIdentityEvidence = hasTextEvidence || hasTightDurationEvidence;
+  const ok = durationOk
+    && textContradictions.length === 0
+    && hasIdentityEvidence;
 
   let reason = null;
   if (!durationOk) {
@@ -150,6 +160,8 @@ export function verifyTelegramAudio(row, message) {
     reason = 'embedded title contradicts Radio Javan identity';
   } else if (artistOk === false) {
     reason = 'embedded performer contradicts Radio Javan identity';
+  } else if (!hasIdentityEvidence) {
+    reason = 'insufficient Radio Javan identity evidence';
   }
 
   return {
