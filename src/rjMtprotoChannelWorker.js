@@ -25,7 +25,7 @@ const POST_PREFIX = 'navazon-rj-worker:';
 const POST_TIMEOUT_MS = 30_000;
 const STARTUP_SETTLE_MS = 15_000;
 const SUCCESS_WINDOW_FOR_SPEEDUP = 500;
-const LOCAL_UPLOAD_CONCURRENCY = 2;
+const LOCAL_UPLOAD_CONCURRENCY = 3;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -696,7 +696,12 @@ async function processRow(db, row, state) {
   const errors = [];
   const allCandidates = directCandidatesForRow(row);
   const candidates = row?.verification?.apiRecovery?.prepared === true
-    ? allCandidates.filter(candidate => String(candidate?.source || '').startsWith('rj_api'))
+    ? allCandidates
+        .filter(candidate => ['rj_api_primary','rj_api_hq'].includes(String(candidate?.source || '')))
+        .sort((a, b) => {
+          const rank = source => source === 'rj_api_primary' ? 0 : 1;
+          return rank(String(a?.source || '')) - rank(String(b?.source || ''));
+        })
     : allCandidates;
 
   for (const candidate of candidates) {
