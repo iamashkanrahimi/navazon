@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { tg, tg2 } from './runtime.js';
+import { tg, tg2, tg3 } from './runtime.js';
 import { getArchiveDb } from './archiveDb.js';
 import { sendExternalMediaToPeer } from './mtproto.js';
 import { ensureRjMtprotoArchiveChannelFor } from './rjMtprotoChannelPilot.js';
@@ -63,6 +63,7 @@ function createAccountState(slot, client) {
 function configuredAccounts() {
   const items = [createAccountState(1, tg)];
   if (tg2) items.push(createAccountState(2, tg2));
+  if (tg3) items.push(createAccountState(3, tg3));
   return items;
 }
 
@@ -788,7 +789,7 @@ export function getRjMtprotoChannelWorkerRuntimeStatus() {
   return {
     enabled: config.rjMtprotoChannelWorkerEnabled,
     running: Boolean(workerPromise) && !stopped,
-    configuredAccountCount: tg2 ? 2 : 1,
+    configuredAccountCount: tg3 ? 3 : (tg2 ? 2 : 1),
     activeAccountCount: accountStates.size,
     processedThisProcess,
     cachedThisProcess,
