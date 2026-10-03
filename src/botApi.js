@@ -169,7 +169,7 @@ export class BotApi {
     return this.call('setWebhook', {
       url,
       secret_token: secretToken,
-      allowed_updates: ['message', 'callback_query'],
+      allowed_updates: ['message', 'callback_query', 'channel_post'],
       drop_pending_updates: false,
     });
   }
