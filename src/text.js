@@ -107,10 +107,13 @@ export function artistCreditCompatible(requested = '', actual = '') {
 
   const partMatches = (left, right) => {
     if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
+
+    // Artist identity must never be proven by substring containment. A longer
+    // credit such as "Ali Sorena Tribute" or "Reza Bahram Official" is a
+    // different identity unless it is an explicit collaboration component.
+    // Keep only the harmless compact-whitespace equivalence used by stage
+    // names such as "25 Band" <-> "25Band".
+    return left.replace(/\s+/g, '') === right.replace(/\s+/g, '');
   };
 
   if (requestedParts.length > 1) {
