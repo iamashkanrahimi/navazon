@@ -9,6 +9,11 @@ import { runDirectUrlTelegramPilot } from './directUrlPilot.js';
 import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { startRjAudioCacheWorker, stopRjAudioCacheWorker, getRjAudioCacheRuntimeStatus, getRjAudioCacheSummary } from './rjAudioCache.js';
+import {
+  runCacheIntegrityAudit,
+  startCacheIntegrityAuditScheduler,
+  stopCacheIntegrityAuditScheduler,
+} from './cacheIntegrityAudit.js';
 import { ensureRjExtraCacheLanes } from './rjCacheLanes.js';
 import {
   runRjMtprotoChannelPilot,
@@ -239,6 +244,11 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await getRjMtprotoChannelWorkerSummary(),null,2)); return;
     }
+    if (req.method === 'GET' && url.pathname === '/admin/cache-integrity') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await runCacheIntegrityAudit({ log:false }),null,2)); return;
+    }
     res.writeHead(404).end('not found');
   } catch (err) {
     console.error('[http]',err.message);
@@ -253,6 +263,8 @@ server.listen(config.port,'0.0.0.0',async () => {
   console.log(
     `Internal crawler scheduler started: every ${Math.round(config.discoverySchedulerMs / 1000)}s`
   );
+  startCacheIntegrityAuditScheduler();
+  console.log('Cache integrity audit scheduler started: every 15 minutes');
 
   if (!config.publicBaseUrl) {
     console.warn('RENDER_EXTERNAL_URL/PUBLIC_BASE_URL missing; Telegram webhook not changed.');
@@ -316,6 +328,7 @@ server.listen(config.port,'0.0.0.0',async () => {
 async function shutdown(signal) {
   console.log(`${signal}: shutting down...`);
   crawlerScheduler.stop();
+  stopCacheIntegrityAuditScheduler();
   stopMediaCacheWorker();
   stopRjAudioCacheWorker();
   stopRjMtprotoChannelWorker();
