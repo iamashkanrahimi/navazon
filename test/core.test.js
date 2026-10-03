@@ -6869,3 +6869,33 @@ test('natural search noise and explicit Persian version intent do not weaken que
     assert.equal(queries[1], 'Artist Song');
   }
 });
+
+
+test('MeloBot search refinement rejects longer Artist identities that only share query tokens', () => {
+  const wrongOnly = [
+    fakeBotMessage('choose artist', ['🗣 Farhad Ravanbakhsh']),
+  ];
+  assert.equal(
+    chooseMeloBotSearchRefinement(wrongOnly, 'Farhad'),
+    null
+  );
+
+  const mixed = [
+    fakeBotMessage(
+      'choose artist',
+      ['🗣 Farhad Ravanbakhsh', '🗣 Farhad']
+    ),
+  ];
+  assert.equal(
+    chooseMeloBotSearchRefinement(mixed, 'Farhad Ayneha'),
+    '🗣 Farhad'
+  );
+
+  const longerPrefix = [
+    fakeBotMessage('choose artist', ['🗣 Ali Sorena Tribute']),
+  ];
+  assert.equal(
+    chooseMeloBotSearchRefinement(longerPrefix, 'Ali Sorena'),
+    null
+  );
+});
