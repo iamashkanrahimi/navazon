@@ -4,7 +4,7 @@ import { getArchiveDb } from './archiveDb.js';
 import { getState, setState } from './state.js';
 import {
   createPrivateArchiveChannel,
-  sendExternalMediaBatchToPeer,
+  sendExternalMediaToPeer,
 } from './mtproto.js';
 import {
   artistCreditCompatible,
@@ -14,7 +14,6 @@ import {
 const CHANNEL_KEY = 'rj_mtproto_archive_channel_v1';
 const RESULT_KEY = 'rj_mtproto_channel_pilot_v1';
 const TOTAL = 20;
-const BATCH_SIZE = 5;
 const POST_PREFIX = 'navazon-rj-channel-pilot:';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -268,42 +267,44 @@ export async function runRjMtprotoChannelPilot() {
   });
 
   try {
-    for (let offset = 0; offset < rows.length; offset += BATCH_SIZE) {
-      const group = rows.slice(offset, offset + BATCH_SIZE);
-      const sourceIds = group.map(row => String(row.source_id));
-      const receivedPromise = expectBatch(sourceIds, 60_000);
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const sourceId = String(row.source_id);
+      const receivedPromise = expectBatch([sourceId], 60_000);
 
-      await sendExternalMediaBatchToPeer(
+      // Telegram rejects InputMediaDocumentExternal inside SendMultiMedia for
+      // this private broadcast channel (MEDIA_INVALID). Use the simpler
+      // SendMedia path one item at a time for the pilot.
+      await sendExternalMediaToPeer(
         tg,
         channel.peerId,
-        group.map(row => ({
-          url: row.direct_url,
-          caption: `${POST_PREFIX}${row.source_id}`,
-        }))
+        row.direct_url,
+        `${POST_PREFIX}${row.source_id}`
       );
 
       const received = await receivedPromise;
-      for (const row of group) {
-        const media = received.get(String(row.source_id)) || null;
-        results.push({
-          sourceId: String(row.source_id),
-          artist: row.artist,
-          title: row.title,
-          quality: row.direct_quality,
-          host: row.direct_host,
-          received: Boolean(media),
-          ...evaluate(row, media),
-        });
-      }
+      const media = received.get(sourceId) || null;
+      const checked = {
+        sourceId,
+        artist: row.artist,
+        title: row.title,
+        quality: row.direct_quality,
+        host: row.direct_host,
+        received: Boolean(media),
+        ...evaluate(row, media),
+      };
+      results.push(checked);
 
-      console.log('[rj channel pilot] batch', JSON.stringify({
-        offset,
-        requested: group.length,
-        received: received.size,
-        verified: results.slice(offset, offset + group.length).filter(item => item.ok).length,
+      console.log('[rj channel pilot] item', JSON.stringify({
+        index,
+        sourceId,
+        received: checked.received,
+        kind: checked.kind,
+        verified: checked.ok,
+        sameUniqueId: checked.sameUniqueId,
       }));
 
-      if (offset + BATCH_SIZE < rows.length) await sleep(1200);
+      if (index + 1 < rows.length) await sleep(900);
     }
 
     const ok = results.filter(item => item.ok).length;
