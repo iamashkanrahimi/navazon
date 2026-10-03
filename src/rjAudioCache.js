@@ -6,6 +6,7 @@ import { DeepCatalog } from './deepCatalog.js';
 import { getRjExtraCacheLanes } from './rjCacheLanes.js';
 import {
   artistCreditCompatible,
+  crossScriptIdentityCompatible,
   trackTitleIdentityCompatible,
 } from './text.js';
 
@@ -131,7 +132,10 @@ export function verifyTelegramAudio(row, message) {
     ? trackTitleIdentityCompatible(row.title, title)
     : null;
   const artistOk = performer
-    ? artistCreditCompatible(row.artist, performer)
+    ? (
+        artistCreditCompatible(row.artist, performer)
+        || crossScriptIdentityCompatible(row.artist, performer)
+      )
     : null;
 
   const textContradictions = [titleOk, artistOk].filter(value => value === false);
