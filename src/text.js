@@ -182,7 +182,9 @@ export function titleCreditsArtist(title = '', artist = '') {
     if (credit) credits.push(credit);
   }
 
-  return credits.some(credit => artistCreditCompatible(artist, credit));
+  return credits.some(credit =>
+    artistCreditMatchesContext(credit, artist)
+  );
 }
 
 export function trackBelongsToArtistContext(track = {}, artist = '') {
