@@ -310,9 +310,9 @@ async function collectByPolling(client, peer, afterId, {
   return { messages: orderedMessages(seen), hit: null };
 }
 
-export function createTelegramClient() {
+export function createTelegramClient(stringSession = config.stringSession) {
   return new TelegramClient(
-    new StringSession(config.stringSession),
+    new StringSession(String(stringSession || '')),
     config.apiId,
     config.apiHash,
     { connectionRetries: 5 }
