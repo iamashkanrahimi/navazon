@@ -20,7 +20,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 let stopped = false;
 let workerPromise = null;
-let activeTransfer = null;
+const activeTransfers = new Map();
+let startGateChain = Promise.resolve();
 let channelState = null;
 let processedThisProcess = 0;
 let cachedThisProcess = 0;
@@ -93,46 +94,46 @@ function messageFromPost(post) {
 }
 
 function expectChannelPost(sourceId, timeoutMs = POST_TIMEOUT_MS) {
-  if (activeTransfer) {
-    throw new Error('RJ MTProto channel worker already has an active transfer');
+  const key = String(sourceId);
+  if (activeTransfers.has(key)) {
+    throw new Error(`RJ MTProto channel worker already waits for source ${key}`);
   }
 
   let settled = false;
   let timer = null;
   let resolvePromise = null;
-  const promise = new Promise(resolve => {
-    resolvePromise = resolve;
-    timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      if (activeTransfer?.sourceId === String(sourceId)) activeTransfer = null;
-      resolve(null);
-    }, timeoutMs);
-  });
-
-  activeTransfer = {
-    sourceId: String(sourceId),
+  const transfer = {
+    sourceId: key,
     resolve(post) {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      activeTransfer = null;
+      activeTransfers.delete(key);
       resolvePromise(post);
     },
     cancel() {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      activeTransfer = null;
+      activeTransfers.delete(key);
       resolvePromise(null);
     },
   };
 
+  const promise = new Promise(resolve => {
+    resolvePromise = resolve;
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      activeTransfers.delete(key);
+      resolve(null);
+    }, timeoutMs);
+  });
+
+  activeTransfers.set(key, transfer);
   return {
     promise,
-    cancel: () => activeTransfer?.sourceId === String(sourceId)
-      ? activeTransfer.cancel()
-      : null,
+    cancel: () => activeTransfers.get(key)?.cancel(),
   };
 }
 
@@ -209,8 +210,9 @@ export function consumeRjMtprotoChannelWorkerPost(post) {
   const parsed = parseCaption(post);
   if (!parsed) return false;
 
-  if (activeTransfer && activeTransfer.sourceId === parsed.sourceId) {
-    activeTransfer.resolve(post);
+  const transfer = activeTransfers.get(parsed.sourceId);
+  if (transfer) {
+    transfer.resolve(post);
     return true;
   }
 
@@ -298,16 +300,25 @@ async function markTransportRetry(db, row, message, delaySeconds = 120) {
   ]);
 }
 
-async function waitForRateGate() {
-  while (!stopped && config.rjMtprotoChannelWorkerEnabled) {
-    const backoffMs = backoffUntil
-      ? Math.max(0, Date.parse(backoffUntil) - Date.now())
-      : 0;
-    const sendGapMs = Math.max(0, nextSendAt - Date.now());
-    const waitMs = Math.max(backoffMs, sendGapMs);
-    if (waitMs <= 0) return;
-    await sleep(Math.min(waitMs, 30_000));
-  }
+async function acquireSendStartSlot() {
+  const scheduled = startGateChain.then(async () => {
+    while (!stopped && config.rjMtprotoChannelWorkerEnabled) {
+      const backoffMs = backoffUntil
+        ? Math.max(0, Date.parse(backoffUntil) - Date.now())
+        : 0;
+      const sendGapMs = Math.max(0, nextSendAt - Date.now());
+      const waitMs = Math.max(backoffMs, sendGapMs);
+      if (waitMs <= 0) break;
+      await sleep(Math.min(waitMs, 30_000));
+    }
+
+    if (stopped || !config.rjMtprotoChannelWorkerEnabled) return false;
+    nextSendAt = Date.now() + currentGapMs;
+    return true;
+  });
+
+  startGateChain = scheduled.catch(() => {});
+  return scheduled;
 }
 
 function noteSuccess() {
@@ -346,8 +357,8 @@ async function processRow(db, row) {
   const errors = [];
 
   for (const candidate of directCandidates(row.source_slug, row.source_id)) {
-    await waitForRateGate();
-    if (stopped || !config.rjMtprotoChannelWorkerEnabled) {
+    const allowed = await acquireSendStartSlot();
+    if (!allowed) {
       await markTransportRetry(db, row, 'worker stopped during transfer', 30);
       return { ok: false, stopped: true, errors };
     }
@@ -355,7 +366,6 @@ async function processRow(db, row) {
     const expected = expectChannelPost(String(row.source_id), POST_TIMEOUT_MS);
     let sent = false;
     try {
-      nextSendAt = Date.now() + currentGapMs;
       await sendExternalMediaToPeer(
         tg,
         channelState.peerId,
@@ -460,6 +470,79 @@ async function progress(db) {
   return summary;
 }
 
+async function workerLoop(archiveDb, workerId) {
+  while (!stopped && config.rjMtprotoChannelWorkerEnabled) {
+    let row = null;
+    try {
+      row = await claimNext(archiveDb);
+      if (!row) {
+        await sleep(5_000);
+        continue;
+      }
+
+      const result = await processRow(archiveDb, row);
+      processedThisProcess += 1;
+
+      if (result.ok) {
+        cachedThisProcess += 1;
+        lastCachedAt = new Date().toISOString();
+        lastError = null;
+
+        if (cachedThisProcess <= 10 || cachedThisProcess % 100 === 0) {
+          console.log('[rj mtproto worker] cached', JSON.stringify({
+            workerId,
+            count: cachedThisProcess,
+            artist: row.artist,
+            title: row.title,
+            quality: result.candidate.quality,
+            host: result.candidate.host,
+            duration: result.duration,
+            gapMs: currentGapMs,
+          }));
+        }
+      } else if (result.rateLimited) {
+        lastError = result.errors?.[result.errors.length - 1] || 'MTProto flood wait';
+      } else if (result.transportRetry) {
+        lastError = result.errors?.[result.errors.length - 1] || 'channel transport retry';
+      } else if (!result.stopped) {
+        failedThisProcess += 1;
+        lastError = result.errors?.[result.errors.length - 1] || 'all direct candidates failed';
+        console.warn('[rj mtproto worker] miss', JSON.stringify({
+          workerId,
+          artist: row.artist,
+          title: row.title,
+          attempts: row.attempts,
+          error: lastError,
+        }));
+      }
+
+      if (processedThisProcess > 0 && processedThisProcess % 250 === 0) {
+        await progress(archiveDb);
+      }
+    } catch (err) {
+      lastError = clean(err?.message || err);
+      console.error('[rj mtproto worker]', workerId, lastError);
+      if (row) {
+        try {
+          const floodSeconds = floodWaitSeconds(err);
+          if (floodSeconds != null) {
+            noteFloodWait(floodSeconds);
+            await markRjAudioFailure(archiveDb, row, [lastError], {
+              rateLimited: true,
+              retryAfter: floodSeconds + 5,
+            });
+          } else {
+            await markTransportRetry(archiveDb, row, lastError, 120);
+          }
+        } catch (markErr) {
+          console.error('[rj mtproto worker mark retry]', markErr?.message || markErr);
+        }
+      }
+      await sleep(1500);
+    }
+  }
+}
+
 async function loop() {
   const archiveDb = getArchiveDb();
   if (!archiveDb) {
@@ -481,90 +564,26 @@ async function loop() {
     startGapMs: currentGapMs,
     minGapMs: config.rjMtprotoChannelMinGapMs,
     maxGapMs: config.rjMtprotoChannelMaxGapMs,
+    concurrency: config.rjMtprotoChannelConcurrency,
     cached: initial.cached,
     remaining: Number(initial.total || 0) - Number(initial.cached || 0),
   }));
 
-  while (!stopped && config.rjMtprotoChannelWorkerEnabled) {
-    let row = null;
-    try {
-      row = await claimNext(archiveDb);
-      if (!row) {
-        const state = await progress(archiveDb);
-        const remaining = Number(state.pending || 0)
-          + Number(state.processing || 0)
-          + Number(state.retry || 0);
-        if (remaining === 0) {
-          console.log('[rj mtproto worker] archive complete');
-          break;
-        }
-        await sleep(10_000);
-        continue;
-      }
+  console.log('[rj mtproto worker] concurrency', config.rjMtprotoChannelConcurrency);
 
-      const result = await processRow(archiveDb, row);
-      processedThisProcess += 1;
+  await Promise.all(
+    Array.from({ length: config.rjMtprotoChannelConcurrency }, (_, index) =>
+      workerLoop(archiveDb, index + 1)
+    )
+  );
 
-      if (result.ok) {
-        cachedThisProcess += 1;
-        lastCachedAt = new Date().toISOString();
-        lastError = null;
-
-        if (
-          cachedThisProcess <= 10
-          || cachedThisProcess % 100 === 0
-        ) {
-          console.log('[rj mtproto worker] cached', JSON.stringify({
-            count: cachedThisProcess,
-            artist: row.artist,
-            title: row.title,
-            quality: result.candidate.quality,
-            host: result.candidate.host,
-            duration: result.duration,
-            gapMs: currentGapMs,
-          }));
-        }
-      } else if (result.rateLimited) {
-        lastError = result.errors?.[result.errors.length - 1] || 'MTProto flood wait';
-      } else if (result.transportRetry) {
-        lastError = result.errors?.[result.errors.length - 1] || 'channel transport retry';
-      } else if (!result.stopped) {
-        failedThisProcess += 1;
-        lastError = result.errors?.[result.errors.length - 1] || 'all direct candidates failed';
-        console.warn('[rj mtproto worker] miss', JSON.stringify({
-          artist: row.artist,
-          title: row.title,
-          attempts: row.attempts,
-          error: lastError,
-        }));
-      }
-
-      if (processedThisProcess > 0 && processedThisProcess % 250 === 0) {
-        await progress(archiveDb);
-      }
-    } catch (err) {
-      lastError = clean(err?.message || err);
-      console.error('[rj mtproto worker]', lastError);
-      if (row) {
-        try {
-          const floodSeconds = floodWaitSeconds(err);
-          if (floodSeconds != null) {
-            noteFloodWait(floodSeconds);
-            await markRjAudioFailure(archiveDb, row, [lastError], {
-              rateLimited: true,
-              retryAfter: floodSeconds + 5,
-            });
-          } else {
-            await markTransportRetry(archiveDb, row, lastError, 120);
-          }
-        } catch (markErr) {
-          console.error('[rj mtproto worker mark retry]', markErr?.message || markErr);
-        }
-      }
-      await sleep(1500);
-    }
+  const finalState = await progress(archiveDb);
+  const remaining = Number(finalState.pending || 0)
+    + Number(finalState.processing || 0)
+    + Number(finalState.retry || 0);
+  if (remaining === 0) {
+    console.log('[rj mtproto worker] archive complete');
   }
-
   console.log('[rj mtproto worker] stopped');
 }
 
@@ -580,7 +599,8 @@ export function startRjMtprotoChannelWorker() {
 
 export function stopRjMtprotoChannelWorker() {
   stopped = true;
-  if (activeTransfer) activeTransfer.cancel();
+  for (const transfer of activeTransfers.values()) transfer.cancel();
+  activeTransfers.clear();
 }
 
 export function getRjMtprotoChannelWorkerRuntimeStatus() {
@@ -598,6 +618,8 @@ export function getRjMtprotoChannelWorkerRuntimeStatus() {
     startGapMs: config.rjMtprotoChannelStartGapMs,
     minGapMs: config.rjMtprotoChannelMinGapMs,
     maxGapMs: config.rjMtprotoChannelMaxGapMs,
+    concurrency: config.rjMtprotoChannelConcurrency,
+    inFlight: activeTransfers.size,
     backoffUntil,
     backoffActive: Boolean(backoffUntil && Date.parse(backoffUntil) > Date.now()),
     channel: channelState,

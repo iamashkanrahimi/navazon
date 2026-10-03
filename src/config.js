@@ -53,6 +53,10 @@ export const config = {
     1500,
     Number(process.env.RJ_MTPROTO_CHANNEL_MAX_GAP_MS || 5000)
   ),
+  rjMtprotoChannelConcurrency: Math.max(
+    1,
+    Math.min(3, Number(process.env.RJ_MTPROTO_CHANNEL_CONCURRENCY || 2))
+  ),
   rjAudioCacheDelayMs: Math.max(900, Number(process.env.RJ_AUDIO_CACHE_DELAY_MS || 1100)),
   rjAudioCacheConcurrency: Math.max(
     1,
