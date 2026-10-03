@@ -528,7 +528,7 @@ function crossScriptSearchPhraseCompatible(left = '', right = '') {
   return allowed > 0 && smallEditDistance(leftJoined, rightJoined) <= allowed;
 }
 
-function queryContainsWholeSearchField(query = '', field = '') {
+export function queryContainsWholeSearchField(query = '', field = '') {
   const fieldRaw = cleanText(field);
   const fieldTokens = rawSearchTokens(fieldRaw);
   if (!fieldRaw || !fieldTokens.length) return false;
