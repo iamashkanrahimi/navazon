@@ -26,6 +26,11 @@ import {
   getRjMtprotoChannelWorkerSummary,
 } from './rjMtprotoChannelWorker.js';
 import { closeArchiveDb } from './archiveDb.js';
+import {
+  startSpotifyMusixmatchPilot,
+  getSpotifyMusixmatchPilotRuntimeStatus,
+  getSpotifyMusixmatchPilotSummary,
+} from './spotifyMusixmatchPilot.js';
 import { seedAhangifyBestPilot } from './ahangifyPilot.js';
 import {
   startAhangifyArchivePump,
@@ -175,6 +180,7 @@ const server = http.createServer(async (req,res) => {
         mediaCache:getMediaCacheRuntimeStatus(),
         rjAudioCache:getRjAudioCacheRuntimeStatus(),
         rjMtprotoChannel:getRjMtprotoChannelWorkerRuntimeStatus(),
+        spotifyMusixmatchPilot:getSpotifyMusixmatchPilotRuntimeStatus(),
       }));
       return;
     }
@@ -249,6 +255,11 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await runCacheIntegrityAudit({ log:false }),null,2)); return;
     }
+    if (req.method === 'GET' && url.pathname === '/admin/spotify-musixmatch-pilot') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await getSpotifyMusixmatchPilotSummary(),null,2)); return;
+    }
     res.writeHead(404).end('not found');
   } catch (err) {
     console.error('[http]',err.message);
@@ -265,6 +276,14 @@ server.listen(config.port,'0.0.0.0',async () => {
   );
   startCacheIntegrityAuditScheduler();
   console.log('Cache integrity audit scheduler started: every 15 minutes');
+  if (config.spotifyMusixmatchPilotEnabled) {
+    setTimeout(() => {
+      void startSpotifyMusixmatchPilot().catch(err => {
+        console.error('[spotify musixmatch pilot startup]', err?.stack || err?.message || err);
+      });
+    }, 90_000).unref?.();
+    console.log('Spotify/Musixmatch pilot scheduled: 200 tracks');
+  }
 
   if (!config.publicBaseUrl) {
     console.warn('RENDER_EXTERNAL_URL/PUBLIC_BASE_URL missing; Telegram webhook not changed.');

@@ -40,6 +40,12 @@ export const config = {
   archiveImportBaseUrl: (process.env.ARCHIVE_IMPORT_BASE_URL || '').replace(/\/$/, ''),
   archiveImportOnce: boolEnv('ARCHIVE_IMPORT_ONCE', false),
 
+  spotifyClientId: (process.env.SPOTIFY_CLIENT_ID || '').trim(),
+  spotifyClientSecret: (process.env.SPOTIFY_CLIENT_SECRET || '').trim(),
+  spotifyMarket: (process.env.SPOTIFY_MARKET || 'US').trim().toUpperCase(),
+  musixmatchApiKey: (process.env.MUSIXMATCH_API_KEY || '').trim(),
+  spotifyMusixmatchPilotEnabled: boolEnv('SPOTIFY_MUSIXMATCH_PILOT_ENABLED', false),
+
   mediaCacheEnabled: boolEnv('MEDIA_CACHE_ENABLED', false),
   mediaCacheRecoveryEnabled: boolEnv('MEDIA_CACHE_RECOVERY_ENABLED', false),
   mediaCacheChatId: (process.env.MEDIA_CACHE_CHAT_ID || '').trim(),

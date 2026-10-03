@@ -6436,3 +6436,50 @@ test('featured searches keep modern explicit version intent before shortened bas
   assert.equal(queries[0], 'Artist Song feat Guest Remastered');
   assert.equal(queries[1], 'Artist Song');
 });
+
+
+test('Spotify enrichment matcher is fail-closed on wrong Artist and duration', async () => {
+  const { scoreSpotifyCandidate } = await import('../src/spotifyMusixmatchPilot.js');
+  const track = { artist_display:'Ali Sorena', title:'Maryam', duration_seconds:210 };
+
+  assert.equal(scoreSpotifyCandidate(track, {
+    name:'Maryam',
+    artists:[{ name:'Ali Sorena', id:'artist-good' }],
+    duration_ms:211000,
+  }).exact, true);
+
+  assert.equal(scoreSpotifyCandidate(track, {
+    name:'Maryam',
+    artists:[{ name:'Mehrdad Asemani', id:'artist-wrong' }],
+    duration_ms:210000,
+  }).exact, false);
+
+  assert.equal(scoreSpotifyCandidate(track, {
+    name:'Maryam',
+    artists:[{ name:'Ali Sorena', id:'artist-good' }],
+    duration_ms:230000,
+  }).exact, false);
+});
+
+test('Musixmatch enrichment matcher is fail-closed on wrong Track identity', async () => {
+  const { scoreMusixmatchCandidate } = await import('../src/spotifyMusixmatchPilot.js');
+  const track = { artist_display:'Ali Sorena', title:'Maryam', duration_seconds:210 };
+
+  assert.equal(scoreMusixmatchCandidate(track, {
+    track_name:'Maryam',
+    artist_name:'Ali Sorena',
+    track_length:209,
+  }).exact, true);
+
+  assert.equal(scoreMusixmatchCandidate(track, {
+    track_name:'Maryam Remix',
+    artist_name:'Ali Sorena',
+    track_length:210,
+  }).exact, false);
+
+  assert.equal(scoreMusixmatchCandidate(track, {
+    track_name:'Maryam',
+    artist_name:'Mehrdad Asemani',
+    track_length:210,
+  }).exact, false);
+});
