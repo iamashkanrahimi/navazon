@@ -61,6 +61,7 @@ const {
   collectNewMessages,
 } = await import('../src/mtproto.js');
 const { SerialQueue } = await import('../src/queue.js');
+const { planBulkIndividualRecovery } = await import('../src/bulkRecovery.js');
 const { FileCache, trackCacheKey } = await import('../src/cache.js');
 const {
   DeepCatalog,
@@ -6482,4 +6483,128 @@ test('Musixmatch enrichment matcher is fail-closed on wrong Track identity', asy
     artist_name:'Mehrdad Asemani',
     track_length:210,
   }).exact, false);
+});
+
+
+test('cache-learned aliases treat Ft and feat spelling as the same Track variant', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (sql, params = []) => {
+    const text = String(sql);
+    calls.push({ sql: text, params });
+
+    if (text.includes('FROM track_aliases a')) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track: { source: 'melobot' },
+          media: {
+            performer: 'Xaniar',
+            title: 'Shabe Mahtab (Seventhsoul Remix) (Ft Ehaam)',
+          },
+        }],
+      };
+    }
+    if (text.includes('FROM deep_tracks') && text.includes('artist, title')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          artist: 'Xaniar',
+          title: 'Shabe Mahtab (Seventhsoul Remix) (Ft Ehaam)',
+          source_data: { source: 'melobot' },
+          duration_seconds: 210,
+          popularity_count: null,
+          popularity_text: null,
+        }],
+      };
+    }
+    if (text.includes('SELECT 1 FROM deep_tracks')) {
+      return { rowCount: 1, rows: [{ '?column?': 1 }] };
+    }
+    if (text.includes('INSERT INTO track_aliases')) {
+      return { rowCount: 1, rows: [] };
+    }
+    throw new Error('Unexpected SQL in feat alias regression: ' + text.slice(0, 140));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const resolved = await catalog.resolveTrackAlias({
+      artist: 'Xaniar',
+      title: 'Shabe Mahtab (Seventhsoul Remix) (feat. Ehaam)',
+      source: 'melobot',
+    });
+
+    assert.equal(resolved.artist, 'Xaniar');
+    assert.equal(
+      resolved.title,
+      'Shabe Mahtab (Seventhsoul Remix) (Ft Ehaam)'
+    );
+    assert.ok(calls.some(call => call.sql.includes('INSERT INTO track_aliases')));
+
+    const cacheRead = calls.find(call => call.sql.includes('FROM track_cache'));
+    assert.ok(cacheRead.sql.includes('LEFT(track_key, LENGTH($1)) = $1'));
+    assert.equal(cacheRead.sql.includes('track_key LIKE'), false);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('large bulk failures recover only a bounded foreground-safe subset', () => {
+  const tracks = Array.from({ length: 10 }, (_, index) => ({
+    artist: 'Artist',
+    title: `Track ${index + 1}`,
+  }));
+  const plan = planBulkIndividualRecovery(tracks);
+  assert.equal(plan.attempt.length, 3);
+  assert.equal(plan.skipped, 7);
+  assert.deepEqual(
+    plan.attempt.map(track => track.title),
+    ['Track 1', 'Track 2', 'Track 3']
+  );
+
+  const small = planBulkIndividualRecovery(tracks.slice(0, 2));
+  assert.equal(small.attempt.length, 2);
+  assert.equal(small.skipped, 0);
+});
+
+test('media cache rejection diagnostics distinguish missing evidence from mismatched identity', async () => {
+  const originalQuery = db.query;
+  const originalWarn = console.warn;
+  const warnings = [];
+  db.query = async () => {
+    throw new Error('Rejected media must not touch DB');
+  };
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+
+  try {
+    const cacheStore = new FileCache();
+    await cacheStore.set(
+      { artist: 'Shadmehr Aghili', title: 'Taghdir', source: 'melobot' },
+      { fileId: 'media-without-tags' }
+    );
+
+    const catalog = new DeepCatalog();
+    await catalog.setMedia(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' },
+      'hq',
+      {
+        fileId: 'wrong-media',
+        performer: 'Mehrdad Asemani',
+        title: 'Maryam',
+      },
+      { source: 'melobot' }
+    );
+
+    assert.ok(warnings.some(line => line.includes('missing_identity_evidence')));
+    assert.ok(warnings.some(line => line.includes('identity_mismatch')));
+    assert.ok(warnings.some(line => line.includes('Shadmehr Aghili')));
+    assert.ok(warnings.some(line => line.includes('Mehrdad Asemani')));
+  } finally {
+    console.warn = originalWarn;
+    db.query = originalQuery;
+  }
 });
