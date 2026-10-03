@@ -135,7 +135,7 @@ export async function runCacheIntegrityAudit({ log = true } = {}) {
               SELECT 1
               FROM track_cache tc
               WHERE tc.active=TRUE
-                AND tc.track_key LIKE deep_track_media.track_key || '|%'
+                AND LEFT(tc.track_key, LENGTH(deep_track_media.track_key) + 1) = deep_track_media.track_key || '|'
                 AND COALESCE(tc.track->>'source','')='radiojavan'
                 AND COALESCE(tc.media->>'verifiedDirect','false')='true'
                 AND COALESCE(tc.media->>'identityVerified','false')='true'
@@ -148,7 +148,7 @@ export async function runCacheIntegrityAudit({ log = true } = {}) {
               SELECT 1
               FROM track_cache tc
               WHERE tc.active=TRUE
-                AND tc.track_key LIKE deep_track_media.track_key || '|%'
+                AND LEFT(tc.track_key, LENGTH(deep_track_media.track_key) + 1) = deep_track_media.track_key || '|'
                 AND COALESCE(tc.track->>'source','')='radiojavan'
                 AND COALESCE(tc.media->>'verifiedDirect','false')='true'
                 AND COALESCE(tc.media->>'identityVerified','false')='true'
