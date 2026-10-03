@@ -14,6 +14,9 @@ import {
 const CHANNEL_KEY = 'rj_mtproto_archive_channel_v1';
 const RESULT_KEY = 'rj_mtproto_channel_pilot_v1';
 const TOTAL = 20;
+const BENCHMARK_TOTAL = 100;
+const STARTUP_SETTLE_MS = 15_000;
+const BENCHMARK_GAP_MS = 600;
 const POST_PREFIX = 'navazon-rj-channel-pilot:';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -214,6 +217,125 @@ async function ensureArchiveChannel() {
   return saved;
 }
 
+async function runBenchmark(archiveDb, channel) {
+  const { rows } = await archiveDb.query(`
+    SELECT
+      source_url, source_id, artist, title,
+      direct_url, direct_quality, direct_host,
+      telegram_file_id, telegram_file_unique_id,
+      expected_duration_seconds, actual_duration_seconds
+    FROM rj_audio_cache
+    WHERE status='cached'
+      AND direct_url IS NOT NULL
+      AND telegram_file_id IS NOT NULL
+      AND NULLIF(BTRIM(COALESCE(source_id,'')), '') IS NOT NULL
+    ORDER BY md5(source_url || ':mtproto-channel-benchmark-v1')
+    LIMIT $1
+  `, [BENCHMARK_TOTAL]);
+
+  const startedAt = Date.now();
+  let received = 0;
+  let verified = 0;
+  let sameUnique = 0;
+  let audio = 0;
+  let floodWaitSeconds = null;
+  const failures = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const sourceId = String(row.source_id);
+    try {
+      const receivedPromise = expectBatch([sourceId], 20_000);
+      await sendExternalMediaToPeer(
+        tg,
+        channel.peerId,
+        row.direct_url,
+        `${POST_PREFIX}${row.source_id}`
+      );
+      const incoming = await receivedPromise;
+      const media = incoming.get(sourceId) || null;
+      const checked = evaluate(row, media);
+      if (media) received += 1;
+      if (checked.kind === 'audio') audio += 1;
+      if (checked.ok) verified += 1;
+      if (checked.sameUniqueId) sameUnique += 1;
+
+      if (!checked.ok) {
+        failures.push({
+          index,
+          sourceId,
+          artist: row.artist,
+          title: row.title,
+          kind: checked.kind,
+          received: Boolean(media),
+          sameUniqueId: checked.sameUniqueId,
+          durationDelta: checked.durationDelta,
+        });
+      }
+    } catch (err) {
+      if (activeBatch) {
+        clearTimeout(activeBatch.timer);
+        activeBatch = null;
+      }
+      const message = clean(err?.message || err);
+      const seconds = Number(err?.seconds || err?.value || 0) || null;
+      failures.push({
+        index,
+        sourceId,
+        artist: row.artist,
+        title: row.title,
+        error: message.slice(0, 500),
+        seconds,
+      });
+      if (/FLOOD_WAIT/i.test(message) || seconds) {
+        floodWaitSeconds = seconds;
+        break;
+      }
+    }
+
+    if ((index + 1) % 20 === 0) {
+      console.log('[rj channel benchmark] progress', JSON.stringify({
+        completed: index + 1,
+        received,
+        verified,
+        sameUnique,
+        elapsedMs: Date.now() - startedAt,
+      }));
+    }
+    if (index + 1 < rows.length) await sleep(BENCHMARK_GAP_MS);
+  }
+
+  const completed = received + failures.filter(item => item.error).length;
+  const elapsedMs = Date.now() - startedAt;
+  const summary = {
+    requested: rows.length,
+    completed,
+    received,
+    audio,
+    verified,
+    sameUnique,
+    failures: failures.slice(0, 20),
+    floodWaitSeconds,
+    elapsedMs,
+    verifiedPerMinute: elapsedMs > 0
+      ? Number((verified * 60_000 / elapsedMs).toFixed(1))
+      : null,
+  };
+  console.log('[rj channel benchmark] result', JSON.stringify({
+    requested: summary.requested,
+    completed: summary.completed,
+    received: summary.received,
+    audio: summary.audio,
+    verified: summary.verified,
+    sameUnique: summary.sameUnique,
+    failureCount: failures.length,
+    floodWaitSeconds: summary.floodWaitSeconds,
+    elapsedMs: summary.elapsedMs,
+    verifiedPerMinute: summary.verifiedPerMinute,
+  }));
+  return summary;
+}
+
 export async function runRjMtprotoChannelPilot() {
   if (!config.rjMtprotoChannelPilotEnabled) {
     return { enabled: false, reason: 'disabled' };
@@ -231,6 +353,12 @@ export async function runRjMtprotoChannelPilot() {
   }
 
   const channel = await ensureArchiveChannel();
+
+  // Zero-downtime deploys briefly keep the previous instance alive. Waiting
+  // here makes sure channel_post updates land on the same process that owns
+  // this pilot's waiter.
+  await sleep(STARTUP_SETTLE_MS);
+
   const { rows } = await archiveDb.query(`
     SELECT
       source_url, source_id, source_slug, artist, title,
@@ -313,6 +441,10 @@ export async function runRjMtprotoChannelPilot() {
     const sameUnique = results.filter(item => item.sameUniqueId).length;
     const sameFileId = results.filter(item => item.sameFileId).length;
 
+    const benchmark = ok >= TOTAL - 1
+      ? await runBenchmark(archiveDb, channel)
+      : null;
+
     const summary = {
       enabled: true,
       status: ok === TOTAL ? 'success' : (received ? 'partial' : 'failed'),
@@ -323,6 +455,7 @@ export async function runRjMtprotoChannelPilot() {
       sameUnique,
       sameFileId,
       channel,
+      benchmark,
       elapsedMs: Date.now() - startedAt,
       completedAt: Date.now(),
       results,
