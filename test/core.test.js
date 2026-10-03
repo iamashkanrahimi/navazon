@@ -6346,3 +6346,93 @@ test('FileCache identity-family lookup uses a literal prefix instead of SQL LIKE
     db.query = originalQuery;
   }
 });
+
+
+test('cross-script single-token consensus must be phonetic, not merely dominant', () => {
+  const wrong = Array.from({ length: 5 }, (_, index) => ({
+    artist: 'Yas',
+    title: `Wrong ${index + 1}`,
+  }));
+  assert.equal(shouldUseSearchRelevanceFallback('هیچکس', 0, wrong[0], wrong), true);
+  assert.deepEqual(keepFullCoverageTracksWhenAvailable('هیچکس', wrong), []);
+
+  const correct = Array.from({ length: 5 }, (_, index) => ({
+    artist: 'Hichkas',
+    title: `Track ${index + 1}`,
+  }));
+  assert.equal(shouldUseSearchRelevanceFallback('هیچکس', 0, correct[0], correct), false);
+  assert.equal(keepFullCoverageTracksWhenAvailable('هیچکس', correct).length, 5);
+});
+
+test('multi-token search fails closed when every source row only partially matches', () => {
+  const wrong = [
+    { artist: 'Mehrdad Asemani', title: 'Maryam' },
+    { artist: 'Yas', title: 'Sorena' },
+    { artist: 'Ali Yasini', title: 'Maryam' },
+  ];
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('Ali Sorena Maryam', wrong),
+    []
+  );
+
+  const exact = { artist: 'Ali Sorena', title: 'Maryam' };
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('Ali Sorena Maryam', [...wrong, exact]),
+    [exact]
+  );
+});
+
+test('search coverage tolerates compact stage names without substring matching', () => {
+  const compactQuery = rankTracksForQuery(
+    '25Band Delam',
+    [{ artist: '25 Band', title: 'Delam' }]
+  )[0];
+  assert.equal(compactQuery.coverage, 2);
+  assert.equal(compactQuery.total, 2);
+
+  const spacedQuery = rankTracksForQuery(
+    '25 Band Delam',
+    [{ artist: '25Band', title: 'Delam' }]
+  )[0];
+  assert.equal(spacedQuery.coverage, 3);
+  assert.equal(spacedQuery.total, 3);
+
+  const unsafePrefix = rankTracksForQuery(
+    'Ali Song',
+    [{ artist: 'Alireza', title: 'Song' }]
+  )[0];
+  assert.equal(unsafePrefix.coverage, 1);
+  assert.equal(unsafePrefix.total, 2);
+});
+
+test('search ignores Persian ZWNJ spelling differences', () => {
+  const joined = rankTracksForQuery(
+    'نمی‌خوام',
+    [{ artist: 'Artist', title: 'نمیخوام' }]
+  )[0];
+  assert.equal(joined.coverage, joined.total);
+
+  const zwnjTrack = rankTracksForQuery(
+    'نمیخوام',
+    [{ artist: 'Artist', title: 'نمی‌خوام' }]
+  )[0];
+  assert.equal(zwnjTrack.coverage, zwnjTrack.total);
+});
+
+test('modern alternate versions are distinct and lose ranking when unrequested', () => {
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Nightcore'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song Reverb'), false);
+  assert.equal(trackTitleIdentityCompatible('Song', 'Song 8D'), false);
+
+  const ranked = rankTracksForQuery('Artist Song', [
+    { artist: 'Artist', title: 'Song Nightcore' },
+    { artist: 'Artist', title: 'Song' },
+  ]);
+  assert.equal(ranked[0].track.title, 'Song');
+});
+
+test('featured searches keep modern explicit version intent before shortened base query', () => {
+  const queries = primarySearchQueries('Artist Song feat Guest Remastered');
+  assert.equal(queries[0], 'Artist Song feat Guest Remastered');
+  assert.equal(queries[1], 'Artist Song');
+});
