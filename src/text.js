@@ -759,6 +759,56 @@ function searchTokenCoverage(queryTokens = [], track = {}) {
     }
   }
 
+
+  // Composite Artist credits are member sets, not ordered phrases. A query
+  // such as "علی سورنا و بهرام ..." must be able to match
+  // "Bahram & Ali Sorena" without accepting a collapsed single member or a
+  // longer impostor. Mark each explicit source member independently; full
+  // coverage still requires every query identity token (including the title).
+  const artistParts = artistCreditParts(rawFields[0] || '');
+  if (artistParts.length > 1) {
+    for (const artistPart of artistParts) {
+      const partTokens = rawSearchTokens(artistPart).map(canonicalSearchToken);
+      const partJoined = partTokens.join(' ');
+      const partCompact = partTokens.join('');
+      let best = null;
+
+      for (let length = queryTokens.length; length >= 1 && !best; length -= 1) {
+        for (
+          let startIndex = 0;
+          startIndex + length <= queryTokens.length;
+          startIndex += 1
+        ) {
+          const segment = queryTokens.slice(startIndex, startIndex + length);
+          if (segment.some(isCanonicalVariantSearchToken)) continue;
+
+          const sameScript = (
+            segment.join(' ') === partJoined
+            || segment.join('') === partCompact
+          );
+          const crossScript = crossScriptSearchPhraseCompatible(
+            segment.join(' '),
+            artistPart
+          );
+          if (!sameScript && !crossScript) continue;
+
+          best = { startIndex, length };
+          break;
+        }
+      }
+
+      if (best) {
+        for (
+          let index = best.startIndex;
+          index < best.startIndex + best.length;
+          index += 1
+        ) {
+          matched[index] = true;
+        }
+      }
+    }
+  }
+
   return matched.filter(Boolean).length;
 }
 
