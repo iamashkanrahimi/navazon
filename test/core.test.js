@@ -6310,7 +6310,38 @@ test('every DeepCatalog serving/presence query quarantines legacy Radio Javan de
       assert.match(sql, /verifiedDirect/);
       assert.match(sql, /fileId/);
       assert.match(sql, /m\.file_id/);
+      assert.match(sql, /LEFT\(tc\.track_key, LENGTH\(m\.track_key\) \+ 1\)/);
+      assert.doesNotMatch(sql, /tc\.track_key LIKE/);
     }
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+
+test('FileCache identity-family lookup uses a literal prefix instead of SQL LIKE wildcards', async () => {
+  const originalQuery = db.query;
+  let seenSql = '';
+  let seenParams = null;
+
+  db.query = async (sql, params = []) => {
+    seenSql = String(sql);
+    seenParams = params;
+    return { rowCount: 0, rows: [] };
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Artist_Name%',
+      title: 'Song_Title%',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+    assert.match(seenSql, /LEFT\(track_key, LENGTH\(\$1\)\) = \$1/);
+    assert.doesNotMatch(seenSql, /track_key LIKE \$1/);
+    assert.equal(String(seenParams?.[0] || '').endsWith('|'), true);
+    assert.equal(String(seenParams?.[0] || '').endsWith('|%'), false);
   } finally {
     db.query = originalQuery;
   }
