@@ -209,6 +209,59 @@ async function claimNext(db) {
   return rows[0] || null;
 }
 
+export function buildCanonicalRjMedia(
+  row,
+  candidate,
+  audio = {},
+  { acquisition = 'radiojavan_direct' } = {}
+) {
+  const normalizedAudio = {
+    ...audio,
+    file_id: audio.file_id || audio.fileId || null,
+    file_unique_id: audio.file_unique_id || audio.fileUniqueId || null,
+    file_size: audio.file_size || audio.fileSize || null,
+    duration: Number(audio.duration || audio.actual_duration_seconds || 0) || null,
+    title: clean(audio.title || audio.observed_title || ''),
+    performer: clean(audio.performer || audio.observed_performer || ''),
+  };
+  const verification = verifyRjTelegramAudio(row, { audio: normalizedAudio });
+  if (!verification.ok) {
+    const err = new Error(
+      `Radio Javan canonical identity rejected: ${verification.reason || 'unknown identity mismatch'}`
+    );
+    err.code = 'RJ_CANONICAL_IDENTITY_REJECTED';
+    err.verification = verification;
+    throw err;
+  }
+
+  const observedTitle = clean(normalizedAudio.title);
+  const observedPerformer = clean(normalizedAudio.performer);
+  return {
+    kind: 'audio',
+    fileId: normalizedAudio.file_id,
+    fileUniqueId: normalizedAudio.file_unique_id,
+    // Preserve actual Telegram metadata whenever it exists so downstream
+    // identity guards validate independent evidence instead of echoing the
+    // expected Radio Javan row back to themselves.
+    title: observedTitle || row.title,
+    performer: observedPerformer || row.artist,
+    observedTitle: observedTitle || null,
+    observedPerformer: observedPerformer || null,
+    duration: normalizedAudio.duration,
+    fileSize: Number(normalizedAudio.file_size || 0) || null,
+    bitrate: Number(candidate.quality || row.direct_quality || 0) || null,
+    directUrl: candidate.url || row.direct_url || null,
+    verifiedDirect: true,
+    identityVerified: true,
+    identityVerification: {
+      titleOk: verification.titleOk,
+      artistOk: verification.artistOk,
+      durationDelta: verification.durationDelta,
+    },
+    acquisition,
+  };
+}
+
 export async function writeCanonicalProduction(
   row,
   candidate,
@@ -221,19 +274,7 @@ export async function writeCanonicalProduction(
     source: 'radiojavan',
     rawText: row.source_url,
   };
-  const media = {
-    kind: 'audio',
-    fileId: audio.file_id || audio.fileId,
-    fileUniqueId: audio.file_unique_id || audio.fileUniqueId || null,
-    title: row.title,
-    performer: row.artist,
-    duration: Number(audio.duration || audio.actual_duration_seconds || 0) || null,
-    fileSize: Number(audio.file_size || audio.fileSize || 0) || null,
-    bitrate: Number(candidate.quality || row.direct_quality || 0) || null,
-    directUrl: candidate.url || row.direct_url || null,
-    verifiedDirect: true,
-    acquisition,
-  };
+  const media = buildCanonicalRjMedia(row, candidate, audio, { acquisition });
 
   if (!media.fileId) throw new Error('Radio Javan canonical media missing file_id');
 
@@ -270,6 +311,8 @@ async function syncExistingCanonicalRows(db) {
           file_unique_id: row.telegram_file_unique_id,
           file_size: row.file_size,
           duration: row.actual_duration_seconds,
+          title: row.observed_title || '',
+          performer: row.observed_performer || '',
         });
         await db.query(
           'UPDATE rj_audio_cache SET canonicalized_at=NOW(), updated_at=NOW() WHERE source_url=$1',
