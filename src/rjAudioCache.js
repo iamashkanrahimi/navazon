@@ -134,16 +134,23 @@ export function verifyTelegramAudio(row, message) {
     ? artistCreditCompatible(row.artist, performer)
     : null;
 
-  const textContradictions = [titleOk, artistOk].filter(value => value === false).length;
-  const ok = durationOk && textContradictions < 2;
+  const textContradictions = [titleOk, artistOk].filter(value => value === false);
+  const ok = durationOk && textContradictions.length === 0;
+
+  let reason = null;
+  if (!durationOk) {
+    reason = `duration mismatch: expected=${expectedDuration} actual=${actualDuration}`;
+  } else if (titleOk === false && artistOk === false) {
+    reason = 'embedded title and performer contradict Radio Javan identity';
+  } else if (titleOk === false) {
+    reason = 'embedded title contradicts Radio Javan identity';
+  } else if (artistOk === false) {
+    reason = 'embedded performer contradicts Radio Javan identity';
+  }
 
   return {
     ok,
-    reason: ok
-      ? null
-      : (!durationOk
-          ? `duration mismatch: expected=${expectedDuration} actual=${actualDuration}`
-          : 'embedded title and performer both contradict Radio Javan identity'),
+    reason,
     audio,
     expectedDuration,
     actualDuration,
