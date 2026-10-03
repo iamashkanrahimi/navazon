@@ -390,9 +390,10 @@ function searchRefinementScore(rawText, query = '') {
   if (!raw || isControl(raw) || parseAlbumButton(raw) || parseTrackButton(raw)) return -1;
 
   const isArtistPicker = /^[🗣🎤🎙]/u.test(raw);
-  const comparable = normalize(
-    isArtistPicker ? raw.replace(/^[🗣🎤🎙]+\s*/u, '') : raw
-  );
+  const pickerName = isArtistPicker
+    ? clean(raw.replace(/^[🗣🎤🎙]+\s*/u, ''))
+    : '';
+  const comparable = normalize(isArtistPicker ? pickerName : raw);
   const target = normalize(query);
   if (!comparable || !target) return -1;
 
@@ -400,15 +401,23 @@ function searchRefinementScore(rawText, query = '') {
   const buttonTokens = comparable.split(' ').filter(Boolean);
   const buttonSet = new Set(buttonTokens);
   const overlap = queryTokens.filter(token => buttonSet.has(token)).length;
-  if (!overlap) return -1;
+  const wholeArtistInQuery = Boolean(
+    isArtistPicker
+    && pickerName
+    && queryContainsWholeSearchField(query, pickerName)
+  );
+
+  if (!overlap && !wholeArtistInQuery) return -1;
 
   // Artist picker navigation needs evidence for the whole displayed Artist
-  // name, not just one shared token. Without this, a query such as "Farhad"
-  // can be refined into "Farhad Ravanbakhsh" before Track relevance has a
-  // chance to reject the collision.
-  if (isArtistPicker && overlap < buttonTokens.length) return -1;
+  // identity, not just one shared token. The whole-field path also supports
+  // conservative Persian↔Latin picker transitions.
+  if (isArtistPicker && !wholeArtistInQuery && overlap < buttonTokens.length) {
+    return -1;
+  }
 
   let score = overlap * 20;
+  if (wholeArtistInQuery) score += 70;
   if (comparable === target) score += 80;
   else if (comparable.includes(target) || target.includes(comparable)) score += 35;
 
