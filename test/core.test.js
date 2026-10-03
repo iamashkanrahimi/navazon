@@ -6899,3 +6899,57 @@ test('MeloBot search refinement rejects longer Artist identities that only share
     null
   );
 });
+
+
+test('RJ API recovery accepts exact identity and prefers fresh hashed HQ links', async () => {
+  const { evaluateRjApiRecovery } = await import('../src/rjApiRecovery.js');
+  const result = evaluateRjApiRecovery(
+    {
+      source_id:'159402',
+      artist:'Arman Garshasbi',
+      title:'Hezar Omid',
+      expected_duration_seconds:194,
+    },
+    {
+      id:159402,
+      artist:'Arman Garshasbi',
+      song:'Hezar Omid',
+      duration:184.2,
+      hq_link:'https://host2.mediacon-rj.app/media/mp3/aac-256/159402-deadbeef.m4a',
+      lq_link:'https://host2.mediacon-rj.app/media/mp3/aac-128/159402-deadbeef.m4a',
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.duration, 184.2);
+  assert.equal(result.candidates[0].quality, 256);
+  assert.equal(result.candidates[0].host, 'host2.mediacon-rj.app');
+});
+
+test('RJ API recovery fails closed when fresh API identity differs', async () => {
+  const { evaluateRjApiRecovery } = await import('../src/rjApiRecovery.js');
+
+  const wrongArtist = evaluateRjApiRecovery(
+    { source_id:'123', artist:'Ali Sorena', title:'Maryam' },
+    {
+      id:123,
+      artist:'Mehrdad Asemani',
+      song:'Maryam',
+      duration:210,
+      hq_link:'https://host2.mediacon-rj.app/media/mp3/aac-256/123-hash.m4a',
+    }
+  );
+  assert.equal(wrongArtist.ok, false);
+
+  const wrongId = evaluateRjApiRecovery(
+    { source_id:'123', artist:'Ali Sorena', title:'Maryam' },
+    {
+      id:999,
+      artist:'Ali Sorena',
+      song:'Maryam',
+      duration:210,
+      hq_link:'https://host2.mediacon-rj.app/media/mp3/aac-256/999-hash.m4a',
+    }
+  );
+  assert.equal(wrongId.ok, false);
+});

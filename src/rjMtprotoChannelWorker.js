@@ -5,12 +5,13 @@ import { sendExternalMediaToPeer } from './mtproto.js';
 import { ensureRjMtprotoArchiveChannelFor } from './rjMtprotoChannelPilot.js';
 import { getState, setState } from './state.js';
 import {
-  directCandidates,
+  directCandidatesForRow,
   verifyTelegramAudio,
   ensureRjAudioCacheSchema,
   markRjAudioCached,
   markRjAudioFailure,
 } from './rjAudioCache.js';
+import { prepareFailedRjAudioRecovery } from './rjApiRecovery.js';
 
 const POST_PREFIX = 'navazon-rj-worker:';
 const POST_TIMEOUT_MS = 30_000;
@@ -225,7 +226,7 @@ function expectChannelPost(state, sourceId, timeoutMs = POST_TIMEOUT_MS) {
 }
 
 function candidateFromParsed(row, parsed) {
-  return directCandidates(row.source_slug, row.source_id)
+  return directCandidatesForRow(row)
     .find(candidate =>
       Number(candidate.quality) === Number(parsed.quality)
       && String(candidate.host) === String(parsed.host)
@@ -472,7 +473,7 @@ async function noteFloodWait(state, seconds) {
 async function processRow(db, row, state) {
   const errors = [];
 
-  for (const candidate of directCandidates(row.source_slug, row.source_id)) {
+  for (const candidate of directCandidatesForRow(row)) {
     const allowed = await acquireSendStartSlot(state);
     if (!allowed) {
       await markTransportRetry(db, row, 'worker stopped during transfer', 30);
@@ -707,6 +708,11 @@ async function loop() {
   // same process that owns the current waiters before the long run begins.
   await sleep(STARTUP_SETTLE_MS);
   await resetLegacyBotApiClaims(archiveDb);
+
+  const recovery = await prepareFailedRjAudioRecovery(archiveDb);
+  if (Number(recovery?.scanned || 0) > 0) {
+    console.log('[rj mtproto worker] API recovery', JSON.stringify(recovery));
+  }
 
   const initial = await progress(archiveDb);
   console.log('[rj mtproto worker] started', JSON.stringify({

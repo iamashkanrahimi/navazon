@@ -111,6 +111,31 @@ export function directCandidates(slug = '', sourceId = '') {
   ];
 }
 
+export function directCandidatesForRow(row = {}) {
+  const prepared = Array.isArray(row?.verification?.apiRecovery?.candidates)
+    ? row.verification.apiRecovery.candidates
+    : [];
+
+  const preferred = prepared
+    .map(candidate => ({
+      url: clean(candidate?.url),
+      host: clean(candidate?.host),
+      quality: Number(candidate?.quality || 0) || null,
+      source: clean(candidate?.source || 'rj_api'),
+    }))
+    .filter(candidate => candidate.url && candidate.host);
+
+  const guessed = directCandidates(row.source_slug, row.source_id);
+  const seen = new Set();
+  const merged = [];
+  for (const candidate of [...preferred, ...guessed]) {
+    if (!candidate?.url || seen.has(candidate.url)) continue;
+    seen.add(candidate.url);
+    merged.push(candidate);
+  }
+  return merged;
+}
+
 export async function ensureRjAudioCacheSchema(db) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS rj_audio_cache (
@@ -357,7 +382,7 @@ export async function markRjAudioCached(
            actual_duration_seconds=$10,
            observed_title=$11,
            observed_performer=$12,
-           verification=$13::jsonb,
+           verification=COALESCE(rj_audio_cache.verification,'{}'::jsonb) || $13::jsonb,
            last_error=NULL,
            next_attempt_at=NULL,
            cached_at=NOW(),
