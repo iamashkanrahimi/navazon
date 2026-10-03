@@ -52,7 +52,7 @@ const {
   findArtistButtonFor,
 } = await import('../src/sources/melobot.js');
 const { parseAhangifyResults } = await import('../src/ahangify.js');
-const { verifyTelegramAudio } = await import('../src/rjAudioCache.js');
+const { verifyRjTelegramAudio: verifyTelegramAudio } = await import('../src/rjAudioIdentity.js');
 const {
   installTelegramInbox,
   primeTelegramInboxBoundary,
