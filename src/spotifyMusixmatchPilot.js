@@ -144,7 +144,11 @@ async function musixmatchMatch(track, spotify) {
     `https://api.musixmatch.com/ws/1.1/matcher.track.get?${params}`
   );
   const header = data?.message?.header || {};
-  if (Number(header.status_code || 0) !== 200) {
+  const statusCode = Number(header.status_code || 0);
+  if ([401, 402, 403].includes(statusCode)) {
+    throw new Error(`Musixmatch authorization/plan error: ${statusCode}`);
+  }
+  if (statusCode !== 200) {
     return { status: 'no_match', candidate: null, evidence: null };
   }
   const candidate = data?.message?.body?.track || null;
@@ -165,6 +169,10 @@ async function musixmatchLyrics(trackId) {
   const data = await fetchJson(
     `https://api.musixmatch.com/ws/1.1/track.lyrics.get?${params}`
   );
+  const statusCode = Number(data?.message?.header?.status_code || 0);
+  if ([401, 402, 403].includes(statusCode)) {
+    throw new Error(`Musixmatch authorization/plan error: ${statusCode}`);
+  }
   const lyrics = data?.message?.body?.lyrics || null;
   if (!lyrics) return null;
   const body = String(lyrics.lyrics_body || '');
@@ -212,7 +220,7 @@ async function ensureSchema(db) {
 }
 
 async function selectSample(db, limit = 200) {
-  const artistLimit = Math.max(1, Math.floor(limit / 2));
+  const artistLimit = 100;
   const { rows } = await db.query(`
     WITH core AS (
       SELECT lower(btrim(display_name)) AS artist_norm, display_name
