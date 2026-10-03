@@ -24,6 +24,7 @@ export const sessions = new SessionStore();
 export const deepCatalog = new DeepCatalog();
 export const tg = createTelegramClient();
 export let tg2 = null;
+export let tg3 = null;
 
 await tg.connect();
 if (!(await tg.checkAuthorization())) throw new Error('Proxy Telegram session is not authorized');
@@ -50,6 +51,21 @@ if (config.stringSession2 && config.proxyUserId2) {
   } catch (err) {
     tg2 = null;
     console.error('[second proxy mtproto]', err?.message || err);
+  }
+}
+
+if (config.stringSession3 && config.proxyUserId3) {
+  try {
+    const third = createTelegramClient(config.stringSession3);
+    await third.connect();
+    if (!(await third.checkAuthorization())) {
+      throw new Error('Third Telegram session is not authorized');
+    }
+    tg3 = third;
+    console.log('Third proxy MTProto connected.');
+  } catch (err) {
+    tg3 = null;
+    console.error('[third proxy mtproto]', err?.message || err);
   }
 }
 
