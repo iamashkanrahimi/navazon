@@ -49,7 +49,12 @@ function normalizeSearchText(value = '') {
   // ZWNJ/ZWJ are presentation details in Persian search input. Treat
   // "نمی‌خوام" and "نمیخوام" as the same search spelling without changing
   // the stricter canonical/cache identity normalization used elsewhere.
-  return normalizeText(String(value || '').replace(/[\u200c\u200d]/g, ''));
+  // Search is also accent-insensitive for Latin spellings (Beyoncé/Beyonce),
+  // while durable identity continues to use its own stricter normalization.
+  return normalizeText(String(value || '').replace(/[\u200c\u200d]/g, ''))
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .trim();
 }
 
 export function stableSourceTrackVariant(value = '') {
@@ -398,9 +403,13 @@ export function albumSpecificTitleTokens(query = '', artist = '') {
 }
 
 export function albumTitleAppearsInQuery(query = '', albumTitle = '') {
-  const queryTokens = new Set(albumQueryTokens(query));
-  const titleTokens = normalizeText(albumTitle).split(' ').filter(Boolean);
-  return titleTokens.length > 0 && titleTokens.every(token => queryTokens.has(token));
+  const title = cleanText(albumTitle);
+  if (!title) return false;
+
+  // Use the same whole-field matcher as Track search so Persian↔Latin album
+  // titles and compact spellings work, while "Eshtebahe Khoob" does not
+  // silently match "Eshtebahe Khoob 2".
+  return queryContainsWholeSearchField(query, title);
 }
 
 export function hasSpecificAlbumTitle(query = '', artist = '', albumTitles = []) {
@@ -442,6 +451,7 @@ const SEARCH_COMMAND_WORDS = new Set([
 
 const SEARCH_CONNECTIVE_WORDS = new Set([
   'از', 'با', 'همراه', 'همراهی',
+  'by', 'from', 'x', 'versus', 'و',
 ]);
 
 const SEARCH_VARIANT_PREFIX = '@variant:';
@@ -599,8 +609,7 @@ export function primarySearchQueries(query = '') {
 function meaningfulRawSearchTokens(query = '') {
   let tokens = rawSearchTokens(query)
     .filter(token =>
-      token.length >= 2
-      && !SEARCH_NOISE_WORDS.has(token)
+      !SEARCH_NOISE_WORDS.has(token)
       && !ALBUM_INTENT_WORDS.has(token)
       && !ALBUM_SUFFIX_WORDS.has(token)
     );
@@ -836,7 +845,11 @@ export function rankTracksForQuery(query = '', tracks = []) {
 
 export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   const tokens = meaningfulSearchTokens(query);
-  if (!tokens.length || !(tracks || []).length) return tracks || [];
+  if (!(tracks || []).length) return [];
+  // A non-empty query made entirely of noise words must never surface an
+  // arbitrary source page. This used to make queries such as "the" return
+  // unrelated tracks because zero meaningful tokens bypassed relevance.
+  if (!tokens.length) return [];
 
   const ranked = rankTracksForQuery(query, tracks);
 
@@ -884,6 +897,14 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
       queryContainsWholeSearchField(query, item.track?.artist || '')
     );
     if (wholeArtistMatches.length) selected = wholeArtistMatches;
+
+    // Prefer a whole Title field when one exists. Token coverage alone makes
+    // "Maryam" fully cover both "Maryam" and "Maryam 2"; after the Artist is
+    // fixed, that can still leak a longer same-Artist title into the result.
+    const wholeTitleMatches = selected.filter(item =>
+      queryContainsWholeSearchField(query, item.track?.title || '')
+    );
+    if (wholeTitleMatches.length) selected = wholeTitleMatches;
 
     return selected.map(item => item.track);
   }
