@@ -6022,3 +6022,24 @@ test('Radio Javan verification rejects unrelated Persian-to-Latin performer coll
   assert.equal(result.titleOk, true);
   assert.equal(result.artistOk, false);
 });
+
+
+test('cross-script identity supports conservative split Persian compound names', () => {
+  assert.equal(
+    crossScriptIdentityCompatible('محمدرضا گلزار', 'Mohammad Reza Golzar'),
+    true
+  );
+  assert.equal(
+    crossScriptIdentityCompatible('علیرضا طلیسچی', 'Ali Reza Talischi'),
+    true
+  );
+
+  assert.equal(
+    crossScriptIdentityCompatible('محمدرضا گلزار', 'Mohammad Alizadeh'),
+    false
+  );
+  assert.equal(
+    crossScriptIdentityCompatible('علیرضا طلیسچی', 'Ali Sorena'),
+    false
+  );
+});
