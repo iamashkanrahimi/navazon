@@ -219,7 +219,7 @@ function normalize(value = '') {
 
 function artistIdentityParts(value = '') {
   return clean(value)
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .split(/\s*(?:&|\bx\b|,|\band\b|feat\.?|ft\.?|featuring)\s*|\s+و\s+/iu)
     .map(normalize)
     .filter(Boolean);
 }
