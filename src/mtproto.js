@@ -500,3 +500,56 @@ export async function createPrivateCacheMegagroup(client, title, about = '') {
     channelId: String(channel.id || ''),
   };
 }
+
+
+export async function createPrivateArchiveChannel(client, title, about = '') {
+  const created = await client.invoke(new Api.channels.CreateChannel({
+    title: String(title || 'Navazon RJ Archive'),
+    about: String(about || 'Private Radio Javan ingest channel for Navazon'),
+    broadcast: true,
+    megagroup: false,
+  }));
+  const channel = (created?.chats || []).find(Boolean);
+  if (!channel) throw new Error('Telegram did not return the created archive channel');
+
+  const inputChannel = await client.getInputEntity(channel);
+  const botPeer = await client.getInputEntity(config.botUsername);
+
+  try {
+    await client.invoke(new Api.channels.InviteToChannel({
+      channel: inputChannel,
+      users: [botPeer],
+    }));
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (!/USER_ALREADY_PARTICIPANT/i.test(msg)) {
+      console.warn('[rj channel pilot] invite bot', msg);
+    }
+  }
+
+  // Some channel configurations only deliver channel_post updates reliably
+  // when the bot is an admin. Grant the smallest practical admin role; the
+  // bot does not need posting/deleting privileges for this pilot.
+  try {
+    await client.invoke(new Api.channels.EditAdmin({
+      channel: inputChannel,
+      userId: botPeer,
+      adminRights: new Api.ChatAdminRights({
+        other: true,
+      }),
+      rank: 'Navazon',
+    }));
+  } catch (err) {
+    const msg = String(err?.message || err);
+    // If membership alone is sufficient, keep going. The pilot will verify
+    // actual Bot API delivery before accepting the path.
+    console.warn('[rj channel pilot] promote bot', msg);
+  }
+
+  const peerId = String(await client.getPeerId(inputChannel));
+  return {
+    title: String(title || ''),
+    peerId,
+    channelId: String(channel.id || ''),
+  };
+}

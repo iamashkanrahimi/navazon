@@ -10,6 +10,10 @@ import { runArchiveImportIfEnabled } from './archiveImport.js';
 import { startMediaCacheWorker, stopMediaCacheWorker, getMediaCacheRuntimeStatus } from './mediaCache.js';
 import { startRjAudioCacheWorker, stopRjAudioCacheWorker, getRjAudioCacheRuntimeStatus, getRjAudioCacheSummary } from './rjAudioCache.js';
 import { ensureRjExtraCacheLanes } from './rjCacheLanes.js';
+import {
+  runRjMtprotoChannelPilot,
+  getRjMtprotoChannelPilotSummary,
+} from './rjMtprotoChannelPilot.js';
 import { closeArchiveDb } from './archiveDb.js';
 import { seedAhangifyBestPilot } from './ahangifyPilot.js';
 import {
@@ -218,6 +222,11 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
       res.end(JSON.stringify(await getRjAudioCacheSummary(),null,2)); return;
     }
+    if (req.method === 'GET' && url.pathname === '/admin/rj-mtproto-channel-pilot') {
+      if (!authorized(req,config.adminToken)) { res.writeHead(401).end('unauthorized'); return; }
+      res.writeHead(200,{ 'content-type':'application/json; charset=utf-8' });
+      res.end(JSON.stringify(await getRjMtprotoChannelPilotSummary(),null,2)); return;
+    }
     res.writeHead(404).end('not found');
   } catch (err) {
     console.error('[http]',err.message);
@@ -283,6 +292,9 @@ server.listen(config.port,'0.0.0.0',async () => {
     const webhookUrl = `${config.publicBaseUrl}/telegram/webhook`;
     await bot.setWebhook(webhookUrl,config.webhookSecret);
     console.log(`Telegram webhook ready: ${webhookUrl}`);
+    void runRjMtprotoChannelPilot().catch(err => {
+      console.error('[rj channel pilot startup]', err?.stack || err?.message || err);
+    });
   } catch (err) {
     console.error('[setWebhook]',err.message);
   }
