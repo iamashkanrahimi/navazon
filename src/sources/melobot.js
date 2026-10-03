@@ -132,9 +132,15 @@ function trackLabel(candidate = {}) {
 }
 
 function sameTrackIdentity(left = {}, right = {}) {
-  const leftTitle = titleIdentity(left?.title || '');
-  const rightTitle = titleIdentity(right?.title || '');
-  if (!leftTitle || leftTitle !== rightTitle) return false;
+  const leftTitle = clean(left?.title || '');
+  const rightTitle = clean(right?.title || '');
+  if (
+    !leftTitle
+    || !rightTitle
+    || !trackTitleIdentityCompatible(leftTitle, rightTitle)
+  ) {
+    return false;
+  }
 
   const leftArtist = left?.artist || '';
   const rightArtist = right?.artist || '';
@@ -1074,12 +1080,15 @@ function inspectSelectedCandidateSurface(messages = [], candidate = {}) {
 
 
 function exactNestedTrackButton(messages = [], candidate = {}) {
-  const wantedTitle = titleIdentity(candidate?.title || '');
+  const wantedTitle = clean(candidate?.title || '');
   if (!wantedTitle) return null;
 
   for (const rawText of buttonsFromMessages(messages)) {
     const track = parseTrackButton(rawText, candidate?.artist || '');
-    if (!track || titleIdentity(track.title || '') !== wantedTitle) continue;
+    if (
+      !track
+      || !trackTitleIdentityCompatible(wantedTitle, track.title || '')
+    ) continue;
     if (
       candidate?.artist
       && track?.artist
@@ -1299,7 +1308,7 @@ async function findArtistSeed(
     preferredSeed?.rawText
     && preferredSeed?.source !== 'ahangify'
     && preferredArtist
-    && artistIdentityCompatible(artist, preferredSeed.artist)
+    && artistContextCompatible(artist, preferredSeed.artist)
     && (
       Number(preferredSeed.sourceStateVersion || -1) === Number(sourceStateVersion)
       || preferredStillLive
@@ -1316,7 +1325,7 @@ async function findArtistSeed(
     });
     seed = results.find(track => normalize(track.artist) === target)
       || results.find(track =>
-        artistIdentityCompatible(artist, track.artist || '')
+        artistContextCompatible(artist, track.artist || '')
       )
       || null;
   } catch (err) {
@@ -1424,10 +1433,10 @@ export async function resolveMeloBotTrackCandidate(
         maxRefinements: 2,
       });
 
-      const requestedTitle = titleIdentity(candidate?.title || '');
+      const requestedTitle = clean(candidate?.title || '');
       const exactTitle = results.filter(track =>
         requestedTitle
-        && titleIdentity(track.title || '') === requestedTitle
+        && trackTitleIdentityCompatible(requestedTitle, track.title || '')
       );
 
       let resolved = null;
@@ -2678,7 +2687,7 @@ async function openMeloBotArtistDirectBase(
       // exact/compatible Track row for this artist; stop collecting and reuse
       // that live row instead of waiting for the Artist-search timeout.
       return parseTracksFromMessages([message], artist).some(track =>
-        artistIdentityCompatible(artist, track.artist || '')
+        artistContextCompatible(artist, track.artist || '')
       );
     },
     waitForTarget: true,
@@ -2704,7 +2713,7 @@ async function openMeloBotArtistDirectBase(
     // already-live row immediately instead of issuing the same Artist search a
     // second time and losing the only scripted/source surface.
     const freshSeed = parseTracksFromMessages(first.messages, artist)
-      .find(track => artistIdentityCompatible(artist, track.artist || ''))
+      .find(track => artistContextCompatible(artist, track.artist || ''))
       || null;
     if (freshSeed && !remaining.expired()) {
       return openMeloBotArtistBase(
@@ -2835,7 +2844,7 @@ async function openMeloBotArtistBase(
         maxRefinements: 2,
       });
       const freshSeed = freshTracks.find(track =>
-        artistIdentityCompatible(effectiveSeed.artist, track.artist || '')
+        artistContextCompatible(effectiveSeed.artist, track.artist || '')
       ) || null;
 
       if (freshSeed && !remaining.expired()) {
@@ -2906,23 +2915,9 @@ async function openMeloBotArtistBase(
     const requested = normalize(effectiveSeed.artist);
     const requestedParts = artistIdentityParts(effectiveSeed.artist);
 
-    const chosen = pickerButtons.find(item => normalize(item.name) === requested)
-      || (
-        requestedParts.length === 1
-          ? pickerButtons.find(item => {
-              const name = normalize(item.name);
-              return name === requestedParts[0]
-                || (
-                  requestedParts[0].split(' ').length > 1
-                  && name.split(' ').length > 1
-                  && (
-                    requestedParts[0].includes(name)
-                    || name.includes(requestedParts[0])
-                  )
-                );
-            })
-          : null
-      );
+    const chosen = pickerButtons.find(item =>
+      artistIdentityCompatible(effectiveSeed.artist, item.name)
+    ) || null;
 
     if (!chosen) {
       throw meloError(
@@ -3774,8 +3769,12 @@ export function albumQueryMatches(query, artist, albumTitle) {
   // album title called "آلبوم".
   if (!albumTokens.length) return hasAlbumIntent(query);
 
-  const title = normalize(albumTitle);
-  return albumTokens.every(token => title.includes(token));
+  if (albumTitleAppearsInQuery(query, albumTitle)) return true;
+
+  // Partial album lookup remains useful, but match complete title tokens only;
+  // character substrings such as "Yar" inside "Yaram" are not identity.
+  const titleTokens = new Set(normalize(albumTitle).split(' ').filter(Boolean));
+  return albumTokens.every(token => titleTokens.has(token));
 }
 
 function stripAlbumIntent(query = '') {
@@ -3802,24 +3801,59 @@ function chooseArtistPicker(items = [], requested = '') {
   const target = normalize(requested);
   const exact = items.find(item => normalize(item.name) === target);
   if (exact) return exact;
+  if (!requested) return items.length === 1 ? items[0] : null;
 
-  const parts = artistIdentityParts(requested);
-  if (parts.length > 1) return null;
+  const matches = items.filter(item =>
+    queryContainsWholeSearchField(requested, item.name)
+  );
+  if (!matches.length) return null;
 
-  if (parts.length === 1) {
-    const wanted = parts[0];
-    const wantedTokens = wanted.split(' ').filter(Boolean);
-    if (wantedTokens.length > 1) {
-      return items.find(item => {
-        const name = normalize(item.name);
-        const nameTokens = name.split(' ').filter(Boolean);
-        return name
-          && nameTokens.length > 1
-          && (name.includes(wanted) || wanted.includes(name));
-      }) || null;
-    }
+  // Prefer the most specific whole Artist field named by the query. If two
+  // equally-specific different identities remain, the query is ambiguous.
+  matches.sort((a, b) =>
+    normalize(b.name).split(' ').length - normalize(a.name).split(' ').length
+    || normalize(b.name).length - normalize(a.name).length
+  );
+  const best = matches[0];
+  const bestSize = normalize(best.name).split(' ').length;
+  const tied = matches.filter(item =>
+    normalize(item.name).split(' ').length === bestSize
+  );
+  if (
+    tied.some(item =>
+      !artistIdentityCompatible(best.name, item.name)
+    )
+  ) {
+    return null;
   }
-  return requested ? null : (items[0] || null);
+  return best;
+}
+
+function chooseAlbumSeedTrack(tracks = [], requested = '') {
+  const matches = (tracks || [])
+    .filter(track =>
+      track?.artist
+      && queryContainsWholeSearchField(requested, track.artist)
+    )
+    .sort((a, b) =>
+      normalize(b.artist).split(' ').length - normalize(a.artist).split(' ').length
+      || normalize(b.artist).length - normalize(a.artist).length
+    );
+
+  if (!matches.length) return null;
+  const best = matches[0];
+  const bestSize = normalize(best.artist).split(' ').length;
+  const tied = matches.filter(track =>
+    normalize(track.artist).split(' ').length === bestSize
+  );
+  if (
+    tied.some(track =>
+      !artistIdentityCompatible(best.artist, track.artist)
+    )
+  ) {
+    return null;
+  }
+  return best;
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
@@ -3885,13 +3919,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
   if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
 
   const seeds = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs: remaining() });
-  const target = normalize(artistQuery);
-  const seed = seeds.find(track => normalize(track.artist) === target)
-    || seeds.find(track =>
-      normalize(track.artist).includes(target) || target.includes(normalize(track.artist))
-    )
-    || seeds[0]
-    || null;
+  const seed = chooseAlbumSeedTrack(seeds, artistQuery);
 
   if (!seed) {
     throw new Error(
@@ -3999,13 +4027,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     }
   }
 
-  const target = normalize(artistQuery);
-  const seed = seedTracks.find(track => normalize(track.artist) === target)
-    || seedTracks.find(track =>
-      normalize(track.artist).includes(target) || target.includes(normalize(track.artist))
-    )
-    || seedTracks[0]
-    || null;
+  const seed = chooseAlbumSeedTrack(seedTracks, artistQuery);
 
   if (seed) {
     const artistContext = await openMeloBotArtistBase(client, seed, {
