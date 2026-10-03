@@ -5981,3 +5981,44 @@ test('inferred resolver chooses the correct Artist when wrong same-title rows ar
     assert.equal(resolved.title, item.title);
   }
 });
+
+
+test('Radio Javan verification accepts conservative Persian-to-Latin identity', () => {
+  const row = {
+    artist: 'رضا بهرام',
+    title: 'یار',
+    expected_duration_seconds: 214,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'cross-script-good',
+      file_unique_id: 'u4',
+      duration: 214,
+      title: 'Yar',
+      performer: 'Reza Bahram',
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.titleOk, true);
+  assert.equal(result.artistOk, true);
+});
+
+test('Radio Javan verification rejects unrelated Persian-to-Latin performer collisions', () => {
+  const row = {
+    artist: 'علی سورنا',
+    title: 'مریم',
+    expected_duration_seconds: 210,
+  };
+  const result = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'cross-script-wrong',
+      file_unique_id: 'u5',
+      duration: 210,
+      title: 'Maryam',
+      performer: 'Yas',
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.titleOk, true);
+  assert.equal(result.artistOk, false);
+});
