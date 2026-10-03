@@ -103,6 +103,15 @@ export async function downloadRjAudioToTemp(candidate, sourceId, {
     signal: AbortSignal.timeout(timeoutMs),
   });
 
+  try {
+    const finalUrl = new URL(response.url || parsed.toString());
+    if (finalUrl.protocol !== 'https:' || !safeHost(finalUrl.hostname)) {
+      throw new Error('RJ local download redirected to a non-RJ host');
+    }
+  } catch (err) {
+    throw new Error(`RJ local download redirect rejected: ${err?.message || err}`);
+  }
+
   const meta = validateRjAudioResponseMeta({
     status: response.status,
     contentType: response.headers.get('content-type') || '',
