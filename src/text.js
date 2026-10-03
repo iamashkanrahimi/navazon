@@ -84,12 +84,12 @@ export function hasCompositeArtistSeparators(value = '') {
   // This does not redefine the artist identity for interactive navigation; it
   // only gives the crawler a cheap way to avoid manufacturing artist profiles
   // from track-level collaboration credits such as "Drake & Yeat".
-  return /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
+  return /\s(?:&|x|and|و)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
 }
 
 export function artistCreditParts(value = '') {
   return cleanText(value)
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .split(/\s*(?:&|\bx\b|,|\band\b|feat\.?|ft\.?|featuring)\s*|\s+و\s+/iu)
     .map(normalizeText)
     .filter(Boolean);
 }
@@ -100,14 +100,30 @@ export function artistCreditMatchesContext(credit = '', artist = '') {
   if (!target || !actual) return false;
   if (target === actual) return true;
 
-  const wantedParts = artistCreditParts(artist).map(identityNormalizeText);
-  const actualParts = artistCreditParts(credit).map(identityNormalizeText);
-  if (!wantedParts.length || !actualParts.length) return false;
+  const wantedPartsRaw = artistCreditParts(artist);
+  const actualPartsRaw = artistCreditParts(credit);
+  if (!wantedPartsRaw.length || !actualPartsRaw.length) return false;
 
-  if (wantedParts.length === 1) {
-    return actualParts.includes(wantedParts[0]);
+  const partEquivalent = (leftRaw, rightRaw) => {
+    const left = identityNormalizeText(leftRaw);
+    const right = identityNormalizeText(rightRaw);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    if (left.replace(/\s+/g, '') === right.replace(/\s+/g, '')) return true;
+    return crossScriptIdentityCompatible(leftRaw, rightRaw);
+  };
+
+  if (wantedPartsRaw.length === 1) {
+    return actualPartsRaw.some(part =>
+      partEquivalent(wantedPartsRaw[0], part)
+    );
   }
-  return wantedParts.every(part => actualParts.includes(part));
+
+  return wantedPartsRaw.every(wanted =>
+    actualPartsRaw.some(actualPart =>
+      partEquivalent(wanted, actualPart)
+    )
+  );
 }
 
 export function artistCreditCompatible(requested = '', actual = '') {
@@ -121,33 +137,38 @@ export function artistCreditCompatible(requested = '', actual = '') {
   // whitespace removal; do not use fuzzy matching here.
   if (requestedText.replace(/\s+/g, '') === actualText.replace(/\s+/g, '')) return true;
 
-  const requestedParts = artistCreditParts(requested).map(identityNormalizeText);
-  const actualParts = artistCreditParts(actual).map(identityNormalizeText);
-  if (!requestedParts.length || !actualParts.length) return false;
+  const requestedPartsRaw = artistCreditParts(requested);
+  const actualPartsRaw = artistCreditParts(actual);
+  if (!requestedPartsRaw.length || !actualPartsRaw.length) return false;
 
-  const partMatches = (left, right) => {
+  const partMatches = (leftRaw, rightRaw) => {
+    const left = identityNormalizeText(leftRaw);
+    const right = identityNormalizeText(rightRaw);
+    if (!left || !right) return false;
     if (left === right) return true;
 
     // Artist identity must never be proven by substring containment. A longer
     // credit such as "Ali Sorena Tribute" or "Reza Bahram Official" is a
     // different identity unless it is an explicit collaboration component.
-    // Keep only the harmless compact-whitespace equivalence used by stage
-    // names such as "25 Band" <-> "25Band".
-    return left.replace(/\s+/g, '') === right.replace(/\s+/g, '');
+    if (left.replace(/\s+/g, '') === right.replace(/\s+/g, '')) return true;
+
+    // Cross-script identity is allowed per explicit collaboration member,
+    // never by fuzzy containment of the whole credit.
+    return crossScriptIdentityCompatible(leftRaw, rightRaw);
   };
 
   // A collaboration credit is not interchangeable with one of its members.
   // Artist-page membership has its own broader helper; identity verification
   // requires the same explicit member set (order may differ).
-  if (requestedParts.length !== actualParts.length) return false;
+  if (requestedPartsRaw.length !== actualPartsRaw.length) return false;
 
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
+  if (requestedPartsRaw.length > 1) {
+    return requestedPartsRaw.every(left =>
+      actualPartsRaw.some(right => partMatches(left, right))
     );
   }
 
-  return partMatches(requestedParts[0], actualParts[0]);
+  return partMatches(requestedPartsRaw[0], actualPartsRaw[0]);
 }
 
 export function titleCreditsArtist(title = '', artist = '') {
@@ -525,6 +546,15 @@ function crossScriptSearchPhraseCompatible(left = '', right = '') {
   const leftFamily = identityScriptFamily(left);
   const rightFamily = identityScriptFamily(right);
   if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftNumbers = normalizeText(left).match(/\d+/g) || [];
+  const rightNumbers = normalizeText(right).match(/\d+/g) || [];
+  if (
+    leftNumbers.length !== rightNumbers.length
+    || leftNumbers.some((value, index) => value !== rightNumbers[index])
+  ) {
+    return false;
+  }
 
   const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
   const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
