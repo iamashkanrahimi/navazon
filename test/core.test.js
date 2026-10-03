@@ -70,7 +70,7 @@ const {
   isSuspendedBackgroundMediaTaskKind,
 } = await import('../src/deepCatalog.js');
 const { CatalogStore } = await import('../src/catalog.js');
-const { db } = await import('../src/db.js');
+const { db, schemaSnapshotReady } = await import('../src/db.js');
 const {
   resultsKeyboard,
   artistHomeKeyboard,
@@ -6435,4 +6435,38 @@ test('featured searches keep modern explicit version intent before shortened bas
   const queries = primarySearchQueries('Artist Song feat Guest Remastered');
   assert.equal(queries[0], 'Artist Song feat Guest Remastered');
   assert.equal(queries[1], 'Artist Song');
+});
+
+
+test('startup schema probe skips DDL only when every required relation shape exists', () => {
+  const rows = [
+    ['track_cache', ['track_key', 'active', 'superseded_by']],
+    ['artists', ['artist_key']],
+    ['searches', ['query_key']],
+    ['follows', ['user_id', 'artist_key']],
+    ['sessions', ['session_id']],
+    ['app_state', ['key']],
+    ['crawler_runs', ['id']],
+    ['deep_tracks', ['track_key']],
+    ['track_aliases', ['alias_key']],
+    ['track_capability_failures', ['track_key', 'capability']],
+    ['deep_track_media', ['track_key', 'verified_quality']],
+    ['deep_albums', ['album_key']],
+    ['deep_album_tracks', ['album_key', 'track_key']],
+    ['deep_artist_tracks', ['artist_key', 'list_type', 'track_key', 'list_version']],
+    ['crawl_tasks', ['id', 'task_key', 'status']],
+  ].flatMap(([table, columns]) =>
+    columns.map(column => ({ table_name: table, column_name: column }))
+  );
+
+  assert.equal(schemaSnapshotReady(rows), true);
+  assert.equal(
+    schemaSnapshotReady(
+      rows.filter(row => !(
+        row.table_name === 'deep_track_media'
+        && row.column_name === 'verified_quality'
+      ))
+    ),
+    false
+  );
 });
