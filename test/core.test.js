@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 process.env.BOT_TOKEN ||= 'test-token';
 process.env.BOT_USERNAME ||= 'Navazonbot';
@@ -6652,4 +6653,59 @@ test('startup schema readiness probe requires the complete production shape', ()
     ),
     false
   );
+});
+
+
+test('Artist navigation callbacks stay local-first before entering the shared source queue', () => {
+  const source = readFileSync(
+    new URL('../src/updates.js', import.meta.url),
+    'utf8'
+  );
+
+  const checks = [
+    ['hfa', "type: 'home_artist'"],
+    ['ar', "type: 'artist'"],
+    ['arc', "type: 'artist'"],
+    ['aar', "type: 'artist_from_album'"],
+    ['tac', "type: 'track_artist'"],
+  ];
+
+  for (const [action, queuedType] of checks) {
+    const marker = `else if (action === '${action}')`;
+    const start = source.indexOf(marker);
+    assert.ok(start >= 0, `missing callback block: ${action}`);
+
+    const next = source.indexOf("} else if (action === '", start + marker.length);
+    const block = source.slice(start, next >= 0 ? next : source.length);
+    const localIndex = block.indexOf('tryOpenArtistLocal(');
+    const queueIndex = block.indexOf(queuedType);
+
+    assert.ok(localIndex >= 0, `${action} must attempt the local Artist fast path`);
+    assert.ok(queueIndex >= 0, `${action} must preserve a source fallback`);
+    assert.ok(
+      localIndex < queueIndex,
+      `${action} must try local Artist data before queueing source work`
+    );
+  }
+});
+
+test('generic local Artist fast path has no live-source call and protects collaboration seeds', () => {
+  const source = readFileSync(
+    new URL('../src/jobs.js', import.meta.url),
+    'utf8'
+  );
+  const start = source.indexOf('export async function tryOpenArtistLocal(');
+  const end = source.indexOf(
+    'export async function tryOpenTrackArtistLocal(',
+    start
+  );
+  assert.ok(start >= 0 && end > start);
+
+  const block = source.slice(start, end);
+  assert.match(block, /catalog\.getArtistContext/);
+  assert.match(block, /deepCatalog\.getArtistList/);
+  assert.match(block, /deepCatalog\.deriveArtistList/);
+  assert.match(block, /normalize\(seed\.artist/);
+  assert.equal(block.includes('openMeloBot'), false);
+  assert.equal(block.includes('sourceQueue'), false);
 });

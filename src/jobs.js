@@ -645,18 +645,23 @@ export async function tryHandleCachedSearch(
   return true;
 }
 
-export async function tryOpenTrackArtistLocal(
+export async function tryOpenArtistLocal(
   sessionId,
   session,
-  messageId
+  messageId,
+  {
+    artist,
+    seed = null,
+    backAction = 'rs',
+  } = {}
 ) {
-  const seed = session?.currentTrack;
-  if (!seed?.artist || seed.artistInferred) return false;
+  const targetArtist = String(artist || '').trim();
+  if (!targetArtist) return false;
 
   const startedAt = Date.now();
   let route = 'none';
   let context = await catalog.getArtistContext(
-    seed.artist,
+    targetArtist,
     config.catalogArtistTtlMs
   ).catch(() => null);
 
@@ -664,19 +669,28 @@ export async function tryOpenTrackArtistLocal(
     route = context.healedLegacyLists ? 'catalog_healed' : 'catalog';
   } else {
     const [storedTop, storedRecent] = await Promise.all([
-      deepCatalog.getArtistList(seed.artist, 'top', TOP_TRACKS_LIMIT).catch(() => []),
-      deepCatalog.getArtistList(seed.artist, 'recent', TOP_TRACKS_LIMIT).catch(() => []),
+      deepCatalog.getArtistList(
+        targetArtist,
+        'top',
+        TOP_TRACKS_LIMIT
+      ).catch(() => []),
+      deepCatalog.getArtistList(
+        targetArtist,
+        'recent',
+        TOP_TRACKS_LIMIT
+      ).catch(() => []),
     ]);
+
     const derivedTop = storedTop.length
       ? storedTop
       : await deepCatalog.deriveArtistList(
-          seed.artist,
+          targetArtist,
           'top',
           TOP_TRACKS_LIMIT
         ).catch(() => []);
 
     context = {
-      artist: seed.artist,
+      artist: targetArtist,
       tracks: derivedTop.length ? derivedTop : storedRecent,
       topTracks: derivedTop,
       recentTracks: storedRecent,
@@ -689,10 +703,27 @@ export async function tryOpenTrackArtistLocal(
   }
 
   session.artistContext = context;
-  session.artistSeed = context.seedTrack || seed;
+
+  // Prefer a seed that belongs to the local Artist context. A collaboration
+  // result row can be useful for navigation but must never become the durable
+  // seed for one of its component Artists.
+  const contextSeed = context.seedTrack
+    || context.recentTracks?.[0]
+    || context.topTracks?.[0]
+    || context.tracks?.[0]
+    || null;
+  const preferredSeed = (
+    seed
+    && normalize(seed.artist || '') === normalize(context.artist || targetArtist)
+  ) ? seed : null;
+
+  session.artistSeed = contextSeed || preferredSeed;
   await syncArtistContext(context);
-  session.isFollowing = await follows.isFollowing(session.userId, context.artist);
-  session.artistBack = 'trt';
+  session.isFollowing = await follows.isFollowing(
+    session.userId,
+    context.artist
+  );
+  session.artistBack = backAction;
   session.albums = null;
   session.albumsEmptyConfirmed = false;
   session.busy = false;
@@ -706,13 +737,34 @@ export async function tryOpenTrackArtistLocal(
       sessionId,
       context,
       session.isFollowing,
-      { backAction: 'trt' }
+      { backAction }
     )
   );
   console.log(
-    `[fastpath.local] track_artist route=${route} total_ms=${Date.now() - startedAt}`
+    `[fastpath.local] artist=${JSON.stringify(context.artist)} route=${route} `
+    + `back=${backAction} total_ms=${Date.now() - startedAt}`
   );
   return true;
+}
+
+export async function tryOpenTrackArtistLocal(
+  sessionId,
+  session,
+  messageId
+) {
+  const seed = session?.currentTrack;
+  if (!seed?.artist || seed.artistInferred) return false;
+
+  return tryOpenArtistLocal(
+    sessionId,
+    session,
+    messageId,
+    {
+      artist: seed.artist,
+      seed,
+      backAction: 'trt',
+    }
+  );
 }
 
 export async function tryOpenArtistListLocal(
