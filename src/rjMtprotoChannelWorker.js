@@ -1,7 +1,10 @@
 import { config } from './config.js';
 import { tg, tg2, tg3 } from './runtime.js';
 import { getArchiveDb } from './archiveDb.js';
-import { sendExternalMediaToPeer } from './mtproto.js';
+import {
+  sendExternalMediaToPeer,
+  sendLocalAudioFileToPeer,
+} from './mtproto.js';
 import { ensureRjMtprotoArchiveChannelFor } from './rjMtprotoChannelPilot.js';
 import { getState, setState } from './state.js';
 import {
@@ -12,11 +15,17 @@ import {
   markRjAudioFailure,
 } from './rjAudioCache.js';
 import { prepareFailedRjAudioRecovery } from './rjApiRecovery.js';
+import {
+  selectRjApiUploadCandidate,
+  downloadRjAudioToTemp,
+  cleanupRjTempFile,
+} from './rjLocalUploadRecovery.js';
 
 const POST_PREFIX = 'navazon-rj-worker:';
 const POST_TIMEOUT_MS = 30_000;
 const STARTUP_SETTLE_MS = 15_000;
 const SUCCESS_WINDOW_FOR_SPEEDUP = 500;
+const LOCAL_UPLOAD_CONCURRENCY = 2;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -31,8 +40,67 @@ let lateRecoveredThisProcess = 0;
 let lastCachedAt = null;
 let lastError = null;
 
+let localUploadActive = 0;
+const localUploadWaiters = [];
+
 function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+async function acquireLocalUploadSlot() {
+  if (localUploadActive < LOCAL_UPLOAD_CONCURRENCY) {
+    localUploadActive += 1;
+    return () => {
+      localUploadActive = Math.max(0, localUploadActive - 1);
+      const next = localUploadWaiters.shift();
+      if (next) next();
+    };
+  }
+
+  await new Promise(resolve => localUploadWaiters.push(resolve));
+  localUploadActive += 1;
+  return () => {
+    localUploadActive = Math.max(0, localUploadActive - 1);
+    const next = localUploadWaiters.shift();
+    if (next) next();
+  };
+}
+
+async function recordLocalUploadEvidence(db, row, patch = {}) {
+  await db.query(`
+    UPDATE rj_audio_cache
+       SET verification = COALESCE(verification,'{}'::jsonb) || $2::jsonb,
+           updated_at=NOW()
+     WHERE source_url=$1
+  `, [
+    row.source_url,
+    JSON.stringify({
+      localUploadRecovery: {
+        attemptedAt: new Date().toISOString(),
+        ...patch,
+      },
+    }),
+  ]);
+}
+
+async function resetFailedApiRowsForLocalUpload(db) {
+  const result = await db.query(`
+    UPDATE rj_audio_cache
+       SET status='pending',
+           attempts=0,
+           last_error=NULL,
+           next_attempt_at=NULL,
+           started_at=NULL,
+           updated_at=NOW()
+     WHERE status='failed'
+       AND verification->'apiRecovery'->>'prepared'='true'
+       AND NOT (COALESCE(verification,'{}'::jsonb) ? 'localUploadRecovery')
+    RETURNING source_url
+  `);
+  if (result.rowCount) {
+    console.log('[rj local upload] released failed rows', result.rowCount);
+  }
+  return result.rowCount;
 }
 
 function pacingStateKey(slot) {
@@ -470,10 +538,149 @@ async function noteFloodWait(state, seconds) {
   }));
 }
 
+async function tryLocalUploadRecovery(db, row, state, errors) {
+  if (row?.verification?.apiRecovery?.prepared !== true) return null;
+  if (row?.verification?.localUploadRecovery) return null;
+
+  const candidate = selectRjApiUploadCandidate(row);
+  if (!candidate) {
+    await recordLocalUploadEvidence(db, row, {
+      ok: false,
+      reason: 'no safe fresh RJ API candidate for local upload',
+    });
+    errors.push('local-upload: no safe fresh RJ API candidate');
+    return { ok:false };
+  }
+
+  const release = await acquireLocalUploadSlot();
+  let downloaded = null;
+  try {
+    downloaded = await downloadRjAudioToTemp(candidate, row.source_id);
+    await recordLocalUploadEvidence(db, row, {
+      ok: null,
+      stage: 'downloaded',
+      url: candidate.url,
+      host: candidate.host,
+      quality: candidate.quality,
+      bytes: downloaded.bytes,
+      sha256: downloaded.sha256,
+      contentType: downloaded.contentType,
+      identityEvidence: 'fresh_rj_api_source_id_artist_title',
+    });
+
+    const allowed = await acquireSendStartSlot(state);
+    if (!allowed) {
+      throw new Error('worker stopped before local MTProto upload');
+    }
+
+    const expected = expectChannelPost(
+      state,
+      String(row.source_id),
+      Math.max(POST_TIMEOUT_MS, 90_000)
+    );
+
+    try {
+      await sendLocalAudioFileToPeer(
+        state.client,
+        state.channelState.peerId,
+        downloaded.path,
+        captionFor(state, row, candidate),
+        {
+          duration: Number(row.expected_duration_seconds || 0) || 0,
+          title: row.title,
+          performer: row.artist,
+        }
+      );
+
+      const post = await expected.promise;
+      if (!post) {
+        state.timedOut += 1;
+        throw new Error('local MTProto upload channel_post timeout');
+      }
+
+      const message = messageFromPost(post);
+      const verification = verifyTelegramAudio(row, message);
+      if (!verification.ok) {
+        throw new Error(`local upload verification rejected: ${verification.reason}`);
+      }
+
+      await recordLocalUploadEvidence(db, row, {
+        ok: true,
+        stage: 'verified',
+        url: candidate.url,
+        host: candidate.host,
+        quality: candidate.quality,
+        bytes: downloaded.bytes,
+        sha256: downloaded.sha256,
+        contentType: downloaded.contentType,
+        identityEvidence: 'fresh_rj_api_source_id_artist_title',
+      });
+
+      await markRjAudioCached(
+        db,
+        row,
+        candidate,
+        message,
+        verification,
+        {
+          retainMessage: true,
+          chatId: post?.chat?.id || state.channelState.peerId,
+          acquisition: 'radiojavan_api_local_upload',
+        }
+      );
+
+      await noteSuccess(state);
+      console.log('[rj local upload] cached', JSON.stringify({
+        slot: state.slot,
+        artist: row.artist,
+        title: row.title,
+        quality: candidate.quality,
+        host: candidate.host,
+        bytes: downloaded.bytes,
+      }));
+
+      return {
+        ok: true,
+        candidate,
+        duration: verification.actualDuration,
+        fileId: verification.audio.file_id,
+        fileUniqueId: verification.audio.file_unique_id || null,
+        localUpload: true,
+      };
+    } catch (err) {
+      expected.cancel();
+      throw err;
+    }
+  } catch (err) {
+    const detail = clean(err?.message || err).slice(0, 800);
+    errors.push(`local-upload: ${detail}`);
+    await recordLocalUploadEvidence(db, row, {
+      ok: false,
+      stage: downloaded ? 'upload_or_verify' : 'download',
+      reason: detail,
+      url: candidate.url,
+      host: candidate.host,
+      quality: candidate.quality,
+      bytes: downloaded?.bytes || null,
+      sha256: downloaded?.sha256 || null,
+      contentType: downloaded?.contentType || null,
+      identityEvidence: 'fresh_rj_api_source_id_artist_title',
+    });
+    return { ok:false };
+  } finally {
+    await cleanupRjTempFile(downloaded?.path);
+    release();
+  }
+}
+
 async function processRow(db, row, state) {
   const errors = [];
+  const allCandidates = directCandidatesForRow(row);
+  const candidates = row?.verification?.apiRecovery?.prepared === true
+    ? allCandidates.filter(candidate => String(candidate?.source || '').startsWith('rj_api'))
+    : allCandidates;
 
-  for (const candidate of directCandidatesForRow(row)) {
+  for (const candidate of candidates) {
     const allowed = await acquireSendStartSlot(state);
     if (!allowed) {
       await markTransportRetry(db, row, 'worker stopped during transfer', 30);
@@ -563,6 +770,9 @@ async function processRow(db, row, state) {
       }
     }
   }
+
+  const localRecovery = await tryLocalUploadRecovery(db, row, state, errors);
+  if (localRecovery?.ok) return localRecovery;
 
   await markRjAudioFailure(db, row, errors);
   return { ok: false, errors };
@@ -713,6 +923,7 @@ async function loop() {
   if (Number(recovery?.scanned || 0) > 0) {
     console.log('[rj mtproto worker] API recovery', JSON.stringify(recovery));
   }
+  await resetFailedApiRowsForLocalUpload(archiveDb);
 
   const initial = await progress(archiveDb);
   console.log('[rj mtproto worker] started', JSON.stringify({
