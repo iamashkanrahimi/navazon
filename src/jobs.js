@@ -43,6 +43,7 @@ import {
   isSuspendedBackgroundMediaTaskKind,
 } from './deepCatalog.js';
 import { HOME_FEEDS, curatedPlaylistByKey } from './homeCatalog.js';
+import { planBulkIndividualRecovery } from './bulkRecovery.js';
 import {
   renderTrackPage,
   sendTrackQuality,
@@ -1019,20 +1020,26 @@ async function finishMissingBulkIndividually(session, missingTracks = [], label 
     return { sent: 0, missing: 0, quality: 'hq' };
   }
 
-  // Individual recovery is excellent for a tiny remainder, but walking ten
-  // Track menus serially can monopolize the single MeloBot conversation for
-  // tens of seconds. Keep the fallback bounded; large failures return quickly
-  // and can be retried after the source surface is rebuilt.
-  if (tracks.length > 3) {
-    console.warn(`[${label}] skipped_individual count=${tracks.length}`);
-    return { sent: 0, missing: tracks.length, quality: 'hq' };
+  // A large native-bulk failure used to give up immediately (often 0/10).
+  // Recover at most three tracks individually, then stop. This improves an
+  // explicit user bulk request without monopolizing the serialized MeloBot
+  // lane for tens of seconds.
+  const plan = planBulkIndividualRecovery(tracks);
+  if (plan.skipped > 0) {
+    console.warn(
+      `[${label}] bounded_individual attempt=${plan.attempt.length} skipped=${plan.skipped}`
+    );
   }
 
-  return deliverBulkIndividuallyHq(session, tracks, {
-    sourceTimeoutMs: 3600,
-    totalBudgetMs: 9_000,
+  const recovered = await deliverBulkIndividuallyHq(session, plan.attempt, {
+    sourceTimeoutMs: 3200,
+    totalBudgetMs: 8_000,
     label,
   });
+  return {
+    ...recovered,
+    missing: recovered.missing + plan.skipped,
+  };
 }
 
 async function deliverFastBulkFallback(session, tracks = [], label = 'bulk fallback') {
@@ -1041,7 +1048,7 @@ async function deliverFastBulkFallback(session, tracks = [], label = 'bulk fallb
     return cached;
   }
 
-  if ((cached.missingTracks || []).length <= 3 && !hasPendingForegroundSourceWork(session?.userId)) {
+  if (!hasPendingForegroundSourceWork(session?.userId)) {
     const individual = await finishMissingBulkIndividually(
       session,
       cached.missingTracks,
@@ -1054,11 +1061,9 @@ async function deliverFastBulkFallback(session, tracks = [], label = 'bulk fallb
     };
   }
 
-  if ((cached.missingTracks || []).length > 3) {
-    console.warn(
-      `[${label}] fast_exit missing=${cached.missingTracks.length}`
-    );
-  }
+  console.warn(
+    `[${label}] fast_exit missing=${cached.missingTracks.length} reason=foreground`
+  );
   return cached;
 }
 
