@@ -435,17 +435,146 @@ const SEARCH_NOISE_WORDS = new Set([
   'the', 'a', 'an',
 ]);
 
-export function unrequestedTrackVariantWords(query = '', track = {}) {
-  const querySet = new Set(
-    normalizeText(query).split(' ').filter(Boolean)
-  );
-  const titleTokens = normalizeText(track?.title || '')
-    .split(' ')
-    .filter(Boolean);
+const SEARCH_COMMAND_WORDS = new Set([
+  'download',
+  'آهنگ', 'اهنگ', 'موزیک', 'ترانه', 'دانلود',
+]);
 
-  return titleTokens.filter(token =>
-    TRACK_VARIANT_WORDS.has(token) && !querySet.has(token)
-  );
+const SEARCH_CONNECTIVE_WORDS = new Set([
+  'از', 'با', 'همراه', 'همراهی',
+]);
+
+const SEARCH_VARIANT_PREFIX = '@variant:';
+
+function rawSearchTokens(value = '') {
+  const tokens = normalizeSearchText(value).split(' ').filter(Boolean);
+  const out = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const next = tokens[index + 1] || '';
+
+    // Normalize common Persian multi-token version labels before lexical
+    // coverage. This is search-only; canonical Track identity remains strict.
+    if (token === 'بی' && next === 'کلام') {
+      out.push('بیکلام');
+      index += 1;
+      continue;
+    }
+    if (token === 'اجرای' && next === 'زنده') {
+      out.push('لایو');
+      index += 1;
+      continue;
+    }
+
+    out.push(token);
+  }
+
+  return out;
+}
+
+function canonicalSearchToken(token = '') {
+  const normalized = normalizeSearchText(token);
+  const variant = TRACK_VARIANT_ALIASES.get(normalized);
+  return variant ? `${SEARCH_VARIANT_PREFIX}${variant}` : normalized;
+}
+
+function isCanonicalVariantSearchToken(token = '') {
+  return String(token || '').startsWith(SEARCH_VARIANT_PREFIX);
+}
+
+function searchVariantKinds(value = '') {
+  const kinds = new Set();
+  for (const token of rawSearchTokens(value)) {
+    const kind = TRACK_VARIANT_ALIASES.get(token);
+    if (kind) kinds.add(kind);
+  }
+  return kinds;
+}
+
+function crossScriptSearchPhraseCompatible(left = '', right = '') {
+  if (crossScriptIdentityCompatible(left, right)) return true;
+
+  const leftFamily = identityScriptFamily(left);
+  const rightFamily = identityScriptFamily(right);
+  if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
+  const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
+
+  // Identity verification intentionally stays stricter. Search relevance gets
+  // one narrow extra allowance for multi-word transliterations where short
+  // words differ only by omitted vowels (e.g. "یه روز خوب میاد" vs
+  // "Ye Rooze Khoob Miad"). Never use this for a single-token Artist name.
+  if (leftTokens.length < 2 || rightTokens.length < 2) return false;
+
+  const leftJoined = leftTokens.map(consonantTokenSkeleton).join('');
+  const rightJoined = rightTokens.map(consonantTokenSkeleton).join('');
+  if (!leftJoined || !rightJoined) return false;
+  if (leftJoined === rightJoined) return true;
+
+  const maxLen = Math.max(leftJoined.length, rightJoined.length);
+  const allowed = maxLen >= 9 ? 2 : (maxLen >= 7 ? 1 : 0);
+  return allowed > 0 && smallEditDistance(leftJoined, rightJoined) <= allowed;
+}
+
+function queryContainsWholeSearchField(query = '', field = '') {
+  const fieldRaw = cleanText(field);
+  const fieldTokens = rawSearchTokens(fieldRaw);
+  if (!fieldRaw || !fieldTokens.length) return false;
+
+  const queryStreams = [
+    rawSearchTokens(query),
+    meaningfulRawSearchTokens(query),
+  ];
+  const seenStreams = new Set();
+
+  for (const queryTokensRaw of queryStreams) {
+    const streamKey = queryTokensRaw.join('\u0000');
+    if (!queryTokensRaw.length || seenStreams.has(streamKey)) continue;
+    seenStreams.add(streamKey);
+
+    const fieldCanonical = fieldTokens.map(canonicalSearchToken);
+    const fieldJoined = fieldCanonical.join(' ');
+    const fieldCompact = fieldCanonical.join('');
+
+    for (let startIndex = 0; startIndex < queryTokensRaw.length; startIndex += 1) {
+      for (let endIndex = startIndex + 1; endIndex <= queryTokensRaw.length; endIndex += 1) {
+        const segmentRaw = queryTokensRaw.slice(startIndex, endIndex);
+        const segmentCanonical = segmentRaw.map(canonicalSearchToken);
+
+        if (
+          segmentCanonical.join(' ') === fieldJoined
+          || segmentCanonical.join('') === fieldCompact
+        ) {
+          return true;
+        }
+
+        if (
+          !segmentCanonical.some(isCanonicalVariantSearchToken)
+          && crossScriptSearchPhraseCompatible(
+            segmentRaw.join(' '),
+            fieldRaw
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+
+export function unrequestedTrackVariantWords(query = '', track = {}) {
+  const queryKinds = searchVariantKinds(query);
+  const titleTokens = rawSearchTokens(track?.title || '');
+
+  return titleTokens.filter(token => {
+    const kind = TRACK_VARIANT_ALIASES.get(token);
+    return Boolean(kind && !queryKinds.has(kind));
+  });
 }
 
 export function primarySearchQueries(query = '') {
@@ -460,29 +589,47 @@ export function primarySearchQueries(query = '') {
 
   // Explicit version intent is more important than shaving a source round
   // trip: "feat ... remix/live" must not silently fall back to the original.
-  const hasVariantIntent = /(?:^|\s)(?:remix|live|acoustic|version|edit|mix|instrumental|remaster(?:ed)?|rework|sped|slowed|karaoke|radio|extended|club|cover|original|reverb(?:ed)?|nightcore|8d|ریمیکس|اجرای\s*زنده|آکوستیک|بیکلام|بی‌کلام)(?:\s|$)/iu
+  const hasVariantIntent = /(?:^|\s)(?:remix|live|acoustic|unplugged|version|edit|mix|instrumental|remaster(?:ed)?|rework|sped|slowed|karaoke|demo|radio|extended|club|cover|original|reverb(?:ed)?|nightcore|8d|ریمیکس|لایو|زنده|اجرای\s*زنده|آکوستیک|ورژن|نسخه|بیکلام|بی(?:‌|\s|-)*کلام)(?:\s|$)/iu
     .test(full);
   return [...new Set(
     (hasVariantIntent ? [full, base] : [base, full]).filter(Boolean)
   )];
 }
 
-export function meaningfulSearchTokens(query = '') {
-  return normalizeSearchText(query)
-    .split(' ')
+function meaningfulRawSearchTokens(query = '') {
+  let tokens = rawSearchTokens(query)
     .filter(token =>
       token.length >= 2
       && !SEARCH_NOISE_WORDS.has(token)
       && !ALBUM_INTENT_WORDS.has(token)
       && !ALBUM_SUFFIX_WORDS.has(token)
     );
+
+  // Command words are noise when there is an actual identity token beside
+  // them, but remain searchable when they are the whole query/title.
+  const withoutCommands = tokens.filter(token => !SEARCH_COMMAND_WORDS.has(token));
+  if (withoutCommands.length) tokens = withoutCommands;
+
+  // Persian connectives such as "از/با" are only dropped when at least two
+  // other identity tokens remain. This keeps short real titles like "با من"
+  // searchable while fixing natural "Track از Artist" wording.
+  const withoutConnectives = tokens.filter(token => !SEARCH_CONNECTIVE_WORDS.has(token));
+  if (withoutConnectives.length >= 2) tokens = withoutConnectives;
+
+  return tokens;
+}
+
+export function meaningfulSearchTokens(query = '') {
+  return meaningfulRawSearchTokens(query).map(canonicalSearchToken);
 }
 
 function searchTokenCoverage(queryTokens = [], track = {}) {
-  const artist = normalizeSearchText(track.artist || '');
-  const title = normalizeSearchText(track.title || '');
-  const fields = [artist, title]
-    .map(value => value.split(' ').filter(Boolean))
+  const rawFields = [
+    cleanText(track.artist || ''),
+    cleanText(track.title || ''),
+  ];
+  const fields = rawFields
+    .map(value => rawSearchTokens(value).map(canonicalSearchToken))
     .filter(tokens => tokens.length);
   const haystack = new Set(fields.flat());
   const matched = queryTokens.map(token => haystack.has(token));
@@ -512,6 +659,39 @@ function searchTokenCoverage(queryTokens = [], track = {}) {
         }
         startIndex = endIndex;
         break;
+      }
+    }
+  }
+
+  // Full Persian<->Latin Artist+Title queries previously had zero lexical
+  // coverage because each source field was transliterated. Mark a contiguous
+  // query segment only when it conservatively matches an entire source field.
+  // This keeps same-title collisions fail-closed: matching the title does not
+  // magically satisfy the Artist tokens.
+  for (const rawField of rawFields) {
+    if (!rawField) continue;
+
+    let best = null;
+    for (let length = queryTokens.length; length >= 1 && !best; length -= 1) {
+      for (let startIndex = 0; startIndex + length <= queryTokens.length; startIndex += 1) {
+        const segment = queryTokens.slice(startIndex, startIndex + length);
+        if (segment.some(isCanonicalVariantSearchToken)) continue;
+
+        const phrase = segment.join(' ');
+        if (!crossScriptSearchPhraseCompatible(phrase, rawField)) continue;
+
+        best = { startIndex, length };
+        break;
+      }
+    }
+
+    if (best) {
+      for (
+        let index = best.startIndex;
+        index < best.startIndex + best.length;
+        index += 1
+      ) {
+        matched[index] = true;
       }
     }
   }
@@ -664,10 +844,18 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   // is actively misleading and poisons the search cache. Require an actual
   // lexical match.
   if (tokens.length === 1) {
-    const covered = ranked
-      .filter(item => item.coverage >= 1)
-      .map(item => item.track);
-    if (covered.length) return covered;
+    const covered = ranked.filter(item => item.coverage >= 1);
+    if (covered.length) {
+      // A single token must identify a whole Artist or whole Title field.
+      // Otherwise "Farhad" can silently become "Farhad Ravanbakhsh", or a
+      // base-title search can become an unrelated longer title. Compact stage
+      // names are still supported by queryContainsWholeSearchField().
+      const wholeFieldMatches = covered.filter(item =>
+        queryContainsWholeSearchField(query, item.track?.artist || '')
+        || queryContainsWholeSearchField(query, item.track?.title || '')
+      );
+      return wholeFieldMatches.map(item => item.track);
+    }
 
     // Persian artist queries often come back transliterated by MeloBot
     // (مثلاً «هیچکس» -> Hichkas). Preserve that case only when the source
@@ -681,7 +869,24 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   }
 
   const full = ranked.filter(item => item.total > 0 && item.coverage === item.total);
-  if (full.length) return full.map(item => item.track);
+  if (full.length) {
+    // When an exact/base version exists, do not mix unrequested Remix/Live/etc.
+    // into the same result set. If the source only has alternate versions,
+    // keep them rather than turning a useful search into an empty result.
+    const cleanFull = full.filter(item => !item.unrequestedVariants?.length);
+    let selected = cleanFull.length ? cleanFull : full;
+
+    // Token coverage alone can make "Ali" look complete inside "Alireza" or
+    // "25 Band" inside "25 Band Tribute". When the query proves at least one
+    // whole Artist field (including compact or conservative cross-script
+    // equivalence), prefer only those rows. Title-only searches remain broad.
+    const wholeArtistMatches = selected.filter(item =>
+      queryContainsWholeSearchField(query, item.track?.artist || '')
+    );
+    if (wholeArtistMatches.length) selected = wholeArtistMatches;
+
+    return selected.map(item => item.track);
+  }
 
   // Never keep a partial multi-token result merely because it is the best of
   // a bad source page. The only zero-lexical exception is a direct conservative

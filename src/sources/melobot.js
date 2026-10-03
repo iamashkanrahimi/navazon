@@ -426,6 +426,12 @@ function searchRefinementScore(rawText, query = '') {
   const overlap = queryTokens.filter(token => buttonSet.has(token)).length;
   if (!overlap) return -1;
 
+  // Artist picker navigation needs evidence for the whole displayed Artist
+  // name, not just one shared token. Without this, a query such as "Farhad"
+  // can be refined into "Farhad Ravanbakhsh" before Track relevance has a
+  // chance to reject the collision.
+  if (isArtistPicker && overlap < buttonTokens.length) return -1;
+
   let score = overlap * 20;
   if (comparable === target) score += 80;
   else if (comparable.includes(target) || target.includes(comparable)) score += 35;

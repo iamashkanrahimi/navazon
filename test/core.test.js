@@ -3810,7 +3810,19 @@ test('single-token zero-coverage source suggestions are filtered instead of cach
     { artist: 'Farhad', title: 'Ayneha' },
     { artist: 'Another', title: 'Farhad Remix' },
   ];
-  assert.equal(keepFullCoverageTracksWhenAvailable('farhad', matching).length, 2);
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('farhad', matching),
+    [matching[0]]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Farhad',
+      [{ artist: 'Farhad Ravanbakhsh', title: 'Ayeneh' }]
+    ),
+    [],
+    'a single-name Artist query must not expand into a longer Artist identity'
+  );
 });
 
 
@@ -6708,4 +6720,182 @@ test('generic local Artist fast path has no live-source call and protects collab
   assert.match(block, /normalize\(seed\.artist/);
   assert.equal(block.includes('openMeloBot'), false);
   assert.equal(block.includes('sourceQueue'), false);
+});
+
+
+test('query matrix v3 accepts natural Persian/Latin searches without same-title leakage', () => {
+  const cases = [
+    {
+      query: 'علی سورنا مریم',
+      tracks: [
+        { artist: 'Mehrdad Asemani', title: 'Maryam' },
+        { artist: 'Ali Sorena', title: 'Maryam' },
+        { artist: 'Yas', title: 'Maryam' },
+      ],
+      expected: ['Ali Sorena|Maryam'],
+    },
+    {
+      query: 'دانلود آهنگ علی سورنا مریم',
+      tracks: [
+        { artist: 'Mehrdad Asemani', title: 'Maryam' },
+        { artist: 'Ali Sorena', title: 'Maryam' },
+      ],
+      expected: ['Ali Sorena|Maryam'],
+    },
+    {
+      query: 'رضا بهرام یار',
+      tracks: [
+        { artist: 'Mehrdad Asemani', title: 'Yar' },
+        { artist: 'Reza Bahram', title: 'Yar' },
+      ],
+      expected: ['Reza Bahram|Yar'],
+    },
+    {
+      query: 'هیچکس یه روز خوب میاد',
+      tracks: [
+        { artist: 'Hichkas', title: 'Ekhtelaf' },
+        { artist: 'Hichkas', title: 'Ye Rooze Khoob Miad' },
+        { artist: 'Yas', title: 'Ye Rooze Khoob Miad' },
+      ],
+      expected: ['Hichkas|Ye Rooze Khoob Miad'],
+    },
+    {
+      query: 'علی سورنا با بهرام خونه خورشید',
+      tracks: [
+        { artist: 'Ali Sorena & Bahram', title: 'Khoone Khorshid' },
+        { artist: 'Bahram', title: 'Khoone Khorshid' },
+        { artist: 'Ali Sorena', title: 'Maryam' },
+      ],
+      expected: ['Ali Sorena & Bahram|Khoone Khorshid'],
+    },
+    {
+      query: '25 Band Delam',
+      tracks: [
+        { artist: '25Band', title: 'Delam' },
+        { artist: '25 Band Tribute', title: 'Delam' },
+      ],
+      expected: ['25Band|Delam'],
+    },
+  ];
+
+  for (const entry of cases) {
+    const result = keepFullCoverageTracksWhenAvailable(
+      entry.query,
+      entry.tracks
+    ).map(track => `${track.artist}|${track.title}`);
+
+    assert.deepEqual(
+      result,
+      entry.expected,
+      `unexpected result for query: ${entry.query}`
+    );
+  }
+});
+
+test('search treats Persian and English Track variant labels as the same explicit intent', () => {
+  const cases = [
+    ['Reza Bahram Yar ریمیکس', { artist: 'Reza Bahram', title: 'Yar Remix' }],
+    ['Reza Bahram Yar لایو', { artist: 'Reza Bahram', title: 'Yar Live' }],
+    ['Googoosh Hamsafar اجرای زنده', { artist: 'Googoosh', title: 'Hamsafar Live' }],
+    ['Shadmehr Taghdir بی کلام', { artist: 'Shadmehr', title: 'Taghdir Instrumental' }],
+    ['Ebi Shab آکوستیک', { artist: 'Ebi', title: 'Shab Acoustic' }],
+    ['Artist Song ورژن', { artist: 'Artist', title: 'Song Version' }],
+  ];
+
+  for (const [query, track] of cases) {
+    const ranked = rankTracksForQuery(query, [track])[0];
+    assert.equal(
+      ranked.coverage,
+      ranked.total,
+      `variant coverage mismatch for query: ${query}`
+    );
+    assert.deepEqual(
+      keepFullCoverageTracksWhenAvailable(query, [track]),
+      [track]
+    );
+  }
+});
+
+test('base search hides unrequested alternate versions only when a clean full match exists', () => {
+  const base = { artist: 'Ali Yasini', title: 'Nade Ghol' };
+  const remix = { artist: 'Ali Yasini', title: 'Nade Ghol Remix' };
+  const live = { artist: 'Ali Yasini', title: 'Nade Ghol Live' };
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Ali Yasini Nade Ghol',
+      [remix, live, base]
+    ),
+    [base]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Ali Yasini Nade Ghol',
+      [remix]
+    ),
+    [remix]
+  );
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Ali Yasini Nade Ghol ریمیکس',
+      [base, remix]
+    ),
+    [remix]
+  );
+});
+
+test('natural search noise and explicit Persian version intent do not weaken query identity', () => {
+  assert.deepEqual(
+    meaningfulSearchTokens('دانلود آهنگ Maryam از Ali Sorena'),
+    ['maryam', 'ali', 'sorena']
+  );
+
+  assert.deepEqual(
+    meaningfulSearchTokens('موزیک یار با رضا بهرام'),
+    ['یار', 'رضا', 'بهرام']
+  );
+
+  for (const query of [
+    'Artist Song feat Guest لایو',
+    'Artist Song feat Guest ورژن',
+    'Artist Song feat Guest بی کلام',
+    'Artist Song feat Guest demo',
+    'Artist Song feat Guest unplugged',
+  ]) {
+    const queries = primarySearchQueries(query);
+    assert.equal(queries[0], query);
+    assert.equal(queries[1], 'Artist Song');
+  }
+});
+
+
+test('MeloBot search refinement rejects longer Artist identities that only share query tokens', () => {
+  const wrongOnly = [
+    fakeBotMessage('choose artist', ['🗣 Farhad Ravanbakhsh']),
+  ];
+  assert.equal(
+    chooseMeloBotSearchRefinement(wrongOnly, 'Farhad'),
+    null
+  );
+
+  const mixed = [
+    fakeBotMessage(
+      'choose artist',
+      ['🗣 Farhad Ravanbakhsh', '🗣 Farhad']
+    ),
+  ];
+  assert.equal(
+    chooseMeloBotSearchRefinement(mixed, 'Farhad Ayneha'),
+    '🗣 Farhad'
+  );
+
+  const longerPrefix = [
+    fakeBotMessage('choose artist', ['🗣 Ali Sorena Tribute']),
+  ];
+  assert.equal(
+    chooseMeloBotSearchRefinement(longerPrefix, 'Ali Sorena'),
+    null
+  );
 });
