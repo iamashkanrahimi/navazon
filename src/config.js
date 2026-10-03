@@ -22,6 +22,10 @@ export const config = {
   apiHash: required('TG_API_HASH'),
   stringSession: required('TG_STRING_SESSION'),
   proxyUserId: Number(required('PROXY_USER_ID')),
+  stringSession2: (process.env.TG_STRING_SESSION_2 || '').trim(),
+  proxyUserId2: process.env.PROXY_USER_ID_2
+    ? Number(process.env.PROXY_USER_ID_2)
+    : null,
 
   databaseUrl: required('DATABASE_URL'),
   webhookSecret: required('WEBHOOK_SECRET'),
@@ -120,4 +124,15 @@ export const config = {
 
 if (!Number.isFinite(config.apiId)) throw new Error('TG_API_ID must be a number');
 if (!Number.isFinite(config.proxyUserId)) throw new Error('PROXY_USER_ID must be a number');
+if (
+  config.proxyUserId2 != null
+  && (!Number.isFinite(config.proxyUserId2) || config.proxyUserId2 <= 0)
+) {
+  throw new Error('PROXY_USER_ID_2 must be a positive number when provided');
+}
+if (Boolean(config.stringSession2) !== Boolean(config.proxyUserId2)) {
+  console.warn('[config] TG_STRING_SESSION_2 and PROXY_USER_ID_2 must be set together; second Telegram account disabled');
+  config.stringSession2 = '';
+  config.proxyUserId2 = null;
+}
 if (!Number.isFinite(config.port)) throw new Error('PORT must be a number');

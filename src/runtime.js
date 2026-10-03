@@ -23,6 +23,7 @@ export const follows = new FollowStore();
 export const sessions = new SessionStore();
 export const deepCatalog = new DeepCatalog();
 export const tg = createTelegramClient();
+export let tg2 = null;
 
 await tg.connect();
 if (!(await tg.checkAuthorization())) throw new Error('Proxy Telegram session is not authorized');
@@ -36,6 +37,22 @@ for (const peer of [config.melobotUsername, config.ahangifyUsername]) {
 }
 
 console.log('Proxy MTProto connected.');
+
+if (config.stringSession2 && config.proxyUserId2) {
+  try {
+    const second = createTelegramClient(config.stringSession2);
+    await second.connect();
+    if (!(await second.checkAuthorization())) {
+      throw new Error('Second Telegram session is not authorized');
+    }
+    tg2 = second;
+    console.log('Second proxy MTProto connected.');
+  } catch (err) {
+    tg2 = null;
+    console.error('[second proxy mtproto]', err?.message || err);
+  }
+}
+
 console.log(`Primary source: @${config.melobotUsername} (Premium/HQ)`);
 console.log(`Fallback source: @${config.ahangifyUsername}`);
 console.log(`Delivery bot: @${config.botUsername}`);

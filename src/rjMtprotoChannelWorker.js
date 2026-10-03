@@ -1,8 +1,9 @@
 import { config } from './config.js';
-import { tg } from './runtime.js';
+import { tg, tg2 } from './runtime.js';
 import { getArchiveDb } from './archiveDb.js';
 import { sendExternalMediaToPeer } from './mtproto.js';
-import { ensureRjMtprotoArchiveChannel } from './rjMtprotoChannelPilot.js';
+import { ensureRjMtprotoArchiveChannelFor } from './rjMtprotoChannelPilot.js';
+import { getState, setState } from './state.js';
 import {
   directCandidates,
   verifyTelegramAudio,
@@ -20,19 +21,12 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 let stopped = false;
 let workerPromise = null;
-const activeTransfers = new Map();
-let startGateChain = Promise.resolve();
-let channelState = null;
+const accountStates = new Map();
+
 let processedThisProcess = 0;
 let cachedThisProcess = 0;
 let failedThisProcess = 0;
-let rateLimitedThisProcess = 0;
-let timedOutThisProcess = 0;
 let lateRecoveredThisProcess = 0;
-let consecutiveSuccesses = 0;
-let currentGapMs = config.rjMtprotoChannelStartGapMs;
-let nextSendAt = 0;
-let backoffUntil = null;
 let lastCachedAt = null;
 let lastError = null;
 
@@ -40,9 +34,79 @@ function clean(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function captionFor(row, candidate) {
+function pacingStateKey(slot) {
+  return `rj_mtproto_channel_worker_pacing_v1_slot_${slot}`;
+}
+
+function createAccountState(slot, client) {
+  return {
+    slot,
+    client,
+    activeTransfers: new Map(),
+    startGateChain: Promise.resolve(),
+    channelState: null,
+    processed: 0,
+    cached: 0,
+    failed: 0,
+    rateLimited: 0,
+    timedOut: 0,
+    lateRecovered: 0,
+    consecutiveSuccesses: 0,
+    currentGapMs: config.rjMtprotoChannelStartGapMs,
+    nextSendAt: 0,
+    backoffUntil: null,
+    lastCachedAt: null,
+    lastError: null,
+  };
+}
+
+function configuredAccounts() {
+  const items = [createAccountState(1, tg)];
+  if (tg2) items.push(createAccountState(2, tg2));
+  return items;
+}
+
+async function hydratePacing(state) {
+  try {
+    const saved = await getState(pacingStateKey(state.slot), null);
+    const savedGap = Number(saved?.currentGapMs || 0);
+    if (Number.isFinite(savedGap) && savedGap > 0) {
+      state.currentGapMs = Math.max(
+        config.rjMtprotoChannelMinGapMs,
+        Math.min(config.rjMtprotoChannelMaxGapMs, savedGap)
+      );
+    }
+    if (
+      saved?.backoffUntil
+      && Number.isFinite(Date.parse(saved.backoffUntil))
+      && Date.parse(saved.backoffUntil) > Date.now()
+    ) {
+      state.backoffUntil = saved.backoffUntil;
+    }
+  } catch (err) {
+    console.warn('[rj mtproto worker] pacing hydrate', state.slot, err?.message || err);
+  }
+}
+
+async function persistPacing(state, extra = {}) {
+  try {
+    await setState(pacingStateKey(state.slot), {
+      slot: state.slot,
+      currentGapMs: state.currentGapMs,
+      backoffUntil: state.backoffUntil,
+      updatedAt: Date.now(),
+      ...extra,
+    });
+  } catch (err) {
+    console.warn('[rj mtproto worker] pacing persist', state.slot, err?.message || err);
+  }
+}
+
+function captionFor(state, row, candidate) {
   return [
     POST_PREFIX,
+    String(state.slot),
+    ':',
     String(row.source_id || ''),
     ':',
     String(candidate.quality || ''),
@@ -55,10 +119,30 @@ function parseCaption(post) {
   const caption = clean(post?.caption || '');
   if (!caption.startsWith(POST_PREFIX)) return null;
   const raw = caption.slice(POST_PREFIX.length);
-  const [sourceId, qualityRaw, host] = raw.split(':');
+  const parts = raw.split(':');
+
+  // v2 captions include account slot:
+  // navazon-rj-worker:<slot>:<source_id>:<quality>:<host>
+  if (parts.length >= 4 && /^\d+$/.test(parts[0] || '')) {
+    const [slotRaw, sourceId, qualityRaw, host] = parts;
+    const slot = Number(slotRaw);
+    const quality = Number(qualityRaw || 0) || null;
+    if (!sourceId || !Number.isFinite(slot) || slot < 1) return null;
+    return {
+      slot,
+      sourceId: String(sourceId),
+      quality,
+      host: clean(host),
+    };
+  }
+
+  // Backward compatibility for in-flight posts from the original single
+  // account worker during a zero-downtime deployment.
+  const [sourceId, qualityRaw, host] = parts;
   const quality = Number(qualityRaw || 0) || null;
   if (!sourceId) return null;
   return {
+    slot: 1,
     sourceId: String(sourceId),
     quality,
     host: clean(host),
@@ -93,10 +177,12 @@ function messageFromPost(post) {
   };
 }
 
-function expectChannelPost(sourceId, timeoutMs = POST_TIMEOUT_MS) {
+function expectChannelPost(state, sourceId, timeoutMs = POST_TIMEOUT_MS) {
   const key = String(sourceId);
-  if (activeTransfers.has(key)) {
-    throw new Error(`RJ MTProto channel worker already waits for source ${key}`);
+  if (state.activeTransfers.has(key)) {
+    throw new Error(
+      `RJ MTProto channel worker slot ${state.slot} already waits for source ${key}`
+    );
   }
 
   let settled = false;
@@ -108,14 +194,14 @@ function expectChannelPost(sourceId, timeoutMs = POST_TIMEOUT_MS) {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      activeTransfers.delete(key);
+      state.activeTransfers.delete(key);
       resolvePromise(post);
     },
     cancel() {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      activeTransfers.delete(key);
+      state.activeTransfers.delete(key);
       resolvePromise(null);
     },
   };
@@ -125,15 +211,15 @@ function expectChannelPost(sourceId, timeoutMs = POST_TIMEOUT_MS) {
     timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      activeTransfers.delete(key);
+      state.activeTransfers.delete(key);
       resolve(null);
     }, timeoutMs);
   });
 
-  activeTransfers.set(key, transfer);
+  state.activeTransfers.set(key, transfer);
   return {
     promise,
-    cancel: () => activeTransfers.get(key)?.cancel(),
+    cancel: () => state.activeTransfers.get(key)?.cancel(),
   };
 }
 
@@ -169,6 +255,7 @@ async function salvageLatePost(parsed, post) {
     const verification = verifyTelegramAudio(row, message);
     if (!verification.ok) {
       console.warn('[rj mtproto worker] late post rejected', JSON.stringify({
+        slot: parsed.slot,
         sourceId: parsed.sourceId,
         artist: row.artist,
         title: row.title,
@@ -185,16 +272,25 @@ async function salvageLatePost(parsed, post) {
       verification,
       {
         retainMessage: true,
-        chatId: post?.chat?.id || channelState?.peerId || null,
+        chatId: post?.chat?.id || null,
         acquisition: 'radiojavan_mtproto_channel',
       }
     );
+
+    const state = accountStates.get(parsed.slot);
+    if (state) {
+      state.lateRecovered += 1;
+      state.cached += 1;
+      state.lastCachedAt = new Date().toISOString();
+      state.lastError = null;
+    }
     lateRecoveredThisProcess += 1;
     cachedThisProcess += 1;
     lastCachedAt = new Date().toISOString();
     lastError = null;
 
     console.log('[rj mtproto worker] late post recovered', JSON.stringify({
+      slot: parsed.slot,
       sourceId: parsed.sourceId,
       artist: row.artist,
       title: row.title,
@@ -210,7 +306,8 @@ export function consumeRjMtprotoChannelWorkerPost(post) {
   const parsed = parseCaption(post);
   if (!parsed) return false;
 
-  const transfer = activeTransfers.get(parsed.sourceId);
+  const state = accountStates.get(parsed.slot);
+  const transfer = state?.activeTransfers?.get(parsed.sourceId);
   if (transfer) {
     transfer.resolve(post);
     return true;
@@ -233,20 +330,27 @@ async function resetLegacyBotApiClaims(db) {
     RETURNING source_url
   `);
 
-  const rateLimited = await db.query(`
+  // These rows were consumed by the retired Bot API URL-fetch path. Give the
+  // MTProto path a clean retry budget instead of carrying old transport
+  // failures forward.
+  const legacyBotApi = await db.query(`
     UPDATE rj_audio_cache
        SET status='pending',
            attempts=0,
            next_attempt_at=NULL,
            updated_at=NOW()
      WHERE status='retry'
-       AND last_error ILIKE '%Too Many Requests%'
+       AND (
+         last_error ILIKE '%Bot API sendAudio%'
+         OR last_error ILIKE '%Too Many Requests%'
+         OR last_error='recovered after worker restart'
+       )
     RETURNING source_url
   `);
 
   console.log('[rj mtproto worker] legacy claims released', JSON.stringify({
     processing: processing.rowCount,
-    botApi429: rateLimited.rowCount,
+    botApiRetry: legacyBotApi.rowCount,
   }));
 }
 
@@ -267,7 +371,7 @@ async function claimNext(db) {
           WHEN status='retry' THEN 1
           ELSE 2
         END,
-        md5(source_url || ':rj-mtproto-channel-v1')
+        md5(source_url || ':rj-mtproto-channel-v2')
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
@@ -300,83 +404,98 @@ async function markTransportRetry(db, row, message, delaySeconds = 120) {
   ]);
 }
 
-async function acquireSendStartSlot() {
-  const scheduled = startGateChain.then(async () => {
+async function acquireSendStartSlot(state) {
+  const scheduled = state.startGateChain.then(async () => {
     while (!stopped && config.rjMtprotoChannelWorkerEnabled) {
-      const backoffMs = backoffUntil
-        ? Math.max(0, Date.parse(backoffUntil) - Date.now())
+      const backoffMs = state.backoffUntil
+        ? Math.max(0, Date.parse(state.backoffUntil) - Date.now())
         : 0;
-      const sendGapMs = Math.max(0, nextSendAt - Date.now());
+      const sendGapMs = Math.max(0, state.nextSendAt - Date.now());
       const waitMs = Math.max(backoffMs, sendGapMs);
       if (waitMs <= 0) break;
       await sleep(Math.min(waitMs, 30_000));
     }
 
     if (stopped || !config.rjMtprotoChannelWorkerEnabled) return false;
-    nextSendAt = Date.now() + currentGapMs;
+    state.nextSendAt = Date.now() + state.currentGapMs;
     return true;
   });
 
-  startGateChain = scheduled.catch(() => {});
+  state.startGateChain = scheduled.catch(() => {});
   return scheduled;
 }
 
-function noteSuccess() {
-  consecutiveSuccesses += 1;
-  if (consecutiveSuccesses >= SUCCESS_WINDOW_FOR_SPEEDUP) {
+async function noteSuccess(state) {
+  state.consecutiveSuccesses += 1;
+  if (state.consecutiveSuccesses >= SUCCESS_WINDOW_FOR_SPEEDUP) {
     const next = Math.max(
       config.rjMtprotoChannelMinGapMs,
-      currentGapMs - 50
+      state.currentGapMs - 50
     );
-    if (next < currentGapMs) {
-      currentGapMs = next;
+    if (next < state.currentGapMs) {
+      state.currentGapMs = next;
       console.log('[rj mtproto worker] adaptive speedup', JSON.stringify({
-        gapMs: currentGapMs,
+        slot: state.slot,
+        gapMs: state.currentGapMs,
       }));
+      await persistPacing(state, { reason: 'adaptive_speedup' });
     }
-    consecutiveSuccesses = 0;
+    state.consecutiveSuccesses = 0;
   }
 }
 
-function noteFloodWait(seconds) {
-  consecutiveSuccesses = 0;
-  currentGapMs = Math.min(
+async function noteFloodWait(state, seconds) {
+  state.consecutiveSuccesses = 0;
+  state.currentGapMs = Math.min(
     config.rjMtprotoChannelMaxGapMs,
-    Math.max(1500, Math.ceil(currentGapMs * 1.75))
+    Math.max(
+      config.rjMtprotoChannelStartGapMs,
+      Math.ceil(state.currentGapMs * 1.75)
+    )
   );
   const until = Date.now() + (Math.max(1, seconds) + 5) * 1000;
-  backoffUntil = new Date(until).toISOString();
+  state.backoffUntil = new Date(until).toISOString();
+  state.rateLimited += 1;
+  await persistPacing(state, {
+    reason: 'flood_wait',
+    floodWaitSeconds: seconds,
+  });
   console.warn('[rj mtproto worker] flood wait', JSON.stringify({
+    slot: state.slot,
     seconds,
-    backoffUntil,
-    gapMs: currentGapMs,
+    backoffUntil: state.backoffUntil,
+    gapMs: state.currentGapMs,
   }));
 }
 
-async function processRow(db, row) {
+async function processRow(db, row, state) {
   const errors = [];
 
   for (const candidate of directCandidates(row.source_slug, row.source_id)) {
-    const allowed = await acquireSendStartSlot();
+    const allowed = await acquireSendStartSlot(state);
     if (!allowed) {
       await markTransportRetry(db, row, 'worker stopped during transfer', 30);
       return { ok: false, stopped: true, errors };
     }
 
-    const expected = expectChannelPost(String(row.source_id), POST_TIMEOUT_MS);
+    const expected = expectChannelPost(
+      state,
+      String(row.source_id),
+      POST_TIMEOUT_MS
+    );
     let sent = false;
     try {
       await sendExternalMediaToPeer(
-        tg,
-        channelState.peerId,
+        state.client,
+        state.channelState.peerId,
         candidate.url,
-        captionFor(row, candidate)
+        captionFor(state, row, candidate)
       );
       sent = true;
 
       const post = await expected.promise;
       if (!post) {
-        timedOutThisProcess += 1;
+        state.timedOut += 1;
         const message = `${candidate.host}/${candidate.quality}: channel_post timeout after accepted MTProto send`;
         errors.push(message);
         await markTransportRetry(db, row, message, 120);
@@ -400,12 +519,12 @@ async function processRow(db, row) {
         verification,
         {
           retainMessage: true,
-          chatId: post?.chat?.id || channelState.peerId,
+          chatId: post?.chat?.id || state.channelState.peerId,
           acquisition: 'radiojavan_mtproto_channel',
         }
       );
 
-      noteSuccess();
+      await noteSuccess(state);
       return {
         ok: true,
         candidate,
@@ -420,8 +539,7 @@ async function processRow(db, row) {
       errors.push(`${candidate.host}/${candidate.quality}: ${detail}`);
 
       if (floodSeconds != null) {
-        rateLimitedThisProcess += 1;
-        noteFloodWait(floodSeconds);
+        await noteFloodWait(state, floodSeconds);
         await markRjAudioFailure(db, row, errors, {
           rateLimited: true,
           retryAfter: floodSeconds + 5,
@@ -470,49 +588,65 @@ async function progress(db) {
   return summary;
 }
 
-async function workerLoop(archiveDb, workerId) {
+async function workerLoop(archiveDb, state, workerId) {
   while (!stopped && config.rjMtprotoChannelWorkerEnabled) {
     let row = null;
     try {
       row = await claimNext(archiveDb);
       if (!row) {
+        const status = await progress(archiveDb);
+        const remaining = Number(status.pending || 0)
+          + Number(status.processing || 0)
+          + Number(status.retry || 0);
+        if (remaining === 0) return;
         await sleep(5_000);
         continue;
       }
 
-      const result = await processRow(archiveDb, row);
+      const result = await processRow(archiveDb, row, state);
       processedThisProcess += 1;
+      state.processed += 1;
 
       if (result.ok) {
         cachedThisProcess += 1;
-        lastCachedAt = new Date().toISOString();
+        state.cached += 1;
+        const now = new Date().toISOString();
+        lastCachedAt = now;
+        state.lastCachedAt = now;
         lastError = null;
+        state.lastError = null;
 
-        if (cachedThisProcess <= 10 || cachedThisProcess % 100 === 0) {
+        if (state.cached <= 10 || state.cached % 100 === 0) {
           console.log('[rj mtproto worker] cached', JSON.stringify({
+            slot: state.slot,
             workerId,
-            count: cachedThisProcess,
+            count: state.cached,
             artist: row.artist,
             title: row.title,
             quality: result.candidate.quality,
             host: result.candidate.host,
             duration: result.duration,
-            gapMs: currentGapMs,
+            gapMs: state.currentGapMs,
           }));
         }
       } else if (result.rateLimited) {
-        lastError = result.errors?.[result.errors.length - 1] || 'MTProto flood wait';
+        state.lastError = result.errors?.[result.errors.length - 1] || 'MTProto flood wait';
+        lastError = state.lastError;
       } else if (result.transportRetry) {
-        lastError = result.errors?.[result.errors.length - 1] || 'channel transport retry';
+        state.lastError = result.errors?.[result.errors.length - 1] || 'channel transport retry';
+        lastError = state.lastError;
       } else if (!result.stopped) {
         failedThisProcess += 1;
-        lastError = result.errors?.[result.errors.length - 1] || 'all direct candidates failed';
+        state.failed += 1;
+        state.lastError = result.errors?.[result.errors.length - 1] || 'all direct candidates failed';
+        lastError = state.lastError;
         console.warn('[rj mtproto worker] miss', JSON.stringify({
+          slot: state.slot,
           workerId,
           artist: row.artist,
           title: row.title,
           attempts: row.attempts,
-          error: lastError,
+          error: state.lastError,
         }));
       }
 
@@ -520,22 +654,27 @@ async function workerLoop(archiveDb, workerId) {
         await progress(archiveDb);
       }
     } catch (err) {
-      lastError = clean(err?.message || err);
-      console.error('[rj mtproto worker]', workerId, lastError);
+      state.lastError = clean(err?.message || err);
+      lastError = state.lastError;
+      console.error('[rj mtproto worker]', state.slot, workerId, state.lastError);
       if (row) {
         try {
           const floodSeconds = floodWaitSeconds(err);
           if (floodSeconds != null) {
-            noteFloodWait(floodSeconds);
-            await markRjAudioFailure(archiveDb, row, [lastError], {
+            await noteFloodWait(state, floodSeconds);
+            await markRjAudioFailure(archiveDb, row, [state.lastError], {
               rateLimited: true,
               retryAfter: floodSeconds + 5,
             });
           } else {
-            await markTransportRetry(archiveDb, row, lastError, 120);
+            await markTransportRetry(archiveDb, row, state.lastError, 120);
           }
         } catch (markErr) {
-          console.error('[rj mtproto worker mark retry]', markErr?.message || markErr);
+          console.error(
+            '[rj mtproto worker mark retry]',
+            state.slot,
+            markErr?.message || markErr
+          );
         }
       }
       await sleep(1500);
@@ -551,29 +690,44 @@ async function loop() {
   }
 
   await ensureRjAudioCacheSchema(archiveDb);
-  channelState = await ensureRjMtprotoArchiveChannel();
 
-  // Avoid zero-downtime overlap and make sure the current webhook instance is
-  // the one receiving channel_post updates before the long run begins.
+  const accounts = configuredAccounts();
+  accountStates.clear();
+  for (const state of accounts) {
+    accountStates.set(state.slot, state);
+    await hydratePacing(state);
+    state.channelState = await ensureRjMtprotoArchiveChannelFor(
+      state.client,
+      { slot: state.slot }
+    );
+  }
+
+  // Avoid zero-downtime overlap and make sure channel_post updates land on the
+  // same process that owns the current waiters before the long run begins.
   await sleep(STARTUP_SETTLE_MS);
   await resetLegacyBotApiClaims(archiveDb);
 
   const initial = await progress(archiveDb);
   console.log('[rj mtproto worker] started', JSON.stringify({
-    channelId: channelState.peerId,
-    startGapMs: currentGapMs,
-    minGapMs: config.rjMtprotoChannelMinGapMs,
-    maxGapMs: config.rjMtprotoChannelMaxGapMs,
-    concurrency: config.rjMtprotoChannelConcurrency,
+    accounts: accounts.map(state => ({
+      slot: state.slot,
+      channelId: state.channelState?.peerId || null,
+      startGapMs: state.currentGapMs,
+      minGapMs: config.rjMtprotoChannelMinGapMs,
+      maxGapMs: config.rjMtprotoChannelMaxGapMs,
+      concurrency: config.rjMtprotoChannelConcurrency,
+      backoffUntil: state.backoffUntil,
+    })),
     cached: initial.cached,
     remaining: Number(initial.total || 0) - Number(initial.cached || 0),
   }));
 
-  console.log('[rj mtproto worker] concurrency', config.rjMtprotoChannelConcurrency);
-
   await Promise.all(
-    Array.from({ length: config.rjMtprotoChannelConcurrency }, (_, index) =>
-      workerLoop(archiveDb, index + 1)
+    accounts.flatMap(state =>
+      Array.from(
+        { length: config.rjMtprotoChannelConcurrency },
+        (_, index) => workerLoop(archiveDb, state, index + 1)
+      )
     )
   );
 
@@ -590,7 +744,6 @@ async function loop() {
 export function startRjMtprotoChannelWorker() {
   if (!config.rjMtprotoChannelWorkerEnabled || workerPromise) return workerPromise;
   stopped = false;
-  currentGapMs = config.rjMtprotoChannelStartGapMs;
   workerPromise = loop().finally(() => {
     workerPromise = null;
   });
@@ -599,32 +752,51 @@ export function startRjMtprotoChannelWorker() {
 
 export function stopRjMtprotoChannelWorker() {
   stopped = true;
-  for (const transfer of activeTransfers.values()) transfer.cancel();
-  activeTransfers.clear();
+  for (const state of accountStates.values()) {
+    for (const transfer of state.activeTransfers.values()) transfer.cancel();
+    state.activeTransfers.clear();
+  }
+}
+
+function accountRuntimeStatus(state) {
+  return {
+    slot: state.slot,
+    processedThisProcess: state.processed,
+    cachedThisProcess: state.cached,
+    failedThisProcess: state.failed,
+    rateLimitedThisProcess: state.rateLimited,
+    timedOutThisProcess: state.timedOut,
+    lateRecoveredThisProcess: state.lateRecovered,
+    consecutiveSuccesses: state.consecutiveSuccesses,
+    currentGapMs: state.currentGapMs,
+    startGapMs: config.rjMtprotoChannelStartGapMs,
+    minGapMs: config.rjMtprotoChannelMinGapMs,
+    maxGapMs: config.rjMtprotoChannelMaxGapMs,
+    concurrency: config.rjMtprotoChannelConcurrency,
+    inFlight: state.activeTransfers.size,
+    backoffUntil: state.backoffUntil,
+    backoffActive: Boolean(
+      state.backoffUntil && Date.parse(state.backoffUntil) > Date.now()
+    ),
+    channel: state.channelState,
+    lastCachedAt: state.lastCachedAt,
+    lastError: state.lastError,
+  };
 }
 
 export function getRjMtprotoChannelWorkerRuntimeStatus() {
   return {
     enabled: config.rjMtprotoChannelWorkerEnabled,
     running: Boolean(workerPromise) && !stopped,
+    configuredAccountCount: tg2 ? 2 : 1,
+    activeAccountCount: accountStates.size,
     processedThisProcess,
     cachedThisProcess,
     failedThisProcess,
-    rateLimitedThisProcess,
-    timedOutThisProcess,
     lateRecoveredThisProcess,
-    consecutiveSuccesses,
-    currentGapMs,
-    startGapMs: config.rjMtprotoChannelStartGapMs,
-    minGapMs: config.rjMtprotoChannelMinGapMs,
-    maxGapMs: config.rjMtprotoChannelMaxGapMs,
-    concurrency: config.rjMtprotoChannelConcurrency,
-    inFlight: activeTransfers.size,
-    backoffUntil,
-    backoffActive: Boolean(backoffUntil && Date.parse(backoffUntil) > Date.now()),
-    channel: channelState,
     lastCachedAt,
     lastError,
+    accounts: [...accountStates.values()].map(accountRuntimeStatus),
   };
 }
 
