@@ -7410,3 +7410,28 @@ test('MeloBot search refinement supports strict Persian-to-Latin Artist pickers'
     null
   );
 });
+
+
+test('Artist/Album context membership includes real collaboration members but rejects lookalikes', () => {
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Bahram & Ali Sorena', title: 'Khoone Khorshid' },
+      'Ali Sorena'
+    ),
+    true
+  );
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'بهرام و علی سورنا', title: 'خونه خورشید' },
+      'Ali Sorena'
+    ),
+    true
+  );
+  assert.equal(
+    trackBelongsToArtistContext(
+      { artist: 'Ali Sorena Tribute & Bahram', title: 'Khoone Khorshid' },
+      'Ali Sorena'
+    ),
+    false
+  );
+});
