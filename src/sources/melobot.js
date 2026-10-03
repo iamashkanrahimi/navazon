@@ -5,7 +5,11 @@ import {
   normalizeText,
   hasAlbumIntent,
   albumSpecificTitleTokens,
+  albumTitleAppearsInQuery,
   artistCreditCompatible,
+  artistCreditMatchesContext,
+  crossScriptIdentityCompatible,
+  queryContainsWholeSearchField,
   titleCreditsArtist,
   trackTitleIdentityCompatible,
 } from '../text.js';
@@ -219,30 +223,21 @@ export function findArtistButtonFor(messages = [], artist = '') {
   const pickers = artistPickerItems(messages);
   const exact = pickers.find(item => normalize(item.name) === target);
   if (exact) return exact.rawText;
+
   const compactTarget = target.replace(/\s+/g, '');
   const compactExact = compactTarget
     ? pickers.find(item => normalize(item.name).replace(/\s+/g, '') === compactTarget)
     : null;
   if (compactExact) return compactExact.rawText;
 
-  const parts = artistIdentityParts(artist);
-  // A collaboration page must never silently choose one member just because
-  // the source exposed individual artist buttons. Exact composite credits or
-  // the generic legacy "خواننده" transition are safe; otherwise fail closed
-  // and let the caller surface an explicit choice later.
-  if (parts.length <= 1) {
-    const compatible = pickers.find(item => {
-      const name = normalize(item.name);
-      if (!name) return false;
-      const part = parts[0] || '';
-      if (part === name) return true;
-      const partTokens = part.split(' ').filter(Boolean);
-      const nameTokens = name.split(' ').filter(Boolean);
-      if (partTokens.length <= 1 || nameTokens.length <= 1) return false;
-      return part.includes(name) || name.includes(part);
-    });
-    if (compatible) return compatible.rawText;
-  }
+  // Artist picker navigation is identity-sensitive. Never accept a longer or
+  // shorter name by substring containment (Reza Bahram -> Reza Bahram Official,
+  // Ali Sorena -> Ali Sorena Tribute). Conservative Persian↔Latin equivalence
+  // is still allowed.
+  const compatible = pickers.find(item =>
+    artistIdentityCompatible(artist, item.name)
+  );
+  if (compatible) return compatible.rawText;
 
   const legacy = findButton(messages, text =>
     /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
@@ -260,40 +255,15 @@ function titleIdentity(value = '') {
 }
 
 function artistIdentityCompatible(requested = '', actual = '') {
-  const a = normalize(requested);
-  const b = normalize(actual);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  if (a.replace(/\s+/g, '') === b.replace(/\s+/g, '')) return true;
+  if (!clean(requested) || !clean(actual)) return false;
+  return artistCreditCompatible(requested, actual)
+    || crossScriptIdentityCompatible(requested, actual);
+}
 
-  // Split the original credit before normalization. normalizeText deliberately
-  // removes punctuation such as "&", so splitting the normalized value loses
-  // collaboration boundaries and makes reordered credits impossible to match.
-  const requestedParts = artistIdentityParts(requested);
-  const actualParts = artistIdentityParts(actual);
-  const partMatches = (left, right) => {
-    if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    // Do not conflate short stage names/surnames with longer unrelated
-    // identities (Farhad vs Farhad Ravanbakhsh, Bahram vs Reza Bahram).
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
-  };
-
-  // A requested collaboration must not silently collapse to one of its
-  // artists. This was the source of false resolutions for tracks such as
-  // "Ali Sorena & Bahram". A single requested primary artist may still match
-  // a source credit that includes extra featured artists.
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
-    );
-  }
-
-  return requestedParts.some(left =>
-    actualParts.some(right => partMatches(left, right))
-  );
+function artistContextCompatible(requested = '', actual = '') {
+  if (!clean(requested) || !clean(actual)) return false;
+  return artistCreditMatchesContext(actual, requested)
+    || crossScriptIdentityCompatible(requested, actual);
 }
 
 function describeTargetMessage(message = {}) {
