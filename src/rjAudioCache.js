@@ -90,7 +90,7 @@ function retryAfterSeconds(err) {
   return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 1;
 }
 
-function directCandidates(slug = '', sourceId = '') {
+export function directCandidates(slug = '', sourceId = '') {
   const encoded = encodeURIComponent(clean(slug));
   if (!encoded) return [];
 
@@ -112,7 +112,7 @@ function directCandidates(slug = '', sourceId = '') {
   ];
 }
 
-function verifyTelegramAudio(row, message) {
+export function verifyTelegramAudio(row, message) {
   const audio = message?.audio || null;
   if (!audio?.file_id) {
     return { ok: false, reason: 'Telegram sendAudio returned no audio.file_id', audio: null };
@@ -153,7 +153,7 @@ function verifyTelegramAudio(row, message) {
   };
 }
 
-async function ensureSchema(db) {
+export async function ensureRjAudioCacheSchema(db) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS rj_audio_cache (
       source_url TEXT PRIMARY KEY,
@@ -251,7 +251,12 @@ async function claimNext(db) {
   return rows[0] || null;
 }
 
-async function writeCanonicalProduction(row, candidate, audio) {
+export async function writeCanonicalProduction(
+  row,
+  candidate,
+  audio,
+  { acquisition = 'radiojavan_direct' } = {}
+) {
   const track = {
     artist: row.artist,
     title: row.title,
@@ -269,7 +274,7 @@ async function writeCanonicalProduction(row, candidate, audio) {
     bitrate: Number(candidate.quality || row.direct_quality || 0) || null,
     directUrl: candidate.url || row.direct_url || null,
     verifiedDirect: true,
-    acquisition: 'radiojavan_direct',
+    acquisition,
   };
 
   if (!media.fileId) throw new Error('Radio Javan canonical media missing file_id');
@@ -279,7 +284,7 @@ async function writeCanonicalProduction(row, candidate, audio) {
     source: 'radiojavan',
     bitrate: media.bitrate || undefined,
     fileSize: media.fileSize || undefined,
-    satisfiedBy: 'radiojavan_direct',
+    satisfiedBy: acquisition,
   });
 }
 
@@ -323,16 +328,20 @@ async function syncExistingCanonicalRows(db) {
   return synced;
 }
 
-async function markCached(
+export async function markRjAudioCached(
   db,
   row,
   candidate,
   message,
   verification,
-  { retainMessage = true, chatId = null } = {}
+  {
+    retainMessage = true,
+    chatId = null,
+    acquisition = 'radiojavan_direct',
+  } = {}
 ) {
   const audio = verification.audio;
-  await writeCanonicalProduction(row, candidate, audio);
+  await writeCanonicalProduction(row, candidate, audio, { acquisition });
   await db.query(`
     UPDATE rj_audio_cache
        SET status='cached',
@@ -373,12 +382,13 @@ async function markCached(
       artistOk: verification.artistOk,
       expectedDuration: verification.expectedDuration,
       actualDuration: verification.actualDuration,
+      acquisition,
     }),
   ]);
 
 }
 
-async function markFailure(
+export async function markRjAudioFailure(
   db,
   row,
   errors,
@@ -447,7 +457,7 @@ async function processRow(db, row, laneScheduler) {
         continue;
       }
 
-      await markCached(db, row, candidate, message, verification, {
+      await markRjAudioCached(db, row, candidate, message, verification, {
         retainMessage: !lane.ephemeral,
         chatId: lane.chatId,
       });
@@ -476,7 +486,7 @@ async function processRow(db, row, laneScheduler) {
       if (retryAfter != null) {
         const backoffUntilMs = laneScheduler.deferAll(retryAfter);
         floodBackoffUntil = new Date(backoffUntilMs).toISOString();
-        await markFailure(db, row, errors, {
+        await markRjAudioFailure(db, row, errors, {
           rateLimited: true,
           retryAfter,
         });
@@ -491,7 +501,7 @@ async function processRow(db, row, laneScheduler) {
     }
   }
 
-  await markFailure(db, row, errors);
+  await markRjAudioFailure(db, row, errors);
   return { ok: false, rateLimited: false, errors };
 }
 
@@ -549,7 +559,7 @@ async function workerLoop(archiveDb, workerId, laneScheduler) {
       lastError = String(err?.message || err);
       console.error('[rj audio cache]', workerId, lastError);
       if (row) {
-        try { await markFailure(archiveDb, row, [lastError]); } catch (markErr) {
+        try { await markRjAudioFailure(archiveDb, row, [lastError]); } catch (markErr) {
           console.error('[rj audio cache mark failure]', markErr?.message || markErr);
         }
       }
@@ -568,7 +578,7 @@ async function loop() {
     return;
   }
 
-  await ensureSchema(archiveDb);
+  await ensureRjAudioCacheSchema(archiveDb);
 
   await syncExistingCanonicalRows(archiveDb);
   const initial = await progress(archiveDb);
@@ -682,7 +692,7 @@ export function getRjAudioCacheRuntimeStatus() {
 export async function getRjAudioCacheSummary() {
   const archiveDb = getArchiveDb();
   if (!archiveDb) return { enabled: false, reason: 'archive_db_missing' };
-  await ensureSchema(archiveDb);
+  await ensureRjAudioCacheSchema(archiveDb);
   const { rows } = await archiveDb.query(`
     SELECT
       COUNT(*)::int AS total,
