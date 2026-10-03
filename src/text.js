@@ -271,7 +271,8 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
   if (leftJoined === rightJoined) return true;
 
   const maxLen = Math.max(leftJoined.length, rightJoined.length);
-  return maxLen >= 6 && smallEditDistance(leftJoined, rightJoined) <= 1;
+  const allowed = maxLen >= 9 ? 2 : (maxLen >= 6 ? 1 : 0);
+  return allowed > 0 && smallEditDistance(leftJoined, rightJoined) <= allowed;
 }
 
 export function trackTitleIdentity(value = '') {
