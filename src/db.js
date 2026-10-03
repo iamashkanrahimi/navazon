@@ -13,7 +13,67 @@ export const db = new Pool({
 
 db.on('error', err => console.error('[postgres pool]', err.message));
 
+const REQUIRED_SCHEMA_COLUMNS = new Map([
+  ['track_cache', ['track_key', 'active', 'superseded_by']],
+  ['artists', ['artist_key']],
+  ['searches', ['query_key']],
+  ['follows', ['user_id', 'artist_key']],
+  ['sessions', ['session_id']],
+  ['app_state', ['key']],
+  ['crawler_runs', ['id']],
+  ['deep_tracks', ['track_key', 'lyrics_synced', 'lyrics_integrity']],
+  ['track_aliases', ['alias_key']],
+  ['track_capability_failures', ['track_key', 'capability']],
+  ['deep_track_media', ['track_key', 'verified_quality']],
+  ['deep_albums', ['album_key']],
+  ['deep_album_tracks', ['album_key', 'track_key']],
+  ['deep_artist_tracks', ['artist_key', 'list_type', 'track_key', 'list_version']],
+  ['crawl_tasks', ['id', 'task_key', 'status']],
+]);
+
+export function schemaSnapshotReady(rows = []) {
+  const seen = new Map();
+  for (const row of rows || []) {
+    const table = String(row?.table_name || '');
+    const column = String(row?.column_name || '');
+    if (!table || !column) continue;
+    if (!seen.has(table)) seen.set(table, new Set());
+    seen.get(table).add(column);
+  }
+
+  for (const [table, columns] of REQUIRED_SCHEMA_COLUMNS) {
+    const present = seen.get(table);
+    if (!present) return false;
+    for (const column of columns) {
+      if (!present.has(column)) return false;
+    }
+  }
+  return true;
+}
+
+async function existingSchemaReady() {
+  try {
+    const tables = [...REQUIRED_SCHEMA_COLUMNS.keys()];
+    const result = await db.query(
+      `SELECT table_name, column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = ANY($1::text[])`,
+      [tables]
+    );
+    return schemaSnapshotReady(result.rows);
+  } catch (err) {
+    console.warn('[db init probe]', err.message);
+    return false;
+  }
+}
+
 export async function initDb() {
+  if (await existingSchemaReady()) {
+    console.log('[db init] schema ready; skipping startup DDL');
+    return;
+  }
+  console.log('[db init] schema bootstrap/migration required');
   await db.query(`
     CREATE TABLE IF NOT EXISTS track_cache (
       track_key TEXT PRIMARY KEY,
