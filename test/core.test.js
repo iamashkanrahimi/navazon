@@ -7384,3 +7384,29 @@ test('cross-script numeric suffixes are identity-significant in both Track and A
     true
   );
 });
+
+
+test('MeloBot search refinement supports strict Persian-to-Latin Artist pickers', () => {
+  const persianQuery = [
+    fakeBotMessage(
+      'choose artist',
+      ['🗣 Reza Bahram', '🗣 Reza Bahram Official']
+    ),
+  ];
+
+  assert.equal(
+    chooseMeloBotSearchRefinement(
+      persianQuery,
+      'رضا بهرام یار'
+    ),
+    '🗣 Reza Bahram'
+  );
+
+  assert.equal(
+    chooseMeloBotSearchRefinement(
+      [fakeBotMessage('choose artist', ['🗣 Farhad Ravanbakhsh'])],
+      'Farhad Ayneha'
+    ),
+    null
+  );
+});
