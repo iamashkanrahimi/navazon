@@ -7435,3 +7435,28 @@ test('Artist/Album context membership includes real collaboration members but re
     false
   );
 });
+
+
+test('multi-feature title credits recognize each explicit member without substring identity', () => {
+  assert.equal(
+    titleCreditsArtist(
+      'Song (feat. Guest & Another Artist)',
+      'Guest'
+    ),
+    true
+  );
+  assert.equal(
+    titleCreditsArtist(
+      'Song (feat. Guest & Another Artist)',
+      'Another Artist'
+    ),
+    true
+  );
+  assert.equal(
+    titleCreditsArtist(
+      'Song (feat. Guest Tribute & Another Artist)',
+      'Guest'
+    ),
+    false
+  );
+});
