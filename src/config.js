@@ -42,12 +42,12 @@ export const config = {
   rjMtprotoChannelPilotEnabled: boolEnv('RJ_MTPROTO_CHANNEL_PILOT_ENABLED', false),
   rjMtprotoChannelWorkerEnabled: boolEnv('RJ_MTPROTO_CHANNEL_WORKER_ENABLED', false),
   rjMtprotoChannelStartGapMs: Math.max(
-    750,
-    Number(process.env.RJ_MTPROTO_CHANNEL_START_GAP_MS || 950)
+    1100,
+    Number(process.env.RJ_MTPROTO_CHANNEL_START_GAP_MS || 1500)
   ),
   rjMtprotoChannelMinGapMs: Math.max(
-    650,
-    Number(process.env.RJ_MTPROTO_CHANNEL_MIN_GAP_MS || 750)
+    1100,
+    Number(process.env.RJ_MTPROTO_CHANNEL_MIN_GAP_MS || 1100)
   ),
   rjMtprotoChannelMaxGapMs: Math.max(
     1500,
