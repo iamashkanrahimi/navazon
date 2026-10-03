@@ -169,27 +169,39 @@ function evaluate(row, media) {
   };
 }
 
-export async function ensureRjMtprotoArchiveChannel() {
-  const current = await getState(CHANNEL_KEY, null);
+export async function ensureRjMtprotoArchiveChannelFor(
+  client,
+  { slot = 1 } = {}
+) {
+  const normalizedSlot = Number(slot) === 2 ? 2 : 1;
+  const channelKey = normalizedSlot === 1
+    ? CHANNEL_KEY
+    : `rj_mtproto_archive_channel_v1_slot_${normalizedSlot}`;
+  const title = normalizedSlot === 1
+    ? 'Navazon RJ Archive'
+    : `Navazon RJ Archive ${normalizedSlot}`;
+
+  const current = await getState(channelKey, null);
   if (current?.peerId) {
     try {
       const chat = await bot.getChat(current.peerId);
       if (chat?.id) {
         return {
           ...current,
+          slot: normalizedSlot,
           botChatType: chat.type || null,
           reused: true,
         };
       }
     } catch (err) {
-      console.warn('[rj channel pilot] saved channel unavailable', err.message);
+      console.warn('[rj channel pilot] saved channel unavailable', normalizedSlot, err.message);
     }
   }
 
   const created = await createPrivateArchiveChannel(
-    tg,
-    'Navazon RJ Archive',
-    'Private Radio Javan ingestion channel for Navazon'
+    client,
+    title,
+    `Private Radio Javan ingestion channel for Navazon (slot ${normalizedSlot})`
   );
 
   let chat = null;
@@ -209,12 +221,17 @@ export async function ensureRjMtprotoArchiveChannel() {
 
   const saved = {
     ...created,
+    slot: normalizedSlot,
     botChatType: chat.type || null,
     createdAt: Date.now(),
   };
-  await setState(CHANNEL_KEY, saved);
+  await setState(channelKey, saved);
   console.log('[rj channel pilot] archive channel ready', JSON.stringify(saved));
   return saved;
+}
+
+export async function ensureRjMtprotoArchiveChannel() {
+  return ensureRjMtprotoArchiveChannelFor(tg, { slot: 1 });
 }
 
 async function runBenchmark(archiveDb, channel) {
