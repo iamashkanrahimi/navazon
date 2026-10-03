@@ -793,7 +793,13 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   }
 
   const full = ranked.filter(item => item.total > 0 && item.coverage === item.total);
-  if (full.length) return full.map(item => item.track);
+  if (full.length) {
+    // When an exact/base version exists, do not mix unrequested Remix/Live/etc.
+    // into the same result set. If the source only has alternate versions,
+    // keep them rather than turning a useful search into an empty result.
+    const cleanFull = full.filter(item => !item.unrequestedVariants?.length);
+    return (cleanFull.length ? cleanFull : full).map(item => item.track);
+  }
 
   // Never keep a partial multi-token result merely because it is the best of
   // a bad source page. The only zero-lexical exception is a direct conservative
