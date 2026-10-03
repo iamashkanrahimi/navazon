@@ -124,11 +124,25 @@ export class FileCache {
       console.warn('[file cache radiojavan write rejected]', policy.artist, policy.title);
       return;
     }
-    if (
-      !hasMediaIdentityEvidence(media)
-      || !trackMediaIdentityMatches(policy, media || {})
-    ) {
-      console.warn('[file cache write rejected]', policy.artist, policy.title);
+    const identityEvidence = hasMediaIdentityEvidence(media);
+    const identityMatches = identityEvidence
+      ? trackMediaIdentityMatches(policy, media || {})
+      : false;
+    if (!identityEvidence || !identityMatches) {
+      console.warn(
+        '[file cache write rejected]',
+        JSON.stringify({
+          reason: identityEvidence ? 'identity_mismatch' : 'missing_identity_evidence',
+          expected: {
+            artist: String(policy?.artist || '').slice(0, 160),
+            title: String(policy?.title || '').slice(0, 160),
+          },
+          observed: {
+            performer: String(media?.performer || '').slice(0, 160),
+            title: String(media?.title || '').slice(0, 160),
+          },
+        })
+      );
       return;
     }
     const key = trackCacheKey(policy);
