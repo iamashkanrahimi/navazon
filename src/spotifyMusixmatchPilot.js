@@ -252,7 +252,11 @@ async function selectSample(db, limit = 200) {
     SELECT m.*
     FROM missing m
     JOIN eligible_artists e ON e.core_artist=m.core_artist
+    LEFT JOIN spotify_musixmatch_pilot_results p
+      ON p.pilot_version='spotify-musixmatch-v1'
+     AND p.source_url=m.source_url
     WHERE m.rn <= 2
+      AND p.source_url IS NULL
     ORDER BY md5(lower(m.core_artist) || ':spotify-musixmatch-pilot-v1'), m.rn
     LIMIT $2;
   `, [artistLimit, limit]);
@@ -393,4 +397,32 @@ export async function runSpotifyMusixmatchPilot({ limit = 200 } = {}) {
   const summary = await getSpotifyMusixmatchPilotSummary();
   console.log('[spotify musixmatch pilot] complete', JSON.stringify(summary));
   return { ok:true, sampleSize:sample.length, ...summary };
+}
+
+
+let pilotPromise = null;
+
+export function startSpotifyMusixmatchPilot() {
+  if (!config.spotifyMusixmatchPilotEnabled || pilotPromise) return pilotPromise;
+  pilotPromise = (async () => {
+    const current = await getSpotifyMusixmatchPilotSummary();
+    if (Number(current?.tested || 0) >= 200) {
+      console.log('[spotify musixmatch pilot] already complete', JSON.stringify(current));
+      return current;
+    }
+    return runSpotifyMusixmatchPilot({ limit: 200 - Number(current?.tested || 0) });
+  })().finally(() => {
+    pilotPromise = null;
+  });
+  return pilotPromise;
+}
+
+export function getSpotifyMusixmatchPilotRuntimeStatus() {
+  return {
+    enabled: config.spotifyMusixmatchPilotEnabled,
+    running: Boolean(pilotPromise),
+    credentialsReady: Boolean(
+      config.spotifyClientId && config.spotifyClientSecret && config.musixmatchApiKey
+    ),
+  };
 }
