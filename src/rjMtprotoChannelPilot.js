@@ -169,7 +169,7 @@ function evaluate(row, media) {
   };
 }
 
-async function ensureArchiveChannel() {
+export async function ensureRjMtprotoArchiveChannel() {
   const current = await getState(CHANNEL_KEY, null);
   if (current?.peerId) {
     try {
@@ -352,7 +352,7 @@ export async function runRjMtprotoChannelPilot() {
     return { enabled: false, reason: 'archive_db_missing' };
   }
 
-  const channel = await ensureArchiveChannel();
+  const channel = await ensureRjMtprotoArchiveChannel();
 
   // Zero-downtime deploys briefly keep the previous instance alive. Waiting
   // here makes sure channel_post updates land on the same process that owns
