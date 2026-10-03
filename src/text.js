@@ -192,7 +192,10 @@ export function trackBelongsToArtistContext(track = {}, artist = '') {
   if (!contextArtist || !title) return false;
   if (!trackArtist) return false;
 
-  return artistCreditCompatible(contextArtist, trackArtist)
+  // Page/Album membership is intentionally broader than canonical Track
+  // identity: an explicit collaboration may belong on each member's page.
+  // Durable media/alias identity continues to use artistCreditCompatible().
+  return artistCreditMatchesContext(trackArtist, contextArtist)
     || titleCreditsArtist(title, contextArtist);
 }
 
