@@ -76,11 +76,22 @@ async function recordLocalUploadEvidence(db, row, patch = {}) {
     row.source_url,
     JSON.stringify({
       localUploadRecovery: {
+        version: 2,
         attemptedAt: new Date().toISOString(),
         ...patch,
       },
     }),
   ]);
+}
+
+function localUploadRetryable(row = {}) {
+  const previous = row?.verification?.localUploadRecovery || null;
+  if (!previous) return true;
+  if (Number(previous.version || 0) >= 2) return false;
+  if (previous.ok === true) return false;
+  const reason = clean(previous.reason || '');
+  return previous.ok === false
+    && reason.includes('unexpected content-type text/plain');
 }
 
 async function resetFailedApiRowsForLocalUpload(db) {
@@ -92,13 +103,21 @@ async function resetFailedApiRowsForLocalUpload(db) {
            next_attempt_at=NULL,
            started_at=NULL,
            updated_at=NOW()
-     WHERE status='failed'
+     WHERE status IN ('failed','retry')
        AND verification->'apiRecovery'->>'prepared'='true'
-       AND NOT (COALESCE(verification,'{}'::jsonb) ? 'localUploadRecovery')
+       AND (
+         NOT (COALESCE(verification,'{}'::jsonb) ? 'localUploadRecovery')
+         OR (
+           COALESCE(verification->'localUploadRecovery'->>'ok','')='false'
+           AND COALESCE(verification->'localUploadRecovery'->>'reason','')
+             ILIKE '%unexpected content-type text/plain%'
+           AND COALESCE((verification->'localUploadRecovery'->>'version')::int,0) < 2
+         )
+       )
     RETURNING source_url
   `);
   if (result.rowCount) {
-    console.log('[rj local upload] released failed rows', result.rowCount);
+    console.log('[rj local upload] released recoverable rows', result.rowCount);
   }
   return result.rowCount;
 }
@@ -540,7 +559,7 @@ async function noteFloodWait(state, seconds) {
 
 async function tryLocalUploadRecovery(db, row, state, errors) {
   if (row?.verification?.apiRecovery?.prepared !== true) return null;
-  if (row?.verification?.localUploadRecovery) return null;
+  if (!localUploadRetryable(row)) return null;
 
   const candidate = selectRjApiUploadCandidate(row);
   if (!candidate) {

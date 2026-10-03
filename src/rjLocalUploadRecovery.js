@@ -56,21 +56,60 @@ export function validateRjAudioResponseMeta({
   }
 
   const type = clean(contentType).toLowerCase().split(';')[0];
-  if (
-    type.startsWith('text/')
-    || type.includes('json')
-    || type.includes('html')
-    || type.startsWith('image/')
-  ) {
-    return { ok:false, reason:`unexpected content-type ${type || 'unknown'}` };
-  }
-
   const size = Number(contentLength || 0) || null;
   if (size != null && size > MAX_DOWNLOAD_BYTES) {
     return { ok:false, reason:`file too large: ${size}` };
   }
 
-  return { ok:true, contentType:type || null, contentLength:size };
+  // Some live RJ CDN responses label valid m4a files as text/plain. Do not
+  // trust Content-Type for identity. The downloaded bytes are always sniffed
+  // before Telegram upload.
+  return {
+    ok:true,
+    contentType:type || null,
+    contentLength:size,
+    suspiciousContentType:Boolean(
+      type
+      && (
+        type.startsWith('text/')
+        || type.includes('json')
+        || type.includes('html')
+        || type.startsWith('image/')
+      )
+    ),
+  };
+}
+
+export function looksLikeAudioHeader(value) {
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || []);
+  if (buffer.length < 2) return false;
+
+  if (buffer.length >= 3 && buffer.subarray(0, 3).toString('ascii') === 'ID3') {
+    return true;
+  }
+  if (
+    buffer[0] === 0xff
+    && (
+      (buffer[1] & 0xe0) === 0xe0 // MPEG audio frame
+      || (buffer[1] & 0xf6) === 0xf0 // AAC ADTS
+    )
+  ) {
+    return true;
+  }
+  if (buffer.length >= 4) {
+    const first4 = buffer.subarray(0, 4).toString('ascii');
+    if (['OggS','fLaC','ADIF'].includes(first4)) return true;
+    if (
+      first4 === 'RIFF'
+      && buffer.length >= 12
+      && buffer.subarray(8, 12).toString('ascii') === 'WAVE'
+    ) return true;
+  }
+
+  // ISO Base Media / M4A typically starts with a 32-bit box size followed by
+  // "ftyp". Search only the tiny header window rather than arbitrary content.
+  const ftyp = buffer.subarray(0, Math.min(buffer.length, 32)).indexOf(Buffer.from('ftyp'));
+  return ftyp >= 4 && ftyp <= 16;
 }
 
 function extensionFor(candidate, contentType = '') {
@@ -128,9 +167,14 @@ export async function downloadRjAudioToTemp(candidate, sourceId, {
 
   const hash = createHash('sha256');
   let bytes = 0;
+  let header = Buffer.alloc(0);
   const meter = new Transform({
     transform(chunk, _encoding, callback) {
       bytes += chunk.length;
+      if (header.length < 64) {
+        const needed = 64 - header.length;
+        header = Buffer.concat([header, chunk.subarray(0, needed)]);
+      }
       if (bytes > MAX_DOWNLOAD_BYTES) {
         callback(new Error(`RJ local download exceeded ${MAX_DOWNLOAD_BYTES} bytes`));
         return;
@@ -149,6 +193,11 @@ export async function downloadRjAudioToTemp(candidate, sourceId, {
     const info = await stat(path);
     if (!info.size || info.size < 1024) {
       throw new Error(`RJ local download too small: ${info.size || 0} bytes`);
+    }
+    if (!looksLikeAudioHeader(header)) {
+      throw new Error(
+        `RJ local download magic bytes are not recognized as audio${meta.contentType ? ` (content-type ${meta.contentType})` : ''}`
+      );
     }
     return {
       path,

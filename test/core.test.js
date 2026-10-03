@@ -6994,9 +6994,18 @@ test('RJ local upload selects only fresh allowlisted RJ CDN candidates', async (
     contentLength:5_000_000,
   }).ok, true);
 
-  assert.equal(validateRjAudioResponseMeta({
+  const mislabeled = validateRjAudioResponseMeta({
     status:200,
-    contentType:'text/html',
+    contentType:'text/plain',
     contentLength:1000,
-  }).ok, false);
+  });
+  assert.equal(mislabeled.ok, true);
+  assert.equal(mislabeled.suspiciousContentType, true);
+
+  const { looksLikeAudioHeader } = await import('../src/rjLocalUploadRecovery.js');
+  assert.equal(
+    looksLikeAudioHeader(Buffer.from([0,0,0,24,0x66,0x74,0x79,0x70,0x4d,0x34,0x41,0x20])),
+    true
+  );
+  assert.equal(looksLikeAudioHeader(Buffer.from('plain text error page')), false);
 });
