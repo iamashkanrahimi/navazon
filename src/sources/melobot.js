@@ -5,7 +5,11 @@ import {
   normalizeText,
   hasAlbumIntent,
   albumSpecificTitleTokens,
+  albumTitleAppearsInQuery,
   artistCreditCompatible,
+  artistCreditMatchesContext,
+  crossScriptIdentityCompatible,
+  queryContainsWholeSearchField,
   titleCreditsArtist,
   trackTitleIdentityCompatible,
 } from '../text.js';
@@ -128,9 +132,15 @@ function trackLabel(candidate = {}) {
 }
 
 function sameTrackIdentity(left = {}, right = {}) {
-  const leftTitle = titleIdentity(left?.title || '');
-  const rightTitle = titleIdentity(right?.title || '');
-  if (!leftTitle || leftTitle !== rightTitle) return false;
+  const leftTitle = clean(left?.title || '');
+  const rightTitle = clean(right?.title || '');
+  if (
+    !leftTitle
+    || !rightTitle
+    || !trackTitleIdentityCompatible(leftTitle, rightTitle)
+  ) {
+    return false;
+  }
 
   const leftArtist = left?.artist || '';
   const rightArtist = right?.artist || '';
@@ -209,7 +219,7 @@ function normalize(value = '') {
 
 function artistIdentityParts(value = '') {
   return clean(value)
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .split(/\s*(?:&|\bx\b|,|\band\b|feat\.?|ft\.?|featuring)\s*|\s+و\s+/iu)
     .map(normalize)
     .filter(Boolean);
 }
@@ -219,30 +229,21 @@ export function findArtistButtonFor(messages = [], artist = '') {
   const pickers = artistPickerItems(messages);
   const exact = pickers.find(item => normalize(item.name) === target);
   if (exact) return exact.rawText;
+
   const compactTarget = target.replace(/\s+/g, '');
   const compactExact = compactTarget
     ? pickers.find(item => normalize(item.name).replace(/\s+/g, '') === compactTarget)
     : null;
   if (compactExact) return compactExact.rawText;
 
-  const parts = artistIdentityParts(artist);
-  // A collaboration page must never silently choose one member just because
-  // the source exposed individual artist buttons. Exact composite credits or
-  // the generic legacy "خواننده" transition are safe; otherwise fail closed
-  // and let the caller surface an explicit choice later.
-  if (parts.length <= 1) {
-    const compatible = pickers.find(item => {
-      const name = normalize(item.name);
-      if (!name) return false;
-      const part = parts[0] || '';
-      if (part === name) return true;
-      const partTokens = part.split(' ').filter(Boolean);
-      const nameTokens = name.split(' ').filter(Boolean);
-      if (partTokens.length <= 1 || nameTokens.length <= 1) return false;
-      return part.includes(name) || name.includes(part);
-    });
-    if (compatible) return compatible.rawText;
-  }
+  // Artist picker navigation is identity-sensitive. Never accept a longer or
+  // shorter name by substring containment (Reza Bahram -> Reza Bahram Official,
+  // Ali Sorena -> Ali Sorena Tribute). Conservative Persian↔Latin equivalence
+  // is still allowed.
+  const compatible = pickers.find(item =>
+    artistIdentityCompatible(artist, item.name)
+  );
+  if (compatible) return compatible.rawText;
 
   const legacy = findButton(messages, text =>
     /خواننده/u.test(clean(text)) && !/پیشنهاد/u.test(clean(text))
@@ -260,40 +261,15 @@ function titleIdentity(value = '') {
 }
 
 function artistIdentityCompatible(requested = '', actual = '') {
-  const a = normalize(requested);
-  const b = normalize(actual);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  if (a.replace(/\s+/g, '') === b.replace(/\s+/g, '')) return true;
+  if (!clean(requested) || !clean(actual)) return false;
+  return artistCreditCompatible(requested, actual)
+    || crossScriptIdentityCompatible(requested, actual);
+}
 
-  // Split the original credit before normalization. normalizeText deliberately
-  // removes punctuation such as "&", so splitting the normalized value loses
-  // collaboration boundaries and makes reordered credits impossible to match.
-  const requestedParts = artistIdentityParts(requested);
-  const actualParts = artistIdentityParts(actual);
-  const partMatches = (left, right) => {
-    if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    // Do not conflate short stage names/surnames with longer unrelated
-    // identities (Farhad vs Farhad Ravanbakhsh, Bahram vs Reza Bahram).
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
-  };
-
-  // A requested collaboration must not silently collapse to one of its
-  // artists. This was the source of false resolutions for tracks such as
-  // "Ali Sorena & Bahram". A single requested primary artist may still match
-  // a source credit that includes extra featured artists.
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
-    );
-  }
-
-  return requestedParts.some(left =>
-    actualParts.some(right => partMatches(left, right))
-  );
+function artistContextCompatible(requested = '', actual = '') {
+  if (!clean(requested) || !clean(actual)) return false;
+  return artistCreditMatchesContext(actual, requested)
+    || crossScriptIdentityCompatible(requested, actual);
 }
 
 function describeTargetMessage(message = {}) {
@@ -414,9 +390,10 @@ function searchRefinementScore(rawText, query = '') {
   if (!raw || isControl(raw) || parseAlbumButton(raw) || parseTrackButton(raw)) return -1;
 
   const isArtistPicker = /^[🗣🎤🎙]/u.test(raw);
-  const comparable = normalize(
-    isArtistPicker ? raw.replace(/^[🗣🎤🎙]+\s*/u, '') : raw
-  );
+  const pickerName = isArtistPicker
+    ? clean(raw.replace(/^[🗣🎤🎙]+\s*/u, ''))
+    : '';
+  const comparable = normalize(isArtistPicker ? pickerName : raw);
   const target = normalize(query);
   if (!comparable || !target) return -1;
 
@@ -424,15 +401,23 @@ function searchRefinementScore(rawText, query = '') {
   const buttonTokens = comparable.split(' ').filter(Boolean);
   const buttonSet = new Set(buttonTokens);
   const overlap = queryTokens.filter(token => buttonSet.has(token)).length;
-  if (!overlap) return -1;
+  const wholeArtistInQuery = Boolean(
+    isArtistPicker
+    && pickerName
+    && queryContainsWholeSearchField(query, pickerName)
+  );
+
+  if (!overlap && !wholeArtistInQuery) return -1;
 
   // Artist picker navigation needs evidence for the whole displayed Artist
-  // name, not just one shared token. Without this, a query such as "Farhad"
-  // can be refined into "Farhad Ravanbakhsh" before Track relevance has a
-  // chance to reject the collision.
-  if (isArtistPicker && overlap < buttonTokens.length) return -1;
+  // identity, not just one shared token. The whole-field path also supports
+  // conservative Persian↔Latin picker transitions.
+  if (isArtistPicker && !wholeArtistInQuery && overlap < buttonTokens.length) {
+    return -1;
+  }
 
   let score = overlap * 20;
+  if (wholeArtistInQuery) score += 70;
   if (comparable === target) score += 80;
   else if (comparable.includes(target) || target.includes(comparable)) score += 35;
 
@@ -1104,12 +1089,15 @@ function inspectSelectedCandidateSurface(messages = [], candidate = {}) {
 
 
 function exactNestedTrackButton(messages = [], candidate = {}) {
-  const wantedTitle = titleIdentity(candidate?.title || '');
+  const wantedTitle = clean(candidate?.title || '');
   if (!wantedTitle) return null;
 
   for (const rawText of buttonsFromMessages(messages)) {
     const track = parseTrackButton(rawText, candidate?.artist || '');
-    if (!track || titleIdentity(track.title || '') !== wantedTitle) continue;
+    if (
+      !track
+      || !trackTitleIdentityCompatible(wantedTitle, track.title || '')
+    ) continue;
     if (
       candidate?.artist
       && track?.artist
@@ -1329,7 +1317,7 @@ async function findArtistSeed(
     preferredSeed?.rawText
     && preferredSeed?.source !== 'ahangify'
     && preferredArtist
-    && artistIdentityCompatible(artist, preferredSeed.artist)
+    && artistContextCompatible(artist, preferredSeed.artist)
     && (
       Number(preferredSeed.sourceStateVersion || -1) === Number(sourceStateVersion)
       || preferredStillLive
@@ -1346,7 +1334,7 @@ async function findArtistSeed(
     });
     seed = results.find(track => normalize(track.artist) === target)
       || results.find(track =>
-        artistIdentityCompatible(artist, track.artist || '')
+        artistContextCompatible(artist, track.artist || '')
       )
       || null;
   } catch (err) {
@@ -1454,10 +1442,10 @@ export async function resolveMeloBotTrackCandidate(
         maxRefinements: 2,
       });
 
-      const requestedTitle = titleIdentity(candidate?.title || '');
+      const requestedTitle = clean(candidate?.title || '');
       const exactTitle = results.filter(track =>
         requestedTitle
-        && titleIdentity(track.title || '') === requestedTitle
+        && trackTitleIdentityCompatible(requestedTitle, track.title || '')
       );
 
       let resolved = null;
@@ -2708,7 +2696,7 @@ async function openMeloBotArtistDirectBase(
       // exact/compatible Track row for this artist; stop collecting and reuse
       // that live row instead of waiting for the Artist-search timeout.
       return parseTracksFromMessages([message], artist).some(track =>
-        artistIdentityCompatible(artist, track.artist || '')
+        artistContextCompatible(artist, track.artist || '')
       );
     },
     waitForTarget: true,
@@ -2734,7 +2722,7 @@ async function openMeloBotArtistDirectBase(
     // already-live row immediately instead of issuing the same Artist search a
     // second time and losing the only scripted/source surface.
     const freshSeed = parseTracksFromMessages(first.messages, artist)
-      .find(track => artistIdentityCompatible(artist, track.artist || ''))
+      .find(track => artistContextCompatible(artist, track.artist || ''))
       || null;
     if (freshSeed && !remaining.expired()) {
       return openMeloBotArtistBase(
@@ -2865,7 +2853,7 @@ async function openMeloBotArtistBase(
         maxRefinements: 2,
       });
       const freshSeed = freshTracks.find(track =>
-        artistIdentityCompatible(effectiveSeed.artist, track.artist || '')
+        artistContextCompatible(effectiveSeed.artist, track.artist || '')
       ) || null;
 
       if (freshSeed && !remaining.expired()) {
@@ -2936,23 +2924,9 @@ async function openMeloBotArtistBase(
     const requested = normalize(effectiveSeed.artist);
     const requestedParts = artistIdentityParts(effectiveSeed.artist);
 
-    const chosen = pickerButtons.find(item => normalize(item.name) === requested)
-      || (
-        requestedParts.length === 1
-          ? pickerButtons.find(item => {
-              const name = normalize(item.name);
-              return name === requestedParts[0]
-                || (
-                  requestedParts[0].split(' ').length > 1
-                  && name.split(' ').length > 1
-                  && (
-                    requestedParts[0].includes(name)
-                    || name.includes(requestedParts[0])
-                  )
-                );
-            })
-          : null
-      );
+    const chosen = pickerButtons.find(item =>
+      artistIdentityCompatible(effectiveSeed.artist, item.name)
+    ) || null;
 
     if (!chosen) {
       throw meloError(
@@ -3804,8 +3778,12 @@ export function albumQueryMatches(query, artist, albumTitle) {
   // album title called "آلبوم".
   if (!albumTokens.length) return hasAlbumIntent(query);
 
-  const title = normalize(albumTitle);
-  return albumTokens.every(token => title.includes(token));
+  if (albumTitleAppearsInQuery(query, albumTitle)) return true;
+
+  // Partial album lookup remains useful, but match complete title tokens only;
+  // character substrings such as "Yar" inside "Yaram" are not identity.
+  const titleTokens = new Set(normalize(albumTitle).split(' ').filter(Boolean));
+  return albumTokens.every(token => titleTokens.has(token));
 }
 
 function stripAlbumIntent(query = '') {
@@ -3832,24 +3810,59 @@ function chooseArtistPicker(items = [], requested = '') {
   const target = normalize(requested);
   const exact = items.find(item => normalize(item.name) === target);
   if (exact) return exact;
+  if (!requested) return items.length === 1 ? items[0] : null;
 
-  const parts = artistIdentityParts(requested);
-  if (parts.length > 1) return null;
+  const matches = items.filter(item =>
+    queryContainsWholeSearchField(requested, item.name)
+  );
+  if (!matches.length) return null;
 
-  if (parts.length === 1) {
-    const wanted = parts[0];
-    const wantedTokens = wanted.split(' ').filter(Boolean);
-    if (wantedTokens.length > 1) {
-      return items.find(item => {
-        const name = normalize(item.name);
-        const nameTokens = name.split(' ').filter(Boolean);
-        return name
-          && nameTokens.length > 1
-          && (name.includes(wanted) || wanted.includes(name));
-      }) || null;
-    }
+  // Prefer the most specific whole Artist field named by the query. If two
+  // equally-specific different identities remain, the query is ambiguous.
+  matches.sort((a, b) =>
+    normalize(b.name).split(' ').length - normalize(a.name).split(' ').length
+    || normalize(b.name).length - normalize(a.name).length
+  );
+  const best = matches[0];
+  const bestSize = normalize(best.name).split(' ').length;
+  const tied = matches.filter(item =>
+    normalize(item.name).split(' ').length === bestSize
+  );
+  if (
+    tied.some(item =>
+      !artistIdentityCompatible(best.name, item.name)
+    )
+  ) {
+    return null;
   }
-  return requested ? null : (items[0] || null);
+  return best;
+}
+
+function chooseAlbumSeedTrack(tracks = [], requested = '') {
+  const matches = (tracks || [])
+    .filter(track =>
+      track?.artist
+      && queryContainsWholeSearchField(requested, track.artist)
+    )
+    .sort((a, b) =>
+      normalize(b.artist).split(' ').length - normalize(a.artist).split(' ').length
+      || normalize(b.artist).length - normalize(a.artist).length
+    );
+
+  if (!matches.length) return null;
+  const best = matches[0];
+  const bestSize = normalize(best.artist).split(' ').length;
+  const tied = matches.filter(track =>
+    normalize(track.artist).split(' ').length === bestSize
+  );
+  if (
+    tied.some(track =>
+      !artistIdentityCompatible(best.artist, track.artist)
+    )
+  ) {
+    return null;
+  }
+  return best;
 }
 
 async function openMeloBotAlbumListingDirect(client, artistQuery, {
@@ -3915,13 +3928,7 @@ async function openMeloBotAlbumListingDirect(client, artistQuery, {
   if (remaining.expired()) throw new Error(`MeloBot direct album route timed out for: ${artistQuery}`);
 
   const seeds = await searchMeloBot(client, artistQuery, { maxRefinements: 3, timeoutMs: remaining() });
-  const target = normalize(artistQuery);
-  const seed = seeds.find(track => normalize(track.artist) === target)
-    || seeds.find(track =>
-      normalize(track.artist).includes(target) || target.includes(normalize(track.artist))
-    )
-    || seeds[0]
-    || null;
+  const seed = chooseAlbumSeedTrack(seeds, artistQuery);
 
   if (!seed) {
     throw new Error(
@@ -4029,13 +4036,7 @@ export async function discoverMeloBotAlbumsByArtistQuery(client, query, {
     }
   }
 
-  const target = normalize(artistQuery);
-  const seed = seedTracks.find(track => normalize(track.artist) === target)
-    || seedTracks.find(track =>
-      normalize(track.artist).includes(target) || target.includes(normalize(track.artist))
-    )
-    || seedTracks[0]
-    || null;
+  const seed = chooseAlbumSeedTrack(seedTracks, artistQuery);
 
   if (seed) {
     const artistContext = await openMeloBotArtistBase(client, seed, {

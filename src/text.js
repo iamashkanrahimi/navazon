@@ -49,7 +49,20 @@ function normalizeSearchText(value = '') {
   // ZWNJ/ZWJ are presentation details in Persian search input. Treat
   // "نمی‌خوام" and "نمیخوام" as the same search spelling without changing
   // the stricter canonical/cache identity normalization used elsewhere.
-  return normalizeText(String(value || '').replace(/[\u200c\u200d]/g, ''));
+  // Fold diacritics only on non-Persian tokens: NFKD on Persian would turn
+  // "آکوستیک" into "اکوستیک" and break explicit variant intent.
+  const normalized = normalizeText(
+    String(value || '').replace(/[\u200c\u200d]/g, '')
+  );
+  return normalized
+    .split(' ')
+    .map(token =>
+      /[\u0600-\u06ff]/u.test(token)
+        ? token
+        : token.normalize('NFKD').replace(/\p{M}+/gu, '')
+    )
+    .join(' ')
+    .trim();
 }
 
 export function stableSourceTrackVariant(value = '') {
@@ -71,12 +84,12 @@ export function hasCompositeArtistSeparators(value = '') {
   // This does not redefine the artist identity for interactive navigation; it
   // only gives the crawler a cheap way to avoid manufacturing artist profiles
   // from track-level collaboration credits such as "Drake & Yeat".
-  return /\s(?:&|x)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
+  return /\s(?:&|x|and|و)\s|,\s*|\b(?:feat\.?|ft\.?|featuring)\b/iu.test(artist);
 }
 
 export function artistCreditParts(value = '') {
   return cleanText(value)
-    .split(/\s*(?:&|\bx\b|,|feat\.?|ft\.?|featuring)\s*/iu)
+    .split(/\s*(?:&|\bx\b|,|\band\b|feat\.?|ft\.?|featuring)\s*|\s+و\s+/iu)
     .map(normalizeText)
     .filter(Boolean);
 }
@@ -87,14 +100,30 @@ export function artistCreditMatchesContext(credit = '', artist = '') {
   if (!target || !actual) return false;
   if (target === actual) return true;
 
-  const wantedParts = artistCreditParts(artist).map(identityNormalizeText);
-  const actualParts = artistCreditParts(credit).map(identityNormalizeText);
-  if (!wantedParts.length || !actualParts.length) return false;
+  const wantedPartsRaw = artistCreditParts(artist);
+  const actualPartsRaw = artistCreditParts(credit);
+  if (!wantedPartsRaw.length || !actualPartsRaw.length) return false;
 
-  if (wantedParts.length === 1) {
-    return actualParts.includes(wantedParts[0]);
+  const partEquivalent = (leftRaw, rightRaw) => {
+    const left = identityNormalizeText(leftRaw);
+    const right = identityNormalizeText(rightRaw);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    if (left.replace(/\s+/g, '') === right.replace(/\s+/g, '')) return true;
+    return crossScriptIdentityCompatible(leftRaw, rightRaw);
+  };
+
+  if (wantedPartsRaw.length === 1) {
+    return actualPartsRaw.some(part =>
+      partEquivalent(wantedPartsRaw[0], part)
+    );
   }
-  return wantedParts.every(part => actualParts.includes(part));
+
+  return wantedPartsRaw.every(wanted =>
+    actualPartsRaw.some(actualPart =>
+      partEquivalent(wanted, actualPart)
+    )
+  );
 }
 
 export function artistCreditCompatible(requested = '', actual = '') {
@@ -108,33 +137,38 @@ export function artistCreditCompatible(requested = '', actual = '') {
   // whitespace removal; do not use fuzzy matching here.
   if (requestedText.replace(/\s+/g, '') === actualText.replace(/\s+/g, '')) return true;
 
-  const requestedParts = artistCreditParts(requested).map(identityNormalizeText);
-  const actualParts = artistCreditParts(actual).map(identityNormalizeText);
-  if (!requestedParts.length || !actualParts.length) return false;
+  const requestedPartsRaw = artistCreditParts(requested);
+  const actualPartsRaw = artistCreditParts(actual);
+  if (!requestedPartsRaw.length || !actualPartsRaw.length) return false;
 
-  const partMatches = (left, right) => {
+  const partMatches = (leftRaw, rightRaw) => {
+    const left = identityNormalizeText(leftRaw);
+    const right = identityNormalizeText(rightRaw);
+    if (!left || !right) return false;
     if (left === right) return true;
 
     // Artist identity must never be proven by substring containment. A longer
     // credit such as "Ali Sorena Tribute" or "Reza Bahram Official" is a
     // different identity unless it is an explicit collaboration component.
-    // Keep only the harmless compact-whitespace equivalence used by stage
-    // names such as "25 Band" <-> "25Band".
-    return left.replace(/\s+/g, '') === right.replace(/\s+/g, '');
+    if (left.replace(/\s+/g, '') === right.replace(/\s+/g, '')) return true;
+
+    // Cross-script identity is allowed per explicit collaboration member,
+    // never by fuzzy containment of the whole credit.
+    return crossScriptIdentityCompatible(leftRaw, rightRaw);
   };
 
   // A collaboration credit is not interchangeable with one of its members.
   // Artist-page membership has its own broader helper; identity verification
   // requires the same explicit member set (order may differ).
-  if (requestedParts.length !== actualParts.length) return false;
+  if (requestedPartsRaw.length !== actualPartsRaw.length) return false;
 
-  if (requestedParts.length > 1) {
-    return requestedParts.every(left =>
-      actualParts.some(right => partMatches(left, right))
+  if (requestedPartsRaw.length > 1) {
+    return requestedPartsRaw.every(left =>
+      actualPartsRaw.some(right => partMatches(left, right))
     );
   }
 
-  return partMatches(requestedParts[0], actualParts[0]);
+  return partMatches(requestedPartsRaw[0], actualPartsRaw[0]);
 }
 
 export function titleCreditsArtist(title = '', artist = '') {
@@ -148,7 +182,9 @@ export function titleCreditsArtist(title = '', artist = '') {
     if (credit) credits.push(credit);
   }
 
-  return credits.some(credit => artistCreditCompatible(artist, credit));
+  return credits.some(credit =>
+    artistCreditMatchesContext(credit, artist)
+  );
 }
 
 export function trackBelongsToArtistContext(track = {}, artist = '') {
@@ -158,7 +194,10 @@ export function trackBelongsToArtistContext(track = {}, artist = '') {
   if (!contextArtist || !title) return false;
   if (!trackArtist) return false;
 
-  return artistCreditCompatible(contextArtist, trackArtist)
+  // Page/Album membership is intentionally broader than canonical Track
+  // identity: an explicit collaboration may belong on each member's page.
+  // Durable media/alias identity continues to use artistCreditCompatible().
+  return artistCreditMatchesContext(trackArtist, contextArtist)
     || titleCreditsArtist(title, contextArtist);
 }
 
@@ -258,6 +297,15 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
   const leftFamily = identityScriptFamily(left);
   const rightFamily = identityScriptFamily(right);
   if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
+
+  const leftNumbers = normalizeText(left).match(/\d+/g) || [];
+  const rightNumbers = normalizeText(right).match(/\d+/g) || [];
+  if (
+    leftNumbers.length !== rightNumbers.length
+    || leftNumbers.some((value, index) => value !== rightNumbers[index])
+  ) {
+    return false;
+  }
 
   const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
   const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
@@ -398,9 +446,13 @@ export function albumSpecificTitleTokens(query = '', artist = '') {
 }
 
 export function albumTitleAppearsInQuery(query = '', albumTitle = '') {
-  const queryTokens = new Set(albumQueryTokens(query));
-  const titleTokens = normalizeText(albumTitle).split(' ').filter(Boolean);
-  return titleTokens.length > 0 && titleTokens.every(token => queryTokens.has(token));
+  const title = cleanText(albumTitle);
+  if (!title) return false;
+
+  // Use the same whole-field matcher as Track search so Persian↔Latin album
+  // titles and compact spellings work, while "Eshtebahe Khoob" does not
+  // silently match "Eshtebahe Khoob 2".
+  return queryContainsWholeSearchField(query, title);
 }
 
 export function hasSpecificAlbumTitle(query = '', artist = '', albumTitles = []) {
@@ -442,6 +494,7 @@ const SEARCH_COMMAND_WORDS = new Set([
 
 const SEARCH_CONNECTIVE_WORDS = new Set([
   'از', 'با', 'همراه', 'همراهی',
+  'by', 'from', 'x', 'versus', 'و',
 ]);
 
 const SEARCH_VARIANT_PREFIX = '@variant:';
@@ -499,6 +552,15 @@ function crossScriptSearchPhraseCompatible(left = '', right = '') {
   const rightFamily = identityScriptFamily(right);
   if (!leftFamily || !rightFamily || leftFamily === rightFamily) return false;
 
+  const leftNumbers = normalizeText(left).match(/\d+/g) || [];
+  const rightNumbers = normalizeText(right).match(/\d+/g) || [];
+  if (
+    leftNumbers.length !== rightNumbers.length
+    || leftNumbers.some((value, index) => value !== rightNumbers[index])
+  ) {
+    return false;
+  }
+
   const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
   const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
 
@@ -518,7 +580,7 @@ function crossScriptSearchPhraseCompatible(left = '', right = '') {
   return allowed > 0 && smallEditDistance(leftJoined, rightJoined) <= allowed;
 }
 
-function queryContainsWholeSearchField(query = '', field = '') {
+export function queryContainsWholeSearchField(query = '', field = '') {
   const fieldRaw = cleanText(field);
   const fieldTokens = rawSearchTokens(fieldRaw);
   if (!fieldRaw || !fieldTokens.length) return false;
@@ -599,11 +661,17 @@ export function primarySearchQueries(query = '') {
 function meaningfulRawSearchTokens(query = '') {
   let tokens = rawSearchTokens(query)
     .filter(token =>
-      token.length >= 2
-      && !SEARCH_NOISE_WORDS.has(token)
+      !SEARCH_NOISE_WORDS.has(token)
       && !ALBUM_INTENT_WORDS.has(token)
       && !ALBUM_SUFFIX_WORDS.has(token)
     );
+
+  // Keep a one-character title/Artist when it is the whole meaningful query
+  // ("X"), but do not promote one-letter fragments inside larger queries
+  // ("Shayea Ma Ft T-Dey").
+  if (tokens.length > 1) {
+    tokens = tokens.filter(token => token.length >= 2);
+  }
 
   // Command words are noise when there is an actual identity token beside
   // them, but remain searchable when they are the whole query/title.
@@ -692,6 +760,56 @@ function searchTokenCoverage(queryTokens = [], track = {}) {
         index += 1
       ) {
         matched[index] = true;
+      }
+    }
+  }
+
+
+  // Composite Artist credits are member sets, not ordered phrases. A query
+  // such as "علی سورنا و بهرام ..." must be able to match
+  // "Bahram & Ali Sorena" without accepting a collapsed single member or a
+  // longer impostor. Mark each explicit source member independently; full
+  // coverage still requires every query identity token (including the title).
+  const artistParts = artistCreditParts(rawFields[0] || '');
+  if (artistParts.length > 1) {
+    for (const artistPart of artistParts) {
+      const partTokens = rawSearchTokens(artistPart).map(canonicalSearchToken);
+      const partJoined = partTokens.join(' ');
+      const partCompact = partTokens.join('');
+      let best = null;
+
+      for (let length = queryTokens.length; length >= 1 && !best; length -= 1) {
+        for (
+          let startIndex = 0;
+          startIndex + length <= queryTokens.length;
+          startIndex += 1
+        ) {
+          const segment = queryTokens.slice(startIndex, startIndex + length);
+          if (segment.some(isCanonicalVariantSearchToken)) continue;
+
+          const sameScript = (
+            segment.join(' ') === partJoined
+            || segment.join('') === partCompact
+          );
+          const crossScript = crossScriptSearchPhraseCompatible(
+            segment.join(' '),
+            artistPart
+          );
+          if (!sameScript && !crossScript) continue;
+
+          best = { startIndex, length };
+          break;
+        }
+      }
+
+      if (best) {
+        for (
+          let index = best.startIndex;
+          index < best.startIndex + best.length;
+          index += 1
+        ) {
+          matched[index] = true;
+        }
       }
     }
   }
@@ -836,7 +954,11 @@ export function rankTracksForQuery(query = '', tracks = []) {
 
 export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   const tokens = meaningfulSearchTokens(query);
-  if (!tokens.length || !(tracks || []).length) return tracks || [];
+  if (!(tracks || []).length) return [];
+  // A non-empty query made entirely of noise words must never surface an
+  // arbitrary source page. This used to make queries such as "the" return
+  // unrelated tracks because zero meaningful tokens bypassed relevance.
+  if (!tokens.length) return [];
 
   const ranked = rankTracksForQuery(query, tracks);
 
@@ -884,6 +1006,14 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
       queryContainsWholeSearchField(query, item.track?.artist || '')
     );
     if (wholeArtistMatches.length) selected = wholeArtistMatches;
+
+    // Prefer a whole Title field when one exists. Token coverage alone makes
+    // "Maryam" fully cover both "Maryam" and "Maryam 2"; after the Artist is
+    // fixed, that can still leak a longer same-Artist title into the result.
+    const wholeTitleMatches = selected.filter(item =>
+      queryContainsWholeSearchField(query, item.track?.title || '')
+    );
+    if (wholeTitleMatches.length) selected = wholeTitleMatches;
 
     return selected.map(item => item.track);
   }

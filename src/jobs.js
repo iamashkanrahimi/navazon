@@ -371,12 +371,17 @@ async function searchAlbumOptions(query, tracks = []) {
           artists[0],
           fullRows.map(album => album.title)
         );
-        const visible = specificAlbum
-          ? fullRows.filter(album =>
-              albumTitleAppearsInQuery(query, album.title)
-              || albumQueryMatches(query, artists[0], album.title)
-            )
-          : fullRows;
+        let visible = fullRows;
+        if (specificAlbum) {
+          const exact = fullRows.filter(album =>
+            albumTitleAppearsInQuery(query, album.title)
+          );
+          visible = exact.length
+            ? exact
+            : fullRows.filter(album =>
+                albumQueryMatches(query, artists[0], album.title)
+              );
+        }
 
         return mergeAlbumResults(limit, visible, albums);
       }
@@ -396,16 +401,20 @@ async function searchAlbumOptions(query, tracks = []) {
           emptyConfirmed: Boolean(direct.confirmedEmpty && direct.complete),
         });
 
-        const matched = direct.albums.filter(album =>
+        const exact = direct.albums.filter(album =>
           albumTitleAppearsInQuery(query, album.title)
-          || albumQueryMatches(query, direct.artist, album.title)
+        );
+        const partial = direct.albums.filter(album =>
+          albumQueryMatches(query, direct.artist, album.title)
         );
         const specificAlbum = hasSpecificAlbumTitle(
           query,
           direct.artist,
           direct.albums.map(album => album.title)
         );
-        const visible = specificAlbum ? matched : direct.albums;
+        const visible = specificAlbum
+          ? (exact.length ? exact : partial)
+          : direct.albums;
 
         albums = mergeAlbumResults(
           limit,
