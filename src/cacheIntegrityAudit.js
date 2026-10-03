@@ -129,6 +129,32 @@ export async function runCacheIntegrityAudit({ log = true } = {}) {
           WHERE source='identity-v2:radiojavan'
             AND kind <> 'audio'
         )::int AS non_audio,
+        COUNT(*) FILTER (
+          WHERE source='identity-v2:radiojavan'
+            AND EXISTS (
+              SELECT 1
+              FROM track_cache tc
+              WHERE tc.active=TRUE
+                AND LEFT(tc.track_key, LENGTH(deep_track_media.track_key) + 1) = deep_track_media.track_key || '|'
+                AND COALESCE(tc.track->>'source','')='radiojavan'
+                AND COALESCE(tc.media->>'verifiedDirect','false')='true'
+                AND COALESCE(tc.media->>'identityVerified','false')='true'
+                AND NULLIF(BTRIM(COALESCE(tc.media->>'fileId','')), '') = deep_track_media.file_id
+            )
+        )::int AS trusted_rj_media,
+        COUNT(*) FILTER (
+          WHERE source='identity-v2:radiojavan'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM track_cache tc
+              WHERE tc.active=TRUE
+                AND LEFT(tc.track_key, LENGTH(deep_track_media.track_key) + 1) = deep_track_media.track_key || '|'
+                AND COALESCE(tc.track->>'source','')='radiojavan'
+                AND COALESCE(tc.media->>'verifiedDirect','false')='true'
+                AND COALESCE(tc.media->>'identityVerified','false')='true'
+                AND NULLIF(BTRIM(COALESCE(tc.media->>'fileId','')), '') = deep_track_media.file_id
+            )
+        )::int AS quarantined_legacy_rj_media,
         (SELECT COUNT(*)::int FROM duplicate_rj_media) AS duplicate_unique_id_groups
       FROM deep_track_media
     `),

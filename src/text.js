@@ -107,11 +107,19 @@ export function artistCreditCompatible(requested = '', actual = '') {
 
   const partMatches = (left, right) => {
     if (left === right) return true;
-    const leftTokens = left.split(' ').filter(Boolean);
-    const rightTokens = right.split(' ').filter(Boolean);
-    if (leftTokens.length <= 1 || rightTokens.length <= 1) return false;
-    return left.includes(right) || right.includes(left);
+
+    // Artist identity must never be proven by substring containment. A longer
+    // credit such as "Ali Sorena Tribute" or "Reza Bahram Official" is a
+    // different identity unless it is an explicit collaboration component.
+    // Keep only the harmless compact-whitespace equivalence used by stage
+    // names such as "25 Band" <-> "25Band".
+    return left.replace(/\s+/g, '') === right.replace(/\s+/g, '');
   };
+
+  // A collaboration credit is not interchangeable with one of its members.
+  // Artist-page membership has its own broader helper; identity verification
+  // requires the same explicit member set (order may differ).
+  if (requestedParts.length !== actualParts.length) return false;
 
   if (requestedParts.length > 1) {
     return requestedParts.every(left =>
@@ -119,7 +127,7 @@ export function artistCreditCompatible(requested = '', actual = '') {
     );
   }
 
-  return actualParts.some(right => partMatches(requestedParts[0], right));
+  return partMatches(requestedParts[0], actualParts[0]);
 }
 
 export function titleCreditsArtist(title = '', artist = '') {

@@ -17,6 +17,22 @@ function clean(value = '') {
 
 export const MEDIA_IDENTITY_SOURCE_PREFIX = 'identity-v2:';
 
+const TRUSTED_RJ_DEEP_MEDIA_CLAUSE = `
+(
+  m.source <> 'identity-v2:radiojavan'
+  OR EXISTS (
+    SELECT 1
+    FROM track_cache tc
+    WHERE tc.active = TRUE
+      AND LEFT(tc.track_key, LENGTH(m.track_key) + 1) = m.track_key || '|'
+      AND COALESCE(tc.track->>'source','') = 'radiojavan'
+      AND COALESCE(tc.media->>'verifiedDirect','false') = 'true'
+      AND COALESCE(tc.media->>'identityVerified','false') = 'true'
+      AND NULLIF(BTRIM(COALESCE(tc.media->>'fileId','')), '') = m.file_id
+  )
+)
+`;
+
 function trustedMediaSource(source = '') {
   return MEDIA_IDENTITY_SOURCE_PREFIX + clean(source || 'melobot');
 }
@@ -630,6 +646,15 @@ export class DeepCatalog {
       console.warn('[deep media write rejected]', track?.artist, track?.title);
       return;
     }
+    const mediaSource = clean(extra.source || track.source || 'melobot');
+    if (
+      mediaSource === 'radiojavan'
+      && (media?.verifiedDirect !== true || media?.identityVerified !== true)
+    ) {
+      console.warn('[deep media radiojavan write rejected]', track?.artist, track?.title);
+      return;
+    }
+
     const trackKey = await this.upsertTrack(track);
     if (!trackKey || !media.fileId) return;
     await db.query(`
@@ -659,7 +684,7 @@ export class DeepCatalog {
       Number(extra.bitrate || 0) || null,
       Number(extra.fileSize || media.fileSize || 0) || null,
       Number(media.duration || extra.duration || 0) || null,
-      trustedMediaSource(extra.source || track.source || 'melobot'),
+      trustedMediaSource(mediaSource),
     ]);
     await this.completeTaskByKey(`track_${quality}:${trackKey}`, {
       satisfiedBy: extra.satisfiedBy || 'media_cache',
@@ -677,13 +702,14 @@ export class DeepCatalog {
     if (!keys.length) return out;
 
     const result = await db.query(`
-      SELECT track_key, quality, file_id, file_unique_id, kind,
-             bitrate, file_size, duration_seconds, source
-      FROM deep_track_media
-      WHERE quality = $1
-        AND verified_quality = TRUE
-        AND source LIKE $3
-        AND track_key = ANY($2::text[])
+      SELECT m.track_key, m.quality, m.file_id, m.file_unique_id, m.kind,
+             m.bitrate, m.file_size, m.duration_seconds, m.source
+      FROM deep_track_media m
+      WHERE m.quality = $1
+        AND m.verified_quality = TRUE
+        AND m.source LIKE $3
+        AND m.track_key = ANY($2::text[])
+        AND ${TRUSTED_RJ_DEEP_MEDIA_CLAUSE}
     `, [quality, keys, MEDIA_IDENTITY_SOURCE_PREFIX + '%']);
 
     for (const item of result.rows) {
@@ -835,11 +861,12 @@ export class DeepCatalog {
         WHERE track_key = $1
       `, [trackKey]),
       db.query(`
-        SELECT quality, file_id, file_unique_id, kind, bitrate, file_size, duration_seconds, source
-        FROM deep_track_media
-        WHERE track_key = $1
-          AND verified_quality = TRUE
-          AND source LIKE $2
+        SELECT m.quality, m.file_id, m.file_unique_id, m.kind, m.bitrate, m.file_size, m.duration_seconds, m.source
+        FROM deep_track_media m
+        WHERE m.track_key = $1
+          AND m.verified_quality = TRUE
+          AND m.source LIKE $2
+          AND ${TRUSTED_RJ_DEEP_MEDIA_CLAUSE}
       `, [trackKey, MEDIA_IDENTITY_SOURCE_PREFIX + '%']),
       db.query(`
         SELECT a.album_key, a.artist, a.title, a.track_count
@@ -1086,12 +1113,13 @@ export class DeepCatalog {
 
     const keys = keyed.map(item => item.key);
     const result = await db.query(`
-      SELECT track_key
-      FROM deep_track_media
-      WHERE quality = $1
-        AND verified_quality = TRUE
-        AND source LIKE $3
-        AND track_key = ANY($2::text[])
+      SELECT m.track_key
+      FROM deep_track_media m
+      WHERE m.quality = $1
+        AND m.verified_quality = TRUE
+        AND m.source LIKE $3
+        AND m.track_key = ANY($2::text[])
+        AND ${TRUSTED_RJ_DEEP_MEDIA_CLAUSE}
     `, [quality, keys, MEDIA_IDENTITY_SOURCE_PREFIX + '%']);
     const present = new Set(result.rows.map(row => row.track_key));
     return keyed.filter(item => !present.has(item.key)).map(item => item.track);
