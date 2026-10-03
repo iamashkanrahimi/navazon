@@ -6089,3 +6089,229 @@ test('Radio Javan audio with no text metadata and no reference duration is rejec
   assert.equal(result.ok, false);
   assert.match(result.reason, /insufficient/i);
 });
+
+
+test('Artist identity rejects longer-name containment while preserving exact compact names and reordered collaborations', () => {
+  assert.equal(artistCreditCompatible('Ali Sorena', 'Ali Sorena Tribute'), false);
+  assert.equal(artistCreditCompatible('Ali Sorena Tribute', 'Ali Sorena'), false);
+  assert.equal(artistCreditCompatible('Reza Bahram', 'Reza Bahram Official'), false);
+  assert.equal(artistCreditCompatible('Bahram', 'Reza Bahram'), false);
+  assert.equal(artistCreditCompatible('25 Band', '25Band'), true);
+  assert.equal(
+    artistCreditCompatible('Shayea & Sadegh', 'Sadegh & Shayea'),
+    true
+  );
+  assert.equal(
+    artistCreditCompatible('Ali Sorena', 'Ali Sorena & Bahram'),
+    false
+  );
+});
+
+test('adversarial query identity matrix rejects prefix artists, collaboration collapse and Track variants', () => {
+  const matrix = [
+    ['Ali Sorena', 'Maryam', 'Ali Sorena Tribute', 'Maryam', false],
+    ['Reza Bahram', 'Yar', 'Reza Bahram Official', 'Yar', false],
+    ['Ali Sorena', 'Maryam', 'Ali Sorena & Bahram', 'Maryam', false],
+    ['Ali Sorena & Bahram', 'Khoone Khorshid', 'Bahram & Ali Sorena', 'Khoone Khorshid', true],
+    ['25 Band', 'Song', '25Band', 'Song', true],
+    ['رضا بهرام', 'یار', 'Reza Bahram', 'Yar', true],
+    ['محمدرضا گلزار', 'Divooneh', 'Mohammad Reza Golzar', 'Divooneh', true],
+    ['Troye Sivan', 'Party', 'Troye Sivan', 'Party All Night', false],
+    ['Troye Sivan', 'Party', 'Troye Sivan', 'Party Remix', false],
+    ['James Arthur', 'Impossible', 'Shontelle', 'Impossible', false],
+  ];
+
+  for (const [artist, title, performer, mediaTitle, expected] of matrix) {
+    assert.equal(
+      trackMediaIdentityMatches(
+        { artist, title },
+        { performer, title: mediaTitle }
+      ),
+      expected,
+      `${artist} — ${title} <> ${performer} — ${mediaTitle}`
+    );
+  }
+});
+
+test('Radio Javan verification rejects prefix-Artist impostors and collapsed collaborations', () => {
+  for (const performer of ['Ali Sorena Tribute', 'Ali Sorena & Bahram']) {
+    const result = verifyTelegramAudio(
+      {
+        artist: 'Ali Sorena',
+        title: 'Maryam',
+        expected_duration_seconds: 210,
+      },
+      {
+        audio: {
+          file_id: 'identity-collision-file',
+          file_unique_id: 'identity-collision-unique',
+          duration: 210,
+          title: 'Maryam',
+          performer,
+        },
+      }
+    );
+    assert.equal(result.ok, false, performer);
+    assert.equal(result.titleOk, true, performer);
+    assert.equal(result.artistOk, false, performer);
+  }
+});
+
+test('FileCache quarantines legacy Radio Javan rows even when old echoed metadata looks exact', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|legacy-rj',
+          track: {
+            artist: 'Ali Sorena',
+            title: 'Maryam',
+            source: 'radiojavan',
+          },
+          media: {
+            fileId: 'legacy-rj-file',
+            fileUniqueId: 'legacy-rj-unique',
+            performer: 'Ali Sorena',
+            title: 'Maryam',
+            verifiedDirect: true,
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in legacy RJ quarantine regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached, null);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('FileCache serves a Radio Javan row only after the explicit identity marker exists', async () => {
+  const originalQuery = db.query;
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM track_cache')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam|trusted-rj',
+          track: {
+            artist: 'Ali Sorena',
+            title: 'Maryam',
+            source: 'radiojavan',
+          },
+          media: {
+            fileId: 'trusted-rj-file',
+            fileUniqueId: 'trusted-rj-unique',
+            performer: 'Ali Sorena',
+            title: 'Maryam',
+            verifiedDirect: true,
+            identityVerified: true,
+          },
+        }],
+      };
+    }
+    throw new Error('Unexpected SQL in trusted RJ cache regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const cacheStore = new FileCache();
+    const cached = await cacheStore.get({
+      artist: 'Ali Sorena',
+      title: 'Maryam',
+      source: 'melobot',
+    });
+    assert.equal(cached.fileId, 'trusted-rj-file');
+    assert.equal(cached.identityVerified, true);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('DeepCatalog refuses an unmarked Radio Javan media write before touching the database', async () => {
+  const originalQuery = db.query;
+  const calls = [];
+  db.query = async (...args) => {
+    calls.push(args);
+    throw new Error('Unverified RJ deep media must fail before DB access');
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    await catalog.setMedia(
+      { artist: 'Ali Sorena', title: 'Maryam', source: 'radiojavan' },
+      'hq',
+      {
+        fileId: 'legacy-rj-file',
+        fileUniqueId: 'legacy-rj-unique',
+        performer: 'Ali Sorena',
+        title: 'Maryam',
+        verifiedDirect: true,
+      },
+      { source: 'radiojavan' }
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('every DeepCatalog serving/presence query quarantines legacy Radio Javan deep media by matching a trusted track_cache file', async () => {
+  const originalQuery = db.query;
+  const deepMediaSql = [];
+
+  db.query = async (sql) => {
+    const text = String(sql);
+    if (text.includes('FROM deep_track_media m')) {
+      deepMediaSql.push(text);
+      return { rowCount: 0, rows: [] };
+    }
+    if (text.includes('FROM deep_tracks')) {
+      return {
+        rowCount: 1,
+        rows: [{
+          track_key: 'ali sorena|maryam',
+          artist: 'Ali Sorena',
+          title: 'Maryam',
+          metadata: {},
+        }],
+      };
+    }
+    if (text.includes('FROM deep_album_tracks')) {
+      return { rowCount: 0, rows: [] };
+    }
+    throw new Error('Unexpected SQL in deep-media quarantine regression: ' + text.slice(0, 120));
+  };
+
+  try {
+    const catalog = new DeepCatalog();
+    const track = { artist: 'Ali Sorena', title: 'Maryam', source: 'melobot' };
+
+    await catalog.getTrackDetails(track);
+    await catalog.getMediaMap([track], 'hq');
+    const missing = await catalog.missingMediaTracks([track], 'hq');
+
+    assert.equal(missing.length, 1);
+    assert.equal(deepMediaSql.length, 3);
+    for (const sql of deepMediaSql) {
+      assert.match(sql, /track_cache tc/);
+      assert.match(sql, /identityVerified/);
+      assert.match(sql, /verifiedDirect/);
+      assert.match(sql, /fileId/);
+      assert.match(sql, /m\.file_id/);
+    }
+  } finally {
+    db.query = originalQuery;
+  }
+});
