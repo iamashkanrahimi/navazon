@@ -6953,3 +6953,50 @@ test('RJ API recovery fails closed when fresh API identity differs', async () =>
   );
   assert.equal(wrongId.ok, false);
 });
+
+
+test('RJ local upload selects only fresh allowlisted RJ CDN candidates', async () => {
+  const {
+    selectRjApiUploadCandidate,
+    validateRjAudioResponseMeta,
+  } = await import('../src/rjLocalUploadRecovery.js');
+
+  const row = {
+    verification:{
+      apiRecovery:{
+        candidates:[
+          {
+            url:'https://host2.rjmedia-content.app/media/mp3/aac-256/159402-hash.m4a',
+            host:'host2.rjmedia-content.app',
+            quality:256,
+            source:'rj_api_hq',
+          },
+        ],
+      },
+    },
+  };
+  const candidate = selectRjApiUploadCandidate(row);
+  assert.equal(candidate.host, 'host2.rjmedia-content.app');
+  assert.equal(candidate.quality, 256);
+
+  assert.equal(selectRjApiUploadCandidate({
+    verification:{ apiRecovery:{ candidates:[{
+      url:'https://example.com/evil.mp3',
+      host:'example.com',
+      quality:320,
+      source:'rj_api_hq',
+    }] } },
+  }), null);
+
+  assert.equal(validateRjAudioResponseMeta({
+    status:200,
+    contentType:'audio/mp4',
+    contentLength:5_000_000,
+  }).ok, true);
+
+  assert.equal(validateRjAudioResponseMeta({
+    status:200,
+    contentType:'text/html',
+    contentLength:1000,
+  }).ok, false);
+});
