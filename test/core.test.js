@@ -6043,3 +6043,49 @@ test('cross-script identity supports conservative split Persian compound names',
     false
   );
 });
+
+
+test('Radio Javan metadata-light audio needs tight duration evidence', () => {
+  const row = {
+    artist: 'Ali Sorena',
+    title: 'Maryam',
+    expected_duration_seconds: 210,
+  };
+
+  const close = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'close-duration-file',
+      duration: 212,
+      title: '',
+      performer: '',
+    },
+  });
+  assert.equal(close.ok, true);
+
+  const loose = verifyTelegramAudio(row, {
+    audio: {
+      file_id: 'loose-duration-file',
+      duration: 215,
+      title: '',
+      performer: '',
+    },
+  });
+  assert.equal(loose.ok, false);
+  assert.match(loose.reason, /insufficient/i);
+});
+
+test('Radio Javan audio with no text metadata and no reference duration is rejected', () => {
+  const result = verifyTelegramAudio(
+    { artist: 'Ali Sorena', title: 'Maryam', expected_duration_seconds: null },
+    {
+      audio: {
+        file_id: 'no-evidence-file',
+        duration: null,
+        title: '',
+        performer: '',
+      },
+    }
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /insufficient/i);
+});
