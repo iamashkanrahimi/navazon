@@ -19,6 +19,7 @@ import {
 } from './ui.js';
 import { noteUserActivity } from './state.js';
 import { consumeRjChannelPilotPost } from './rjMtprotoChannelPilot.js';
+import { consumeRjMtprotoChannelWorkerPost } from './rjMtprotoChannelWorker.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
 import {
   renderArtistHomePage,
@@ -173,8 +174,9 @@ function validSession(callback, session) {
 }
 
 export async function handleUpdate(update) {
-  // MTProto archive-channel pilot posts arrive as channel_post updates.
-  // Consume them before normal user/session handling.
+  // MTProto archive-channel posts arrive as channel_post updates. Route the
+  // long-running worker first, then the one-shot pilot, before user handling.
+  if (update.channel_post && consumeRjMtprotoChannelWorkerPost(update.channel_post)) return;
   if (update.channel_post && consumeRjChannelPilotPost(update.channel_post)) return;
 
   // Crawler/user-account bridge messages can arrive in bursts. Consume them
