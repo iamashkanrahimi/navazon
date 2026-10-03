@@ -23,6 +23,7 @@ const {
   resolveMeloBotArtistAlbums,
   resolveMeloBotAlbumsFromLiveArtistContext,
   resolveMeloBotArtistAlbumsDirectFirst,
+  discoverMeloBotAlbumsByArtistQuery,
   openMeloBotArtist,
   openMeloBotArtistFastFresh,
   openMeloBotAlbumByTitle,
