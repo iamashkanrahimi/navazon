@@ -87,8 +87,9 @@ async function recordLocalUploadEvidence(db, row, patch = {}) {
 function localUploadRetryable(row = {}) {
   const previous = row?.verification?.localUploadRecovery || null;
   if (!previous) return true;
-  if (Number(previous.version || 0) >= 2) return false;
+  if (previous.ok == null) return true;
   if (previous.ok === true) return false;
+  if (Number(previous.version || 0) >= 2) return false;
   const reason = clean(previous.reason || '');
   return previous.ok === false
     && reason.includes('unexpected content-type text/plain');
@@ -107,6 +108,7 @@ async function resetFailedApiRowsForLocalUpload(db) {
        AND verification->'apiRecovery'->>'prepared'='true'
        AND (
          NOT (COALESCE(verification,'{}'::jsonb) ? 'localUploadRecovery')
+         OR (verification->'localUploadRecovery'->>'ok') IS NULL
          OR (
            COALESCE(verification->'localUploadRecovery'->>'ok','')='false'
            AND COALESCE(verification->'localUploadRecovery'->>'reason','')
