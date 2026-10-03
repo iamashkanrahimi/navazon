@@ -844,10 +844,18 @@ export function keepFullCoverageTracksWhenAvailable(query = '', tracks = []) {
   // is actively misleading and poisons the search cache. Require an actual
   // lexical match.
   if (tokens.length === 1) {
-    const covered = ranked
-      .filter(item => item.coverage >= 1)
-      .map(item => item.track);
-    if (covered.length) return covered;
+    const covered = ranked.filter(item => item.coverage >= 1);
+    if (covered.length) {
+      // A single token must identify a whole Artist or whole Title field.
+      // Otherwise "Farhad" can silently become "Farhad Ravanbakhsh", or a
+      // base-title search can become an unrelated longer title. Compact stage
+      // names are still supported by queryContainsWholeSearchField().
+      const wholeFieldMatches = covered.filter(item =>
+        queryContainsWholeSearchField(query, item.track?.artist || '')
+        || queryContainsWholeSearchField(query, item.track?.title || '')
+      );
+      return wholeFieldMatches.map(item => item.track);
+    }
 
     // Persian artist queries often come back transliterated by MeloBot
     // (مثلاً «هیچکس» -> Hichkas). Preserve that case only when the source
