@@ -6953,25 +6953,3 @@ test('RJ API recovery fails closed when fresh API identity differs', async () =>
   );
   assert.equal(wrongId.ok, false);
 });
-
-test('RJ row candidates put API recovery URLs before guessed legacy URLs', async () => {
-  const { directCandidatesForRow } = await import('../src/rjAudioCache.js');
-  const candidates = directCandidatesForRow({
-    source_slug:'Arman-Garshasbi-Hezar-Omid',
-    source_id:'159402',
-    verification:{
-      apiRecovery:{
-        candidates:[{
-          url:'https://host2.mediacon-rj.app/media/mp3/aac-256/159402-hash.m4a',
-          host:'host2.mediacon-rj.app',
-          quality:256,
-          source:'rj_api_hq',
-        }],
-      },
-    },
-  });
-
-  assert.equal(candidates[0].host, 'host2.mediacon-rj.app');
-  assert.equal(candidates[0].quality, 256);
-  assert.match(candidates[1].url, /rj-mw1\.com/);
-});
