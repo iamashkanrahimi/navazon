@@ -231,26 +231,19 @@ export class DeepCatalog {
     const cacheResult = await db.query(`
       SELECT track, media
       FROM track_cache
-      WHERE track_key LIKE $1
+      WHERE LEFT(track_key, LENGTH($1)) = $1
       ORDER BY updated_at DESC
       LIMIT 3
-    `, [`${aliasKey}|%`]);
+    `, [`${aliasKey}|`]);
 
     for (const row of cacheResult.rows) {
       const performer = clean(row.media?.performer || '');
       const mediaTitle = clean(row.media?.title || '');
       if (!performer || !mediaTitle) continue;
 
-      const expectedTitle = normalizeText(track?.title || '');
-      const actualTitle = normalizeText(mediaTitle);
-      const titleCompatible = Boolean(
-        expectedTitle
-        && actualTitle
-        && (
-          expectedTitle === actualTitle
-          || expectedTitle.includes(actualTitle)
-          || actualTitle.includes(expectedTitle)
-        )
+      const titleCompatible = trackTitleIdentityCompatible(
+        track?.title || '',
+        mediaTitle
       );
       const trustedAhangifyMetadataAlias = Boolean(
         track?.source === 'ahangify'
@@ -639,11 +632,25 @@ export class DeepCatalog {
     // Resolve/canonicalize first; otherwise common titles can poison file_id
     // cache entries for a different performer.
     if (track?.artistInferred) return;
-    if (
-      !hasMediaIdentityEvidence(media)
-      || !trackMediaIdentityMatches(track, media || {})
-    ) {
-      console.warn('[deep media write rejected]', track?.artist, track?.title);
+    const identityEvidence = hasMediaIdentityEvidence(media);
+    const identityMatches = identityEvidence
+      ? trackMediaIdentityMatches(track, media || {})
+      : false;
+    if (!identityEvidence || !identityMatches) {
+      console.warn(
+        '[deep media write rejected]',
+        JSON.stringify({
+          reason: identityEvidence ? 'identity_mismatch' : 'missing_identity_evidence',
+          expected: {
+            artist: clean(track?.artist || '').slice(0, 160),
+            title: clean(track?.title || '').slice(0, 160),
+          },
+          observed: {
+            performer: clean(media?.performer || '').slice(0, 160),
+            title: clean(media?.title || '').slice(0, 160),
+          },
+        })
+      );
       return;
     }
     const mediaSource = clean(extra.source || track.source || 'melobot');
