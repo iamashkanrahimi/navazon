@@ -24,7 +24,7 @@ const TRUSTED_RJ_DEEP_MEDIA_CLAUSE = `
     SELECT 1
     FROM track_cache tc
     WHERE tc.active = TRUE
-      AND tc.track_key LIKE m.track_key || '|%'
+      AND LEFT(tc.track_key, LENGTH(m.track_key) + 1) = m.track_key || '|'
       AND COALESCE(tc.track->>'source','') = 'radiojavan'
       AND COALESCE(tc.media->>'verifiedDirect','false') = 'true'
       AND COALESCE(tc.media->>'identityVerified','false') = 'true'
