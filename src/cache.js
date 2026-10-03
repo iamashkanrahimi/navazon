@@ -52,7 +52,7 @@ export class FileCache {
     const key = trackCacheKey(track);
     const artist = normalize(track?.artist || '');
     const title = normalize(track?.title || '');
-    const prefix = `${artist}|${title}|%`;
+    const prefix = `${artist}|${title}|`;
 
     // Radio Javan direct media is canonical once verified. This query always
     // checks the whole Artist/Title identity family instead of returning an
@@ -60,7 +60,7 @@ export class FileCache {
     const result = await db.query(`
       SELECT track_key, track, media
       FROM track_cache
-      WHERE track_key LIKE $1
+      WHERE LEFT(track_key, LENGTH($1)) = $1
         AND active = TRUE
         AND (
           COALESCE(track->>'source','') <> 'radiojavan'
@@ -158,7 +158,7 @@ export class FileCache {
 
     const artist = normalize(policy.artist || '');
     const title = normalize(policy.title || '');
-    const prefix = `${artist}|${title}|%`;
+    const prefix = `${artist}|${title}|`;
     const canonicalRj = isTrustedRadioJavanMedia(policy, media || {});
 
     if (canonicalRj) {
@@ -169,7 +169,7 @@ export class FileCache {
         SET active = (track_key = $2),
             superseded_by = CASE WHEN track_key = $2 THEN NULL ELSE $2 END,
             updated_at = CASE WHEN track_key = $2 THEN NOW() ELSE updated_at END
-        WHERE track_key LIKE $1
+        WHERE LEFT(track_key, LENGTH($1)) = $1
       `, [prefix, key]);
       return;
     }
@@ -179,7 +179,7 @@ export class FileCache {
     const canonical = await db.query(`
       SELECT track_key
       FROM track_cache
-      WHERE track_key LIKE $1
+      WHERE LEFT(track_key, LENGTH($1)) = $1
         AND COALESCE(track->>'source','') = 'radiojavan'
         AND COALESCE(media->>'verifiedDirect','false') = 'true'
         AND COALESCE(media->>'identityVerified','false') = 'true'
