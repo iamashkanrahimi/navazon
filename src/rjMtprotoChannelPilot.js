@@ -173,7 +173,8 @@ export async function ensureRjMtprotoArchiveChannelFor(
   client,
   { slot = 1 } = {}
 ) {
-  const normalizedSlot = Number(slot) === 2 ? 2 : 1;
+  const numericSlot = Number(slot);
+  const normalizedSlot = [1, 2, 3].includes(numericSlot) ? numericSlot : 1;
   const channelKey = normalizedSlot === 1
     ? CHANNEL_KEY
     : `rj_mtproto_archive_channel_v1_slot_${normalizedSlot}`;
