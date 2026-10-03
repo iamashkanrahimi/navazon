@@ -7460,3 +7460,65 @@ test('multi-feature title credits recognize each explicit member without substri
     false
   );
 });
+
+
+test('query matrix v4 formatting and script-variant smoke matrix stays stable', () => {
+  const sorenaMaryam = { artist: 'Ali Sorena', title: 'Maryam' };
+  const cases = [
+    ['ALI SORENA MARYAM', [sorenaMaryam], [sorenaMaryam]],
+    ['Ali-Sorena, Maryam!!!', [sorenaMaryam], [sorenaMaryam]],
+    ['Maryam — Ali Sorena', [sorenaMaryam], [sorenaMaryam]],
+    ['Ali Sorena مریم', [sorenaMaryam], [sorenaMaryam]],
+    ['علي سورنا مريم', [sorenaMaryam], [sorenaMaryam]],
+    ['علی سورنا Maryam', [sorenaMaryam], [sorenaMaryam]],
+  ];
+
+  for (const [query, tracks, expected] of cases) {
+    assert.deepEqual(
+      keepFullCoverageTracksWhenAvailable(query, tracks),
+      expected,
+      query
+    );
+  }
+});
+
+test('title-only query keeps exact same-title Artists but excludes longer title suffixes', () => {
+  const sorena = { artist: 'Ali Sorena', title: 'Maryam' };
+  const asemani = { artist: 'Mehrdad Asemani', title: 'Maryam' };
+  const sequel = { artist: 'Ali Sorena', title: 'Maryam 2' };
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable(
+      'Maryam',
+      [sequel, asemani, sorena]
+    ),
+    [asemani, sorena]
+  );
+});
+
+test('Artist-only query keeps the exact Artist catalog and rejects longer lookalikes', () => {
+  const rows = [
+    { artist: 'Ali Sorena Tribute', title: 'Fake One' },
+    { artist: 'Ali Sorena', title: 'Maryam' },
+    { artist: 'Ali Sorena', title: 'Marg' },
+    { artist: 'Ali Sorena Official', title: 'Fake Two' },
+  ];
+
+  assert.deepEqual(
+    keepFullCoverageTracksWhenAvailable('Ali Sorena', rows),
+    [rows[1], rows[2]]
+  );
+});
+
+test('Persian and Arabic digits remain equivalent but numeric suffix identity stays exact', () => {
+  const exact = { artist: 'Artist', title: 'Track 25' };
+  const wrong = { artist: 'Artist', title: 'Track 26' };
+
+  for (const query of ['Artist Track 25', 'Artist Track ۲۵', 'Artist Track ٢٥']) {
+    assert.deepEqual(
+      keepFullCoverageTracksWhenAvailable(query, [wrong, exact]),
+      [exact],
+      query
+    );
+  }
+});
