@@ -40,6 +40,19 @@ export const config = {
   rjAudioCacheEnabled: boolEnv('RJ_AUDIO_CACHE_ENABLED', false),
   rjMtprotoPilotEnabled: boolEnv('RJ_MTPROTO_PILOT_ENABLED', false),
   rjMtprotoChannelPilotEnabled: boolEnv('RJ_MTPROTO_CHANNEL_PILOT_ENABLED', false),
+  rjMtprotoChannelWorkerEnabled: boolEnv('RJ_MTPROTO_CHANNEL_WORKER_ENABLED', false),
+  rjMtprotoChannelStartGapMs: Math.max(
+    750,
+    Number(process.env.RJ_MTPROTO_CHANNEL_START_GAP_MS || 950)
+  ),
+  rjMtprotoChannelMinGapMs: Math.max(
+    650,
+    Number(process.env.RJ_MTPROTO_CHANNEL_MIN_GAP_MS || 750)
+  ),
+  rjMtprotoChannelMaxGapMs: Math.max(
+    1500,
+    Number(process.env.RJ_MTPROTO_CHANNEL_MAX_GAP_MS || 5000)
+  ),
   rjAudioCacheDelayMs: Math.max(900, Number(process.env.RJ_AUDIO_CACHE_DELAY_MS || 1100)),
   rjAudioCacheConcurrency: Math.max(
     1,
