@@ -18,6 +18,7 @@ import {
   albumTracksKeyboard, trackAlbumKeyboard, artistAlbumsTitle, albumPageTitle,
 } from './ui.js';
 import { noteUserActivity } from './state.js';
+import { consumeRjChannelPilotPost } from './rjMtprotoChannelPilot.js';
 import { CURATED_PLAYLISTS } from './homeCatalog.js';
 import {
   renderArtistHomePage,
@@ -172,6 +173,10 @@ function validSession(callback, session) {
 }
 
 export async function handleUpdate(update) {
+  // MTProto archive-channel pilot posts arrive as channel_post updates.
+  // Consume them before normal user/session handling.
+  if (update.channel_post && consumeRjChannelPilotPost(update.channel_post)) return;
+
   // Crawler/user-account bridge messages can arrive in bursts. Consume them
   // before touching the sessions table so batch media warming stays fast.
   const bridgeMessage = update.message;
