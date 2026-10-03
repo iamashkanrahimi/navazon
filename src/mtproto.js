@@ -444,6 +444,30 @@ export async function sendExternalMediaToPeer(client, peer, url, caption = '') {
   }));
 }
 
+export async function sendLocalAudioFileToPeer(
+  client,
+  peer,
+  filePath,
+  caption = '',
+  { duration = 0, title = '', performer = '' } = {}
+) {
+  const toPeer = await client.getInputEntity(peer);
+  return client.sendFile(toPeer, {
+    file: filePath,
+    caption: String(caption || ''),
+    forceDocument: false,
+    workers: 2,
+    attributes: [
+      new Api.DocumentAttributeAudio({
+        voice: false,
+        duration: Math.max(0, Math.round(Number(duration || 0))),
+        title: String(title || '') || undefined,
+        performer: String(performer || '') || undefined,
+      }),
+    ],
+  });
+}
+
 export async function sendExternalMediaBatchToPeer(client, peer, items = []) {
   const cleanItems = (items || [])
     .filter(item => item?.url)
