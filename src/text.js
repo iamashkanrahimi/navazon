@@ -242,17 +242,36 @@ export function crossScriptIdentityCompatible(left = '', right = '') {
 
   const leftTokens = cleanText(left).split(/\s+/u).filter(Boolean);
   const rightTokens = cleanText(right).split(/\s+/u).filter(Boolean);
-  if (!leftTokens.length || leftTokens.length !== rightTokens.length) return false;
+  if (!leftTokens.length || !rightTokens.length) return false;
 
-  return leftTokens.every((token, index) => {
-    const a = consonantTokenSkeleton(token);
-    const b = consonantTokenSkeleton(rightTokens[index]);
+  const tokenCompatible = (leftToken, rightToken) => {
+    const a = consonantTokenSkeleton(leftToken);
+    const b = consonantTokenSkeleton(rightToken);
     if (!a || !b) return false;
     if (a === b) return true;
     const maxLen = Math.max(a.length, b.length);
     const allowed = maxLen >= 4 ? 1 : 0;
     return smallEditDistance(a, b) <= allowed;
-  });
+  };
+
+  if (leftTokens.length === rightTokens.length) {
+    return leftTokens.every((token, index) =>
+      tokenCompatible(token, rightTokens[index])
+    );
+  }
+
+  // Persian compound names are sometimes written as one token while Latin
+  // metadata splits them (e.g. "محمدرضا" -> "Mohammad Reza"). Compare the
+  // whole consonant skeleton only when token counts differ, and allow at most
+  // one edit for a reasonably long identity. This stays far stricter than
+  // generic fuzzy/substring matching.
+  const leftJoined = leftTokens.map(consonantTokenSkeleton).join('');
+  const rightJoined = rightTokens.map(consonantTokenSkeleton).join('');
+  if (!leftJoined || !rightJoined) return false;
+  if (leftJoined === rightJoined) return true;
+
+  const maxLen = Math.max(leftJoined.length, rightJoined.length);
+  return maxLen >= 6 && smallEditDistance(leftJoined, rightJoined) <= 1;
 }
 
 export function trackTitleIdentity(value = '') {
